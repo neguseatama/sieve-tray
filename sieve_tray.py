@@ -113,12 +113,16 @@ def observe_documents(doc_paths: List[Path],
                 "mask": obs.mask,
                 "flagged": (obs.mask != "1000-000"
                             and not obs.mask.startswith("0")),
+                "h_states": dict(obs.h_states),
+                "evidence": dict(obs.evidence),
             })
         except Exception as e:
             results.append({
                 "path": str(f),
                 "mask": "0000-000",
                 "flagged": False,
+                "h_states": {},
+                "evidence": {},
                 "error": type(e).__name__,
             })
     return results
@@ -142,7 +146,13 @@ def compare_code(code_map: Dict[str, str],
     for (k1, k2), res in analysis["pair_results"].items():
         if res.get("short_circuited"):
             continue
-        pairs.append({"a": k1, "b": k2, "mask": res["mask"]})
+        pairs.append({
+            "a": k1,
+            "b": k2,
+            "mask": res["mask"],
+            "h_states": dict(res.get("h_states", {})),
+            "scores": dict(res.get("scores", {})),
+        })
     return pairs
 
 
