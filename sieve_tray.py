@@ -28,6 +28,7 @@ Any directory structure works. Files are routed by extension:
 
 import argparse
 import html
+import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,6 +63,19 @@ class ScanResult:
     groups: List[Tuple[str, List[Path]]] = field(default_factory=list)
     doc_results: List[dict] = field(default_factory=list)
     code_pairs: List[dict] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        """JSON-serializable form, used by sieve_tray_storage for history."""
+        return {
+            "groups": [[name, [str(p) for p in files]] for name, files in self.groups],
+            "doc_results": self.doc_results,
+            "code_pairs": self.code_pairs,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ScanResult":
+        groups = [(name, [Path(p) for p in files]) for name, files in d["groups"]]
+        return cls(groups=groups, doc_results=d["doc_results"], code_pairs=d["code_pairs"])
 
 
 def scan(input_dir: Path) -> List[Tuple[str, List[Path]]]:
