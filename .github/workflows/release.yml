@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset_name: SieveTray-windows.zip
+          - os: macos-latest
+            asset_name: SieveTray-macos.zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install sieve-tray, GUI deps, and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[gui]"
+          pip install pyinstaller
+
+      - name: Build with PyInstaller (Windows)
+        if: runner.os == 'Windows'
+        run: >
+          pyinstaller --noconfirm --onefile --windowed
+          --name SieveTray --collect-all PySide6
+          sieve_tray_gui.py
+
+      - name: Build with PyInstaller (macOS)
+        if: runner.os == 'macOS'
+        run: >
+          pyinstaller --noconfirm --windowed
+          --name SieveTray --collect-all PySide6
+          sieve_tray_gui.py
+
+      - name: Package artifact (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Compress-Archive -Path dist/SieveTray.exe -DestinationPath dist/${{ matrix.asset_name }}
+        shell: pwsh
+
+      - name: Package artifact (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          ditto -c -k --sequesterRsrc --keepParent SieveTray.app ${{ matrix.asset_name }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.asset_name }}
