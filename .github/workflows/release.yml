@@ -16,8 +16,10 @@ jobs:
         include:
           - os: windows-latest
             asset_name: SieveTray-windows.zip
-          - os: macos-latest
-            asset_name: SieveTray-macos.zip
+          - os: macos-15
+            asset_name: SieveTray-macos-arm64.zip
+          - os: macos-15-intel
+            asset_name: SieveTray-macos-intel.zip
 
     runs-on: ${{ matrix.os }}
 
