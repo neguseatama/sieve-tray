@@ -24,6 +24,10 @@ Structure:
 Any directory structure works. Files are routed by extension:
   - Code extensions  -> Sieve-Scope (pairwise comparison)
   - Document extensions -> Sieve-Lens (per-file observation)
+  - Text extensions (subset of document extensions) -> ALSO Sieve-Referee
+    (pairwise paraphrase/plagiarism comparison), since a document can
+    independently have hidden content (Lens' concern) and reused/paraphrased
+    prose (Referee's concern).
 """
 
 import argparse
@@ -41,6 +45,10 @@ DOC_EXTS = {
     ".png", ".jpg", ".jpeg", ".gif", ".bmp",
     ".tif", ".tiff", ".webp",
 }
+# Plain-text subset of DOC_EXTS that Sieve-Referee can additionally compare
+# pairwise. Referee only accepts plain text, so rich formats (.docx, .pdf,
+# images, .html) are excluded even though Sieve-Lens still observes them.
+TEXT_EXTS = {".txt", ".md"}
 
 # A progress callback takes a single human-readable status string.
 # The CLI passes `print`; a GUI can pass e.g. a Qt signal emitter or
@@ -63,6 +71,7 @@ class ScanResult:
     groups: List[Tuple[str, List[Path]]] = field(default_factory=list)
     doc_results: List[dict] = field(default_factory=list)
     code_pairs: List[dict] = field(default_factory=list)
+    text_pairs: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """JSON-serializable form, used by sieve_tray_storage for history."""
@@ -70,12 +79,14 @@ class ScanResult:
             "groups": [[name, [str(p) for p in files]] for name, files in self.groups],
             "doc_results": self.doc_results,
             "code_pairs": self.code_pairs,
+            "text_pairs": self.text_pairs,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "ScanResult":
         groups = [(name, [Path(p) for p in files]) for name, files in d["groups"]]
-        return cls(groups=groups, doc_results=d["doc_results"], code_pairs=d["code_pairs"])
+        return cls(groups=groups, doc_results=d["doc_results"],
+                    code_pairs=d["code_pairs"], text_pairs=d.get("text_pairs", []))
 
 
 def scan(input_dir: Path) -> List[Tuple[str, List[Path]]]:
@@ -156,6 +167,48 @@ def compare_code(code_map: Dict[str, str],
     return pairs
 
 
+def compare_text(text_map: Dict[str, str],
+                  progress: ProgressCallback = _silent) -> List[dict]:
+    """Pairwise paraphrase/plagiarism screening via Sieve-Referee.
+
+    Only TEXT_EXTS files (plain text: .txt, .md) are eligible - Referee
+    takes plain text in, so rich formats never reach this function.
+    """
+    if len(text_map) < 2:
+        return []
+    try:
+        from sieve_referee import batch_evaluate
+    except ImportError:
+        progress("Note: sieve-referee not installed; skipping text similarity analysis.")
+        return []
+
+    results = batch_evaluate(text_map)
+    pairs = []
+    for res in results:
+        signal = (res.evaluation_signal.value
+                  if hasattr(res.evaluation_signal, "value")
+                  else str(res.evaluation_signal))
+        if signal == "GREEN":
+            # GREEN = independently-written pair, nothing to report.
+            continue
+        pairs.append({
+            "a": res.item_id,
+            "b": res.matched_peer_id,
+            "signal": signal,
+            "mask": res.mask,
+            "pattern_name": res.pattern_name,
+            "reason": res.reason,
+            "h_states": {f"H{i + 1}": int(bit) for i, bit in enumerate(res.mask)},
+            "scores": {
+                "structural_density": res.structural_density,
+                "max_structure_similarity": res.max_structure_similarity,
+                "max_content_similarity": res.max_content_similarity,
+                "coverage": res.coverage,
+            },
+        })
+    return pairs
+
+
 def run_scan(input_dir: Path, progress: ProgressCallback = _silent) -> ScanResult:
     """Core entry point. Scans input_dir and returns a ScanResult.
 
@@ -168,6 +221,7 @@ def run_scan(input_dir: Path, progress: ProgressCallback = _silent) -> ScanResul
     progress(f"Found {len(groups)} groups.")
 
     code_map: Dict[str, str] = {}
+    text_map: Dict[str, str] = {}
     all_docs: List[Path] = []
     for name, files in groups:
         code, doc = split_files(files)
@@ -177,6 +231,13 @@ def run_scan(input_dir: Path, progress: ProgressCallback = _silent) -> ScanResul
                 code_map[key] = f.read_text(encoding="utf-8", errors="replace")
             except Exception:
                 pass
+        for f in doc:
+            if f.suffix.lower() in TEXT_EXTS:
+                key = f"{name}/{f.name}"
+                try:
+                    text_map[key] = f.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
         all_docs.extend(doc)
 
     progress(f"Analyzing {len(all_docs)} documents...")
@@ -185,7 +246,11 @@ def run_scan(input_dir: Path, progress: ProgressCallback = _silent) -> ScanResul
     progress(f"Comparing {len(code_map)} code files...")
     code_pairs = compare_code(code_map, progress)
 
-    return ScanResult(groups=groups, doc_results=doc_results, code_pairs=code_pairs)
+    progress(f"Comparing {len(text_map)} text files for similarity...")
+    text_pairs = compare_text(text_map, progress)
+
+    return ScanResult(groups=groups, doc_results=doc_results,
+                       code_pairs=code_pairs, text_pairs=text_pairs)
 
 
 CSS = """
@@ -205,7 +270,9 @@ code { font-family: Menlo, monospace; font-size: .85em; }
 
 
 def render(result: ScanResult) -> str:
-    groups, doc_results, code_pairs = result.groups, result.doc_results, result.code_pairs
+    groups = result.groups
+    doc_results, code_pairs, text_pairs = (
+        result.doc_results, result.code_pairs, result.text_pairs)
 
     parts = ["<!DOCTYPE html>",
              "<html><head><meta charset='UTF-8'>",
@@ -242,6 +309,23 @@ def render(result: ScanResult) -> str:
                 f"<td><code>{html.escape(p['a'])}</code></td>"
                 f"<td><code>{html.escape(p['b'])}</code></td>"
                 f"<td><code>{html.escape(p['mask'])}</code></td>"
+                f"</tr>"
+            )
+        parts.append("</table>")
+
+    parts.append("<h2>Text Pairs</h2>")
+    if not text_pairs:
+        parts.append("<p>No suspicious text pairs.</p>")
+    else:
+        parts.append("<table><tr><th>File A</th><th>File B</th>"
+                     "<th>Signal</th><th>Pattern</th></tr>")
+        for p in text_pairs:
+            parts.append(
+                f"<tr class='flagged'>"
+                f"<td><code>{html.escape(p['a'])}</code></td>"
+                f"<td><code>{html.escape(p['b'])}</code></td>"
+                f"<td>{html.escape(p['signal'])}</td>"
+                f"<td>{html.escape(p['pattern_name'])}</td>"
                 f"</tr>"
             )
         parts.append("</table>")

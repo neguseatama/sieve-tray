@@ -3,20 +3,20 @@ Sieve Tray GUI - Desktop front-end for sieve_tray.
 
 Phase 1: pick a folder, run the scan in the background, show results
 in tables.
-Phase 2: every completed scan is saved to local history (sqlite3, via
-sieve_tray_storage.Storage) so past results can be revisited without
-re-scanning, and a Settings dialog lets the user configure the
-default export folder and how many past runs to keep.
-Phase 3 (this revision): result tables are sortable (click a column
-header) and filterable (text + "flagged only" for documents), and
-double-clicking a row opens a detail dialog showing the per-axis
-(H1-H7) observation states plus the underlying evidence/scores, so
-"why was this flagged" is one click away instead of just a mask
-string.
+Phase 2: local history (sqlite3) + Settings dialog (export folder,
+history retention).
+Phase 3: sortable/filterable result tables + a detail dialog showing
+the per-axis (H1-H7) observation states and evidence/scores behind a
+flag.
+Phase 4 (this revision): a third result category - Text Similarity,
+powered by Sieve-Referee's pairwise paraphrase/plagiarism screening
+for plain-text documents (.txt/.md) - plus a full English/Japanese UI
+switch (English by default) via sieve_tray_i18n.
 """
 
 import sys
 from pathlib import Path
+from multiprocessing import freeze_support
 
 from PySide6.QtCore import Qt, QThread, Signal, QObject
 from PySide6.QtWidgets import (
@@ -24,37 +24,22 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QTableWidget, QTableWidgetItem,
     QTabWidget, QPlainTextEdit, QFileDialog, QMessageBox, QHeaderView,
     QDialog, QFormLayout, QSpinBox, QDialogButtonBox, QCheckBox,
+    QComboBox,
 )
 from PySide6.QtGui import QColor
 
 from sieve_tray import run_scan, render, ScanResult
 from sieve_tray_storage import Storage, RunSummary
+from sieve_tray_i18n import (
+    tr, normalize_language, SUPPORTED_LANGUAGES, LANGUAGE_NAMES,
+    DOC_AXIS_LABELS, CODE_AXIS_LABELS, TEXT_AXIS_LABELS,
+)
 
 
 FLAGGED_BG = QColor("#fff5f5")
-
-# Human-readable labels for the H1-H7 observation axes. sieve_lens and
-# sieve_scope both use the "H1..H7" naming, but the axes mean
-# different things in each engine (documents vs. code), so they get
-# separate label dictionaries.
-DOC_LABELS = {
-    "H1": "Parseability（解析可能性）",
-    "H2": "Zero-Width Density（ゼロ幅文字の密度）",
-    "H3": "Bidi Controls（双方向制御文字）",
-    "H4": "Format Concealment（書式による隠蔽）",
-    "H5": "Out-of-Band Channel（帯域外チャンネル）",
-    "H6": "Script Mixing（文字体系の混在）",
-    "H7": "Contiguous Payload（連続するペイロード）",
-}
-
-CODE_LABELS = {
-    "H1": "Parseability（構文解析可能性）",
-    "H2": "AST Skeleton（AST構造の完全一致）",
-    "H3": "Identifier Similarity（識別子の類似度）",
-    "H4": "Cluster Safety（クラスタ内での昇格）",
-    "H5": "g_POS（順序構造ハッシュの一致）",
-    "H6": "g_CONST（定数集合の一致）",
-    "H7": "g_FREQ（Bi-gram頻度の類似度）",
+SIGNAL_BG = {
+    "RED": QColor("#fff5f5"),
+    "YELLOW": QColor("#fffbea"),
 }
 
 
@@ -78,15 +63,16 @@ class ScanWorker(QObject):
 
 
 class SettingsDialog(QDialog):
-    """Default export folder + how many past runs to keep in history."""
+    """Default export folder, history retention, and UI language."""
 
-    def __init__(self, storage: Storage, parent=None):
+    def __init__(self, storage: Storage, lang: str, parent=None):
         super().__init__(parent)
         self.storage = storage
-        self.setWindowTitle("設定")
+        self._ = lambda key, **kw: tr(lang, key, **kw)
+        self.setWindowTitle(self._("settings_title"))
 
         self.export_dir_edit = QLineEdit(storage.get_setting("export_dir"))
-        browse_btn = QPushButton("参照...")
+        browse_btn = QPushButton(self._("settings_browse"))
         browse_btn.clicked.connect(self._browse_export_dir)
         export_row = QHBoxLayout()
         export_row.addWidget(self.export_dir_edit, stretch=1)
@@ -94,19 +80,31 @@ class SettingsDialog(QDialog):
 
         self.retention_spin = QSpinBox()
         self.retention_spin.setRange(0, 10000)
-        self.retention_spin.setSpecialValueText("無制限")
+        self.retention_spin.setSpecialValueText(
+            self._("settings_retention_unlimited"))
         try:
             current = int(storage.get_setting("history_retention"))
         except ValueError:
             current = 50
         self.retention_spin.setValue(current)
 
+        self.language_combo = QComboBox()
+        for code in SUPPORTED_LANGUAGES:
+            self.language_combo.addItem(LANGUAGE_NAMES[code], userData=code)
+        current_lang = normalize_language(storage.get_setting("language"))
+        self.language_combo.setCurrentIndex(SUPPORTED_LANGUAGES.index(current_lang))
+
         form = QFormLayout()
-        form.addRow("レポートの保存先フォルダ:", export_row)
-        form.addRow("履歴の保持件数（0で無制限）:", self.retention_spin)
+        form.addRow(self._("settings_export_dir"), export_row)
+        form.addRow(self._("settings_retention"), self.retention_spin)
+        form.addRow(
+            f"{self._('settings_language')} {self._('settings_language_note')}",
+            self.language_combo)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText(self._("ok_button"))
+        buttons.button(QDialogButtonBox.Cancel).setText(self._("cancel_button"))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
@@ -116,44 +114,54 @@ class SettingsDialog(QDialog):
 
     def _browse_export_dir(self):
         path = QFileDialog.getExistingDirectory(
-            self, "保存先フォルダを選択", self.export_dir_edit.text())
+            self, self._("settings_browse_dialog_title"),
+            self.export_dir_edit.text())
         if path:
             self.export_dir_edit.setText(path)
+
+    def selected_language(self) -> str:
+        return self.language_combo.currentData()
 
     def save(self):
         self.storage.set_setting("export_dir", self.export_dir_edit.text())
         self.storage.set_setting(
             "history_retention", str(self.retention_spin.value()))
+        self.storage.set_setting("language", self.selected_language())
         self.storage.prune_history()
 
 
 class DetailDialog(QDialog):
-    """Shows why a document or code pair was flagged: the H1-H7 states
-    plus whatever evidence/scores the engine recorded for them.
+    """Shows why a document, code pair, or text pair was flagged: the
+    H1-H7 (or H1-H4) states plus whatever evidence/scores/reason the
+    engine recorded for them.
 
     This is deliberately just a reader (no interpretation added on
-    top) - it surfaces exactly what sieve_lens/sieve_scope observed,
-    consistent with those engines' own "observation, not judgment"
-    stance.
+    top) - it surfaces exactly what the underlying Sieve engine
+    observed, consistent with those engines' own "observation, not
+    judgment" stance.
     """
 
-    def __init__(self, title: str, h_states: dict, labels: dict,
+    def __init__(self, title: str, h_states: dict, labels: dict, lang: str,
                  evidence: dict | None = None, scores: dict | None = None,
-                 parent=None):
+                 reason: str | None = None, parent=None):
         super().__init__(parent)
+        self._ = lambda key, **kw: tr(lang, key, **kw)
         self.setWindowTitle(title)
-        self.resize(560, 460)
+        self.resize(560, 480)
 
         layout = QVBoxLayout(self)
 
         axis_table = QTableWidget(len(labels), 2)
-        axis_table.setHorizontalHeaderLabels(["観測軸", "結果"])
+        axis_table.setHorizontalHeaderLabels(
+            [self._("detail_axis_header"), self._("detail_result_header")])
         axis_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         axis_table.setEditTriggers(QTableWidget.NoEditTriggers)
         for row, key in enumerate(labels):
             axis_table.setItem(row, 0, QTableWidgetItem(f"{key}: {labels[key]}"))
             state = h_states.get(key, 0)
-            result_item = QTableWidgetItem("検出" if state else "検出なし")
+            result_item = QTableWidgetItem(
+                self._("detail_detected") if state
+                else self._("detail_not_detected"))
             if state:
                 result_item.setBackground(FLAGGED_BG)
             axis_table.setItem(row, 1, result_item)
@@ -167,8 +175,11 @@ class DetailDialog(QDialog):
                     lines.append(f"[{key}] {labels[key]}")
                     for it in items:
                         lines.append(f"  - {it}")
+        if reason:
+            lines.append(self._("detail_reason_label"))
+            lines.append(f"  {reason}")
         if scores:
-            lines.append("スコア:")
+            lines.append(self._("detail_scores_label"))
             for k, v in scores.items():
                 lines.append(
                     f"  {k}: {v:.3f}" if isinstance(v, float) else f"  {k}: {v}")
@@ -176,11 +187,11 @@ class DetailDialog(QDialog):
         detail_view = QPlainTextEdit()
         detail_view.setReadOnly(True)
         detail_view.setPlainText(
-            "\n".join(lines) if lines else "追加の詳細情報はありません。")
-        layout.addWidget(QLabel("詳細"))
+            "\n".join(lines) if lines else self._("detail_no_extra_info"))
+        layout.addWidget(QLabel(self._("detail_section_label")))
         layout.addWidget(detail_view)
 
-        close_btn = QPushButton("閉じる")
+        close_btn = QPushButton(self._("close_button"))
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn)
 
@@ -188,14 +199,17 @@ class DetailDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self, storage: Storage | None = None):
         super().__init__()
-        self.setWindowTitle("Sieve Tray")
-        self.resize(1000, 700)
-
         self.storage = storage if storage is not None else Storage()
+        self.lang = normalize_language(self.storage.get_setting("language"))
+        self._ = lambda key, **kw: tr(self.lang, key, **kw)
+
+        self.setWindowTitle(self._("window_title"))
+        self.resize(1050, 720)
 
         self._thread: QThread | None = None
         self._worker: ScanWorker | None = None
         self._last_result: ScanResult | None = None
+        self._scan_running = False
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -205,13 +219,13 @@ class MainWindow(QMainWindow):
         picker_row = QHBoxLayout()
         self.path_edit = QLineEdit()
         self.path_edit.setReadOnly(True)
-        self.path_edit.setPlaceholderText("スキャンするフォルダを選択してください")
-        browse_btn = QPushButton("フォルダを選択...")
+        self.path_edit.setPlaceholderText(self._("select_folder_placeholder"))
+        browse_btn = QPushButton(self._("browse_folder"))
         browse_btn.clicked.connect(self.choose_folder)
-        self.run_btn = QPushButton("スキャン実行")
+        self.run_btn = QPushButton(self._("run_scan"))
         self.run_btn.setEnabled(False)
         self.run_btn.clicked.connect(self.start_scan)
-        settings_btn = QPushButton("設定...")
+        settings_btn = QPushButton(self._("settings_button"))
         settings_btn.clicked.connect(self.open_settings)
         picker_row.addWidget(self.path_edit, stretch=1)
         picker_row.addWidget(browse_btn)
@@ -222,36 +236,55 @@ class MainWindow(QMainWindow):
         # --- results / history tabs ---
         self.tabs = QTabWidget()
 
-        self.doc_table = self._make_table(["ファイル", "マスク", "ステータス"])
+        self.doc_table = self._make_table(
+            [self._("doc_header_file"), self._("doc_header_mask"),
+             self._("doc_header_status")])
         self.doc_table.cellDoubleClicked.connect(self._on_doc_row_activated)
         self.doc_filter_edit = QLineEdit()
-        self.doc_filter_edit.setPlaceholderText("ファイル名で絞り込み")
+        self.doc_filter_edit.setPlaceholderText(self._("filter_by_filename"))
         self.doc_filter_edit.textChanged.connect(self._apply_doc_filter)
-        self.doc_flagged_only_cb = QCheckBox("フラグのみ表示")
+        self.doc_flagged_only_cb = QCheckBox(self._("flagged_only"))
         self.doc_flagged_only_cb.stateChanged.connect(self._apply_doc_filter)
-        self.tabs.addTab(
+        self._doc_tab_index = self.tabs.addTab(
             self._make_filterable_tab(
                 self.doc_table, self.doc_filter_edit, self.doc_flagged_only_cb),
-            "ドキュメント (0)")
+            self._("doc_tab", n=0))
 
-        self.code_table = self._make_table(["ファイルA", "ファイルB", "マスク"])
+        self.code_table = self._make_table(
+            [self._("code_header_a"), self._("code_header_b"),
+             self._("code_header_mask")])
         self.code_table.cellDoubleClicked.connect(self._on_code_row_activated)
         self.code_filter_edit = QLineEdit()
-        self.code_filter_edit.setPlaceholderText("ファイル名で絞り込み")
+        self.code_filter_edit.setPlaceholderText(self._("filter_by_filename"))
         self.code_filter_edit.textChanged.connect(self._apply_code_filter)
-        self.tabs.addTab(
+        self._code_tab_index = self.tabs.addTab(
             self._make_filterable_tab(self.code_table, self.code_filter_edit),
-            "コードペア (0)")
+            self._("code_tab", n=0))
 
-        self.history_table = self._make_table(
-            ["日時 (UTC)", "フォルダ", "グループ", "文書(フラグ)", "コードペア"])
+        self.text_table = self._make_table(
+            [self._("text_header_a"), self._("text_header_b"),
+             self._("text_header_signal"), self._("text_header_pattern")])
+        self.text_table.cellDoubleClicked.connect(self._on_text_row_activated)
+        self.text_filter_edit = QLineEdit()
+        self.text_filter_edit.setPlaceholderText(self._("filter_by_filename"))
+        self.text_filter_edit.textChanged.connect(self._apply_text_filter)
+        self._text_tab_index = self.tabs.addTab(
+            self._make_filterable_tab(self.text_table, self.text_filter_edit),
+            self._("text_tab", n=0))
+
+        self.history_table = self._make_table([
+            self._("history_header_timestamp"), self._("history_header_folder"),
+            self._("history_header_groups"), self._("history_header_docs"),
+            self._("history_header_code_pairs"), self._("history_header_text_pairs"),
+        ])
         self.history_table.cellDoubleClicked.connect(self._on_history_row_activated)
-        self.tabs.addTab(self.history_table, "履歴")
+        self._history_tab_index = self.tabs.addTab(
+            self.history_table, self._("history_tab", n=0))
 
         layout.addWidget(self.tabs, stretch=3)
 
         # --- log ---
-        layout.addWidget(QLabel("ログ"))
+        layout.addWidget(QLabel(self._("log_label")))
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(500)
@@ -260,7 +293,7 @@ class MainWindow(QMainWindow):
         # --- export row ---
         export_row = QHBoxLayout()
         self.summary_label = QLabel("")
-        self.export_btn = QPushButton("HTMLレポートを書き出す")
+        self.export_btn = QPushButton(self._("export_html"))
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self.export_html)
         export_row.addWidget(self.summary_label, stretch=1)
@@ -268,6 +301,21 @@ class MainWindow(QMainWindow):
         layout.addLayout(export_row)
 
         self._refresh_history_table()
+
+    def closeEvent(self, event):
+        # Defensive: if a scan is still running in the background when the
+        # window is closed, make sure the thread fully winds down before
+        # this window (and its thread reference) is torn down. Destroying
+        # a QThread object while it is still marked as running is
+        # undefined behavior in Qt/PySide and can crash the app. We track
+        # this with a plain Python flag rather than re-querying the
+        # QThread object here, since by this point Qt may already have
+        # deleted it via deleteLater (finished -> deleteLater, wired in
+        # start_scan()) if the scan finished normally long ago.
+        if self._scan_running and self._thread is not None:
+            self._thread.quit()
+            self._thread.wait(5000)
+        super().closeEvent(event)
 
     @staticmethod
     def _make_table(headers: list[str]) -> QTableWidget:
@@ -298,13 +346,14 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def choose_folder(self):
-        path = QFileDialog.getExistingDirectory(self, "スキャンするフォルダを選択")
+        path = QFileDialog.getExistingDirectory(
+            self, self._("choose_folder_dialog_title"))
         if path:
             self.path_edit.setText(path)
             self.run_btn.setEnabled(True)
 
     def open_settings(self):
-        dialog = SettingsDialog(self.storage, self)
+        dialog = SettingsDialog(self.storage, self.lang, self)
         if dialog.exec() == QDialog.Accepted:
             dialog.save()
             self._refresh_history_table()
@@ -312,7 +361,8 @@ class MainWindow(QMainWindow):
     def start_scan(self):
         input_dir = Path(self.path_edit.text())
         if not input_dir.is_dir():
-            QMessageBox.warning(self, "エラー", "有効なフォルダを選択してください。")
+            QMessageBox.warning(
+                self, self._("error_title"), self._("error_select_valid_folder"))
             return
 
         self.run_btn.setEnabled(False)
@@ -321,8 +371,9 @@ class MainWindow(QMainWindow):
         self.doc_filter_edit.clear()
         self.doc_flagged_only_cb.setChecked(False)
         self.code_filter_edit.clear()
+        self.text_filter_edit.clear()
         self._clear_result_tables()
-        self.summary_label.setText("スキャン中...")
+        self.summary_label.setText(self._("scanning"))
 
         self._thread = QThread(self)
         self._worker = ScanWorker(input_dir)
@@ -337,23 +388,26 @@ class MainWindow(QMainWindow):
         self._worker.failed.connect(self._thread.quit)
         self._thread.finished.connect(self._thread.deleteLater)
 
+        self._scan_running = True
         self._thread.start()
 
     def _clear_result_tables(self):
         self.doc_table.setRowCount(0)
         self.code_table.setRowCount(0)
-        self.tabs.setTabText(0, "ドキュメント (0)")
-        self.tabs.setTabText(1, "コードペア (0)")
+        self.text_table.setRowCount(0)
+        self.tabs.setTabText(self._doc_tab_index, self._("doc_tab", n=0))
+        self.tabs.setTabText(self._code_tab_index, self._("code_tab", n=0))
+        self.tabs.setTabText(self._text_tab_index, self._("text_tab", n=0))
 
     def _on_finished(self, input_dir: Path, result: ScanResult):
+        self._scan_running = False
         self._last_result = result
         self._populate_result_tables(result)
         flagged_docs = sum(1 for r in result.doc_results if r.get("flagged"))
-        self.summary_label.setText(
-            f"完了: {len(result.groups)}グループ / "
-            f"文書 {len(result.doc_results)}件（うちフラグ {flagged_docs}件） / "
-            f"コードペア {len(result.code_pairs)}件"
-        )
+        self.summary_label.setText(self._(
+            "summary_done", groups=len(result.groups),
+            docs=len(result.doc_results), flagged=flagged_docs,
+            pairs=len(result.code_pairs), tpairs=len(result.text_pairs)))
         self.run_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
 
@@ -362,11 +416,15 @@ class MainWindow(QMainWindow):
         self._refresh_history_table()
 
     def _on_failed(self, message: str):
-        self.summary_label.setText("エラーが発生しました")
-        QMessageBox.critical(self, "スキャンエラー", message)
+        self._scan_running = False
+        self.summary_label.setText(self._("summary_error"))
+        QMessageBox.critical(self, self._("scan_error_title"), message)
         self.run_btn.setEnabled(True)
 
     def _populate_result_tables(self, result: ScanResult):
+        status_flagged = self._("status_flagged")
+        status_clean = self._("status_clean")
+
         self.doc_table.setSortingEnabled(False)
         self.doc_table.setRowCount(len(result.doc_results))
         for row, r in enumerate(result.doc_results):
@@ -374,12 +432,13 @@ class MainWindow(QMainWindow):
             path_item.setData(Qt.UserRole, r)
             self.doc_table.setItem(row, 0, path_item)
             self.doc_table.setItem(row, 1, QTableWidgetItem(r["mask"]))
-            status = "flagged" if r.get("flagged") else "clean"
+            status = status_flagged if r.get("flagged") else status_clean
             self.doc_table.setItem(row, 2, QTableWidgetItem(status))
             if r.get("flagged"):
                 for col in range(3):
                     self.doc_table.item(row, col).setBackground(FLAGGED_BG)
-        self.tabs.setTabText(0, f"ドキュメント ({len(result.doc_results)})")
+        self.tabs.setTabText(
+            self._doc_tab_index, self._("doc_tab", n=len(result.doc_results)))
         self.doc_table.setSortingEnabled(True)
         self._apply_doc_filter()
 
@@ -393,9 +452,27 @@ class MainWindow(QMainWindow):
             self.code_table.setItem(row, 2, QTableWidgetItem(p["mask"]))
             for col in range(3):
                 self.code_table.item(row, col).setBackground(FLAGGED_BG)
-        self.tabs.setTabText(1, f"コードペア ({len(result.code_pairs)})")
+        self.tabs.setTabText(
+            self._code_tab_index, self._("code_tab", n=len(result.code_pairs)))
         self.code_table.setSortingEnabled(True)
         self._apply_code_filter()
+
+        self.text_table.setSortingEnabled(False)
+        self.text_table.setRowCount(len(result.text_pairs))
+        for row, p in enumerate(result.text_pairs):
+            a_item = QTableWidgetItem(p["a"])
+            a_item.setData(Qt.UserRole, p)
+            self.text_table.setItem(row, 0, a_item)
+            self.text_table.setItem(row, 1, QTableWidgetItem(p["b"]))
+            self.text_table.setItem(row, 2, QTableWidgetItem(p["signal"]))
+            self.text_table.setItem(row, 3, QTableWidgetItem(p["pattern_name"]))
+            bg = SIGNAL_BG.get(p["signal"], FLAGGED_BG)
+            for col in range(4):
+                self.text_table.item(row, col).setBackground(bg)
+        self.tabs.setTabText(
+            self._text_tab_index, self._("text_tab", n=len(result.text_pairs)))
+        self.text_table.setSortingEnabled(True)
+        self._apply_text_filter()
 
     def export_html(self):
         if self._last_result is None:
@@ -403,11 +480,14 @@ class MainWindow(QMainWindow):
         default_dir = self.storage.get_setting("export_dir")
         default_path = str(Path(default_dir) / "report.html")
         path, _ = QFileDialog.getSaveFileName(
-            self, "レポートを保存", default_path, "HTML Files (*.html)")
+            self, self._("save_report_dialog_title"), default_path,
+            "HTML Files (*.html)")
         if not path:
             return
         Path(path).write_text(render(self._last_result), encoding="utf-8")
-        QMessageBox.information(self, "保存完了", f"{path} に書き出しました。")
+        QMessageBox.information(
+            self, self._("save_complete_title"),
+            self._("save_complete_message", path=path))
 
     # ------------------------------------------------------------------
     # filtering
@@ -416,6 +496,7 @@ class MainWindow(QMainWindow):
     def _apply_doc_filter(self):
         text = self.doc_filter_edit.text().lower()
         flagged_only = self.doc_flagged_only_cb.isChecked()
+        status_flagged = self._("status_flagged")
         for row in range(self.doc_table.rowCount()):
             path_item = self.doc_table.item(row, 0)
             status_item = self.doc_table.item(row, 2)
@@ -423,7 +504,7 @@ class MainWindow(QMainWindow):
                 continue
             matches_text = text in path_item.text().lower()
             matches_flag = (not flagged_only) or (
-                status_item is not None and status_item.text() == "flagged")
+                status_item is not None and status_item.text() == status_flagged)
             self.doc_table.setRowHidden(row, not (matches_text and matches_flag))
 
     def _apply_code_filter(self):
@@ -435,6 +516,16 @@ class MainWindow(QMainWindow):
                 continue
             combined = (a_item.text() + " " + b_item.text()).lower()
             self.code_table.setRowHidden(row, text not in combined)
+
+    def _apply_text_filter(self):
+        text = self.text_filter_edit.text().lower()
+        for row in range(self.text_table.rowCount()):
+            a_item = self.text_table.item(row, 0)
+            b_item = self.text_table.item(row, 1)
+            if a_item is None or b_item is None:
+                continue
+            combined = (a_item.text() + " " + b_item.text()).lower()
+            self.text_table.setRowHidden(row, text not in combined)
 
     # ------------------------------------------------------------------
     # detail dialogs
@@ -448,8 +539,8 @@ class MainWindow(QMainWindow):
         if not r:
             return
         dialog = DetailDialog(
-            f"ドキュメントの詳細: {Path(r['path']).name}",
-            r.get("h_states", {}), DOC_LABELS,
+            self._("detail_doc_title", name=Path(r["path"]).name),
+            r.get("h_states", {}), DOC_AXIS_LABELS[self.lang], self.lang,
             evidence=r.get("evidence"), parent=self)
         dialog.exec()
 
@@ -461,9 +552,22 @@ class MainWindow(QMainWindow):
         if not p:
             return
         dialog = DetailDialog(
-            f"コードペアの詳細: {p['a']} / {p['b']}",
-            p.get("h_states", {}), CODE_LABELS,
+            self._("detail_code_title", a=p["a"], b=p["b"]),
+            p.get("h_states", {}), CODE_AXIS_LABELS[self.lang], self.lang,
             scores=p.get("scores"), parent=self)
+        dialog.exec()
+
+    def _on_text_row_activated(self, row: int, _column: int):
+        item = self.text_table.item(row, 0)
+        if item is None:
+            return
+        p = item.data(Qt.UserRole)
+        if not p:
+            return
+        dialog = DetailDialog(
+            self._("detail_text_title", a=p["a"], b=p["b"]),
+            p.get("h_states", {}), TEXT_AXIS_LABELS[self.lang], self.lang,
+            scores=p.get("scores"), reason=p.get("reason"), parent=self)
         dialog.exec()
 
     # ------------------------------------------------------------------
@@ -484,9 +588,12 @@ class MainWindow(QMainWindow):
                 QTableWidgetItem(f"{r.doc_count} ({r.flagged_doc_count})"))
             self.history_table.setItem(
                 row, 4, QTableWidgetItem(str(r.pair_count)))
+            self.history_table.setItem(
+                row, 5, QTableWidgetItem(str(r.text_pair_count)))
             # stash the run id on the row for double-click lookup
             self.history_table.item(row, 0).setData(Qt.UserRole, r.id)
-        self.tabs.setTabText(2, f"履歴 ({len(runs)})")
+        self.tabs.setTabText(
+            self._history_tab_index, self._("history_tab", n=len(runs)))
         self.history_table.setSortingEnabled(True)
 
     def _on_history_row_activated(self, row: int, _column: int):
@@ -496,18 +603,18 @@ class MainWindow(QMainWindow):
         run_id = item.data(Qt.UserRole)
         result = self.storage.load_run(run_id)
         if result is None:
-            QMessageBox.warning(self, "エラー", "この履歴は読み込めませんでした。")
+            QMessageBox.warning(
+                self, self._("error_title"), self._("history_load_error"))
             return
         self._last_result = result
         self._populate_result_tables(result)
         flagged_docs = sum(1 for r in result.doc_results if r.get("flagged"))
-        self.summary_label.setText(
-            f"履歴 #{run_id} を表示中: {len(result.groups)}グループ / "
-            f"文書 {len(result.doc_results)}件（うちフラグ {flagged_docs}件） / "
-            f"コードペア {len(result.code_pairs)}件"
-        )
+        self.summary_label.setText(self._(
+            "summary_history", run_id=run_id, groups=len(result.groups),
+            docs=len(result.doc_results), flagged=flagged_docs,
+            pairs=len(result.code_pairs), tpairs=len(result.text_pairs)))
         self.export_btn.setEnabled(True)
-        self.tabs.setCurrentIndex(0)
+        self.tabs.setCurrentIndex(self._doc_tab_index)
 
 
 def main():
@@ -518,4 +625,12 @@ def main():
 
 
 if __name__ == "__main__":
+    # Required on Windows for any frozen (PyInstaller) executable that
+    # uses multiprocessing anywhere in its dependency tree - Sieve-Referee
+    # uses ProcessPoolExecutor internally. Without this, a frozen Windows
+    # .exe can re-launch itself for every spawned worker process instead
+    # of running as a plain worker, leading to a runaway process storm.
+    # It's a no-op on macOS/Linux and in normal (non-frozen) runs, so it's
+    # safe to always call.
+    freeze_support()
     main()

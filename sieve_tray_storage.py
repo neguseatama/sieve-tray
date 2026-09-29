@@ -23,6 +23,7 @@ DEFAULT_DB_PATH = Path.home() / ".sieve_tray" / "history.db"
 DEFAULT_SETTINGS = {
     "export_dir": str(Path.home()),
     "history_retention": "50",
+    "language": "en",
 }
 
 
@@ -35,6 +36,7 @@ class RunSummary:
     doc_count: int
     flagged_doc_count: int
     pair_count: int
+    text_pair_count: int = 0
 
 
 class Storage:
@@ -70,6 +72,17 @@ class Storage:
                 )
                 """
             )
+            # Migration for DBs created before Sieve-Referee support
+            # (Phase 4): add the text_pair_count column if it's missing.
+            # A fresh CREATE TABLE above already lacks it too, so this
+            # single ALTER covers both old and brand-new databases.
+            cols = [row[1] for row in
+                    conn.execute("PRAGMA table_info(runs)").fetchall()]
+            if "text_pair_count" not in cols:
+                conn.execute(
+                    "ALTER TABLE runs ADD COLUMN "
+                    "text_pair_count INTEGER NOT NULL DEFAULT 0"
+                )
 
     # ------------------------------------------------------------------
     # settings
@@ -102,8 +115,8 @@ class Storage:
             cur = conn.execute(
                 "INSERT INTO runs "
                 "(timestamp, input_dir, groups_count, doc_count, "
-                " flagged_doc_count, pair_count, result_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " flagged_doc_count, pair_count, text_pair_count, result_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     str(input_dir),
@@ -111,6 +124,7 @@ class Storage:
                     len(result.doc_results),
                     flagged,
                     len(result.code_pairs),
+                    len(result.text_pairs),
                     json.dumps(result.to_dict()),
                 ),
             )
@@ -122,7 +136,7 @@ class Storage:
         with closing(self._connect()) as conn:
             rows = conn.execute(
                 "SELECT id, timestamp, input_dir, groups_count, doc_count, "
-                "flagged_doc_count, pair_count FROM runs "
+                "flagged_doc_count, pair_count, text_pair_count FROM runs "
                 "ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()

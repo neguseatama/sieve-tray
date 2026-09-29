@@ -1,0 +1,5 @@
+sieve-lens>=0.10.0
+sieve-scope>=1.3.0
+
+[gui]
+PySide6>=6.5

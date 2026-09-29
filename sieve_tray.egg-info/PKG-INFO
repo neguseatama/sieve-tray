@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: sieve-tray
+Version: 0.1.0
+Summary: Educational submission checker built on Sieve-Scope and Sieve-Lens
+Author: Kai IWASAKI
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: sieve-lens>=0.10.0
+Requires-Dist: sieve-scope>=1.3.0
+Provides-Extra: gui
+Requires-Dist: PySide6>=6.5; extra == "gui"
