@@ -20,4 +20,4 @@ sieve-tray = "sieve_tray:main"
 sieve-tray-gui = "sieve_tray_gui:main"
 
 [tool.setuptools]
-py-modules = ["sieve_tray", "sieve_tray_gui", "sieve_tray_storage"]
+py-modules = ["sieve_tray", "sieve_tray_gui", "sieve_tray_storage", "sieve_tray_i18n"]
