@@ -174,6 +174,18 @@ Path("report.html").write_text(render(result))
 
 ---
 
+## 🖼️ Screenshots
+
+| English UI | Japanese UI |
+|---|---|
+| ![Main window (English)](docs/screenshots/main-window-en.png) | ![Main window (Japanese)](docs/screenshots/main-window-ja.png) |
+
+| Code Pairs | Text Similarity |
+|---|---|
+| ![Code pairs tab](docs/screenshots/code-pairs-ja.png) | ![Text similarity tab](docs/screenshots/text-similarity-ja.png) |
+
+---
+
 ## 🔬 Testing
 
 ```bash

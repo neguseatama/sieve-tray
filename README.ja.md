@@ -165,6 +165,18 @@ Path("report.html").write_text(render(result))
 
 ---
 
+## 🖼️ スクリーンショット
+
+| 英語UI | 日本語UI |
+|---|---|
+| ![メインウィンドウ（英語）](docs/screenshots/main-window-en.png) | ![メインウィンドウ（日本語）](docs/screenshots/main-window-ja.png) |
+
+| コードペアタブ | テキスト類似度タブ |
+|---|---|
+| ![コードペアタブ](docs/screenshots/code-pairs-ja.png) | ![テキスト類似度タブ](docs/screenshots/text-similarity-ja.png) |
+
+---
+
 ## 🔬 テスト
 
 ```bash
