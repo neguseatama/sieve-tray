@@ -236,6 +236,12 @@ builds Windows/macOS desktop apps on every version tag.
 
 ---
 
+## 🎨 Application Icon
+
+Design: [AURA_HYSTERICA](http://www.maroon.dti.ne.jp/clover-hp/)
+
+---
+
 ## 📄 License
 
 MIT License. See [LICENSE](LICENSE) for details.
