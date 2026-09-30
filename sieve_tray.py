@@ -38,6 +38,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Tuple
 
+# Single source of truth for the package version. pyproject.toml reads
+# this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
+# the number, since keeping two copies in sync has already caused drift
+# more than once during development.
+__version__ = "0.3.0"
+
 
 CODE_EXTS = {".py"}
 DOC_EXTS = {

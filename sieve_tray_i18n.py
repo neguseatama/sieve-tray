@@ -97,6 +97,13 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "detail_text_title": "Text Pair Detail: {a} / {b}",
         "choose_folder_dialog_title": "Select a folder to scan",
         "save_report_dialog_title": "Save Report",
+        "help_menu": "Help",
+        "about_action": "About Sieve Tray",
+        "about_title": "About Sieve Tray",
+        "about_tagline": "A general-purpose observation tool for the Sieve series.",
+        "about_version": "Version {version}",
+        "about_engines_label": "Powered by:",
+        "about_license": "MIT License \u00a9 2026 Kai IWASAKI",
     },
     "ja": {
         "window_title": "Sieve Tray",
@@ -171,6 +178,13 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "detail_text_title": "テキストペアの詳細: {a} / {b}",
         "choose_folder_dialog_title": "スキャンするフォルダを選択",
         "save_report_dialog_title": "レポートを保存",
+        "help_menu": "ヘルプ",
+        "about_action": "Sieve Trayについて",
+        "about_title": "Sieve Trayについて",
+        "about_tagline": "Sieveシリーズの汎用観測ツール。",
+        "about_version": "バージョン {version}",
+        "about_engines_label": "使用エンジン:",
+        "about_license": "MIT License \u00a9 2026 Kai IWASAKI",
     },
 }
 

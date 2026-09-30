@@ -8,10 +8,13 @@ history retention).
 Phase 3: sortable/filterable result tables + a detail dialog showing
 the per-axis (H1-H7) observation states and evidence/scores behind a
 flag.
-Phase 4 (this revision): a third result category - Text Similarity,
-powered by Sieve-Referee's pairwise paraphrase/plagiarism screening
-for plain-text documents (.txt/.md) - plus a full English/Japanese UI
-switch (English by default) via sieve_tray_i18n.
+Phase 4: a third result category - Text Similarity, powered by
+Sieve-Referee's pairwise paraphrase/plagiarism screening for plain-text
+documents (.txt/.md) - plus a full English/Japanese UI switch (English
+by default) via sieve_tray_i18n.
+Phase 5 (this revision): an app icon (window/taskbar/dock icon, plus
+the .ico/.icns used when packaging with PyInstaller) and a Help > About
+dialog with version info and links to the other Sieve engines.
 """
 
 import sys
@@ -26,14 +29,25 @@ from PySide6.QtWidgets import (
     QDialog, QFormLayout, QSpinBox, QDialogButtonBox, QCheckBox,
     QComboBox,
 )
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QIcon, QAction
 
-from sieve_tray import run_scan, render, ScanResult
+from sieve_tray import run_scan, render, ScanResult, __version__
 from sieve_tray_storage import Storage, RunSummary
 from sieve_tray_i18n import (
     tr, normalize_language, SUPPORTED_LANGUAGES, LANGUAGE_NAMES,
     DOC_AXIS_LABELS, CODE_AXIS_LABELS, TEXT_AXIS_LABELS,
 )
+
+
+def resource_path(relative: str) -> Path:
+    """Resolve a bundled resource (e.g. an icon) both when running from
+    source and when frozen into a PyInstaller executable, where files
+    added via --add-data are extracted under sys._MEIPASS at runtime."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        base = Path(sys._MEIPASS)
+    else:
+        base = Path(__file__).resolve().parent
+    return base / relative
 
 
 FLAGGED_BG = QColor("#fff5f5")
@@ -196,6 +210,61 @@ class DetailDialog(QDialog):
         layout.addWidget(close_btn)
 
 
+class AboutDialog(QDialog):
+    """Version, engine credits, and license - opened from Help > About."""
+
+    ENGINE_LINKS = [
+        ("Sieve Lens", "https://github.com/neguseatama/sieve-lens"),
+        ("Sieve Scope", "https://github.com/neguseatama/sieve-scope"),
+        ("Sieve Referee", "https://github.com/neguseatama/sieve-referee"),
+    ]
+
+    def __init__(self, lang: str, parent=None):
+        super().__init__(parent)
+        self._ = lambda key, **kw: tr(lang, key, **kw)
+        self.setWindowTitle(self._("about_title"))
+        self.setFixedWidth(360)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        icon_label = QLabel()
+        icon_path = resource_path("assets/icon.png")
+        if icon_path.exists():
+            icon_label.setPixmap(QIcon(str(icon_path)).pixmap(64, 64))
+        icon_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(icon_label)
+
+        title_label = QLabel(f"<b>Sieve Tray</b>")
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+
+        version_label = QLabel(self._("about_version", version=__version__))
+        version_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(version_label)
+
+        tagline_label = QLabel(self._("about_tagline"))
+        tagline_label.setAlignment(Qt.AlignCenter)
+        tagline_label.setWordWrap(True)
+        layout.addWidget(tagline_label)
+
+        layout.addWidget(QLabel(self._("about_engines_label")))
+        links_html = "<br>".join(
+            f'<a href="{url}">{name}</a>' for name, url in self.ENGINE_LINKS)
+        links_label = QLabel(links_html)
+        links_label.setOpenExternalLinks(True)
+        layout.addWidget(links_label)
+
+        license_label = QLabel(self._("about_license"))
+        license_label.setAlignment(Qt.AlignCenter)
+        license_label.setStyleSheet("color: #666; font-size: 11px;")
+        layout.addWidget(license_label)
+
+        close_btn = QPushButton(self._("close_button"))
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, storage: Storage | None = None):
         super().__init__()
@@ -205,6 +274,16 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(self._("window_title"))
         self.resize(1050, 720)
+
+        icon_path = resource_path("assets/icon.png")
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+
+        help_menu = self.menuBar().addMenu(self._("help_menu"))
+        about_action = QAction(self._("about_action"), self)
+        about_action.setMenuRole(QAction.AboutRole)
+        about_action.triggered.connect(self.open_about)
+        help_menu.addAction(about_action)
 
         self._thread: QThread | None = None
         self._worker: ScanWorker | None = None
@@ -357,6 +436,9 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             dialog.save()
             self._refresh_history_table()
+
+    def open_about(self):
+        AboutDialog(self.lang, self).exec()
 
     def start_scan(self):
         input_dir = Path(self.path_edit.text())
@@ -619,6 +701,9 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    icon_path = resource_path("assets/icon.png")
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
