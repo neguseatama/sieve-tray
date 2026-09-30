@@ -1,6 +1,6 @@
 [English](README.md) | **日本語**
 
-# Sieve Tray v0.3.0
+# Sieve Tray v0.3.4
 
 **汎用観測ツール — Sieveシリーズのデスクトップフロントエンド**
 
@@ -220,6 +220,12 @@ CIはpushのたびにこのテストスイートを実行し（Ubuntu上でPytho
   エンジン
 - [Sieve Referee](https://github.com/neguseatama/sieve-referee) — テキスト
   パラフレーズ・盗用検知エンジン
+
+---
+
+## 🎨 アプリケーションアイコン
+
+デザイン：[AURA_HYSTERICA](http://www.maroon.dti.ne.jp/clover-hp/)
 
 ---
 
