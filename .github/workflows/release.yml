@@ -48,7 +48,7 @@ jobs:
         if: runner.os == 'macOS'
         run: >
           pyinstaller --noconfirm --windowed
-          --name SieveTray --collect-all PySide6
+          --name SieveTray --icon=assets/icon.icns --collect-all PySide6
           sieve_tray_gui.py
 
       - name: Package artifact (Windows)
