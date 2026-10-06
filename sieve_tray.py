@@ -120,7 +120,26 @@ def observe_documents(doc_paths: List[Path],
         progress("Note: sieve-lens not installed; skipping document analysis.")
         return []
 
+    # v0.11.0 integration fix: install every available Lens extension so
+    # PDF/image observation actually works through Tray (same order
+    # contract as the dashboard's _build_engine: image_layers chains onto
+    # ocr, html_css_selectors supersedes html_css, pdf_images supersedes pdf).
+    import importlib
     engine = SieveLensEngine()
+    for spec in (
+        "sieve_lens_ext.pdf:install",
+        "sieve_lens_ext.ocr:install",
+        "sieve_lens_ext.image_layers:install",
+        "sieve_lens_ext.html_css:install",
+        "sieve_lens_ext.html_css_selectors:install",
+        "sieve_lens_ext.pdf_images:install",
+    ):
+        mod_name, _, fn_name = spec.partition(":")
+        try:
+            getattr(importlib.import_module(mod_name), fn_name)(engine)
+        except Exception:
+            continue
+
     results = []
     for f in doc_paths:
         try:
