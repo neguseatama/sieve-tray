@@ -42,7 +42,7 @@ from typing import Callable, Dict, List, Tuple
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "0.3.5"
+__version__ = "0.4.0"
 
 
 CODE_EXTS = {".py"}
