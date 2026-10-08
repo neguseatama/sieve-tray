@@ -97,3 +97,72 @@ def test_sanitize_zero_redactions(tmp_path):
     assert result["masked_count"] == 0
     assert result["integrity_verified"] is True
     assert out.read_text(encoding="utf-8") == "nothing to mask here\n"
+
+
+def test_sanitize_tree_preserves_structure_and_receipts(tmp_path):
+    fn = getattr(st, "sanitize_tree", None)
+    assert fn is not None, "sieve_tray.sanitize_tree is not implemented"
+    src = tmp_path / "submissions"
+    (src / "a").mkdir(parents=True)
+    (src / "a" / "b").mkdir(parents=True)
+    (src / "a" / "b.txt").write_text("call 090-1234-5678 now\n", encoding="utf-8")
+    (src / "a" / "b" / "c.md").write_text("see 03-1234-5678 ok\n", encoding="utf-8")
+    cfg = tmp_path / "rules.txt"
+    cfg.write_text("builtin phone-jp:delete\n", encoding="utf-8")
+    out_root = tmp_path / "out"
+    summary = fn(src, cfg, out_root)
+    assert summary["skipped"] is False
+    assert summary["n_files"] == 2
+    assert summary["ok_count"] == 2
+    b = out_root / "a" / "b.txt"
+    c = out_root / "a" / "b" / "c.md"
+    assert b.exists() and b.read_text(encoding="utf-8") == "call  now\n"
+    assert c.exists() and c.read_text(encoding="utf-8") == "see  ok\n"
+    assert (out_root / "a" / "b.txt.receipt.json").exists()
+    assert (out_root / "a" / "b" / "c.md.receipt.json").exists()
+    assert summary["masked_total"] == 2
+    assert summary["integrity_bad_count"] == 0
+
+
+def test_sanitize_tree_zero_files(tmp_path):
+    fn = getattr(st, "sanitize_tree", None)
+    assert fn is not None, "sieve_tray.sanitize_tree is not implemented"
+    src = tmp_path / "submissions"
+    src.mkdir()
+    (src / "note.bin").write_bytes(b"\x00\x01")
+    cfg = tmp_path / "rules.txt"
+    cfg.write_text("builtin phone-jp:delete\n", encoding="utf-8")
+    summary = fn(src, cfg, tmp_path / "out")
+    assert summary["n_files"] == 0
+    assert summary["ok_count"] == 0
+    assert summary["masked_total"] == 0
+    assert summary["skipped"] is False
+
+
+def test_sanitize_tree_skips_gracefully(tmp_path, monkeypatch):
+    fn = getattr(st, "sanitize_tree", None)
+    assert fn is not None, "sieve_tray.sanitize_tree is not implemented"
+    monkeypatch.setitem(sys.modules, "sieve_redact", None)
+    src = tmp_path / "submissions"
+    src.mkdir()
+    (src / "a.txt").write_text("hello\n", encoding="utf-8")
+    cfg = tmp_path / "rules.txt"
+    cfg.write_text("builtin phone-jp:delete\n", encoding="utf-8")
+    summary = fn(src, cfg, tmp_path / "out")
+    assert summary["skipped"] is True
+    assert summary["ok_count"] == 0
+
+
+def test_sanitize_tree_reports_failures(tmp_path):
+    fn = getattr(st, "sanitize_tree", None)
+    assert fn is not None, "sieve_tray.sanitize_tree is not implemented"
+    src = tmp_path / "submissions"
+    src.mkdir()
+    (src / "a.txt").write_text("hello\n", encoding="utf-8")
+    cfg = tmp_path / "broken.txt"
+    cfg.write_text("bogus line\n", encoding="utf-8")
+    summary = fn(src, cfg, tmp_path / "out")
+    assert summary["n_files"] == 1
+    assert summary["ok_count"] == 0
+    assert len(summary["failed"]) == 1
+    assert str(summary["failed"][0][0]) == "a.txt"

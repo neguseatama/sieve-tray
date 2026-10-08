@@ -301,6 +301,43 @@ def sanitize_file(input_path, config_path, output_path,
         own_tmp.cleanup()
     return result
 
+def sanitize_tree(input_dir, config_path, out_root,
+                 progress=None) -> dict:
+    """Mask every .txt/.md file under input_dir via the vendored Redact
+    engine, preserving the relative folder structure and writing a
+    receipt next to each output. Returns a summary dict the GUI can
+    surface: n_files / ok_count / masked_total / integrity_bad_count /
+    failed [(rel, result)] / skipped. Module absence is a tree-level
+    condition (skipped=True) rather than a per-file failure.
+    """
+    try:
+        import sieve_redact  # noqa: F401
+    except ImportError:
+        return {"n_files": 0, "ok_count": 0, "masked_total": 0,
+                "integrity_bad_count": 0, "failed": [], "skipped": True}
+
+    files = [f for f in sorted(Path(input_dir).rglob("*"))
+             if f.is_file() and f.suffix.lower() in TEXT_EXTS]
+    summary = {"n_files": len(files), "ok_count": 0, "masked_total": 0,
+               "integrity_bad_count": 0, "failed": [], "skipped": False}
+    for f in files:
+        rel = f.relative_to(input_dir)
+        out_path = Path(out_root) / rel
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        rec_path = out_path.with_name(out_path.name + ".receipt.json")
+        if progress is not None:
+            progress(str(rel))
+        result = sanitize_file(f, Path(config_path), out_path,
+                               receipt_path=rec_path)
+        if result["ok"]:
+            summary["ok_count"] += 1
+            summary["masked_total"] += result["masked_count"]
+            if not result["integrity_verified"]:
+                summary["integrity_bad_count"] += 1
+        else:
+            summary["failed"].append((rel, result))
+    return summary
+
 def run_scan(input_dir: Path, progress: ProgressCallback = _silent) -> ScanResult:
     """Core entry point. Scans input_dir and returns a ScanResult.
 
