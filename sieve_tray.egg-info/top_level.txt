@@ -1,3 +1,0 @@
-sieve_tray
-sieve_tray_gui
-sieve_tray_storage

@@ -1,3 +1,0 @@
-[console_scripts]
-sieve-tray = sieve_tray:main
-sieve-tray-gui = sieve_tray_gui:main
