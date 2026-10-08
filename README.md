@@ -197,7 +197,7 @@ pip install -e . pytest
 pytest -v
 ```
 
-30 tests cover the core scan/render pipeline (including regression tests for
+35 tests cover the core scan/render pipeline (including regression tests for
 a CSS rendering bug and for Sieve Referee's paraphrase detection), the
 history/settings storage layer (save / load / delete / retention pruning,
 including migration from pre-Referee databases), and the i18n string tables
@@ -228,9 +228,9 @@ builds Windows/macOS desktop apps on every version tag.
    Sieve Lens, Sieve Scope, and Sieve Referee). A flag means "a human should
    look at this", not "this is confirmed misconduct".
 6. **Sanitize covers plain text only** — the Sanitize action processes
-   `.txt`/`.md` files and runs synchronously in the UI, so the window may
-   pause for a few seconds on large folders. PDF/image masking is not
-   supported by the bundled engine yet.
+   `.txt`/`.md` files in a background thread and writes a machine-readable
+   receipt next to every output. PDF/image masking is not supported by
+   the bundled engine yet.
 
 ---
 
