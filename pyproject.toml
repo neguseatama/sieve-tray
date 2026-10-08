@@ -20,7 +20,7 @@ sieve-tray = "sieve_tray:main"
 sieve-tray-gui = "sieve_tray_gui:main"
 
 [tool.setuptools]
-py-modules = ["sieve_tray", "sieve_tray_gui", "sieve_tray_storage", "sieve_tray_i18n"]
+py-modules = ["sieve_tray", "sieve_tray_gui", "sieve_tray_storage", "sieve_tray_i18n", "sieve_redact"]
 
 [tool.setuptools.dynamic]
 version = { attr = "sieve_tray.__version__" }
