@@ -71,6 +71,10 @@ what the underlying engines actually observed.
   language are all adjustable from a Settings dialog.
 - **Self-contained HTML export** — every result can be exported as a
   standalone HTML report, for sharing or archiving.
+- **Sanitize text files** — run the bundled Sieve Redact engine over the
+  selected folder's `.txt`/`.md` files with a rules file of your choice;
+  every output gets a machine-readable receipt, and the summary always
+  reports the masked item count and the byte-integrity verification.
 - **Runs entirely on your machine** — scanning happens 100% locally. Submission
   contents never leave your device: no cloud upload, no API calls involved.
 - **Zero-dependency core** — the scanning engine (`sieve_tray.py`) itself
@@ -193,11 +197,12 @@ pip install -e . pytest
 pytest -v
 ```
 
-23 tests cover the core scan/render pipeline (including regression tests for
+30 tests cover the core scan/render pipeline (including regression tests for
 a CSS rendering bug and for Sieve Referee's paraphrase detection), the
 history/settings storage layer (save / load / delete / retention pruning,
 including migration from pre-Referee databases), and the i18n string tables
-(English/Japanese key parity).
+(English/Japanese key parity), plus the vendored Sieve Redact
+integration (byte-pin sync and exit-code mapping).
 
 CI runs this suite on every push (Python 3.10 and 3.12, on Ubuntu), and
 builds Windows/macOS desktop apps on every version tag.
@@ -222,6 +227,10 @@ builds Windows/macOS desktop apps on every version tag.
 5. **This is an observation tool, not a judgment tool** (inherited from
    Sieve Lens, Sieve Scope, and Sieve Referee). A flag means "a human should
    look at this", not "this is confirmed misconduct".
+6. **Sanitize covers plain text only** — the Sanitize action processes
+   `.txt`/`.md` files and runs synchronously in the UI, so the window may
+   pause for a few seconds on large folders. PDF/image masking is not
+   supported by the bundled engine yet.
 
 ---
 
