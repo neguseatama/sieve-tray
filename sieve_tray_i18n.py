@@ -103,6 +103,18 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "about_tagline": "A general-purpose observation tool for the Sieve series.",
         "about_version": "Version {version}",
         "about_engines_label": "Powered by:",
+        "sanitize_button": "Sanitize...",
+        "sanitize_config_title": "Select Redact rules file",
+        "sanitize_running": "Sanitizing...",
+        "sanitize_done_title": "Sanitize complete",
+        "sanitize_done_label": (
+            "Sanitized {ok} of {n} files.\n"
+            "Masked items: {masked}\n"
+            "Byte integrity: {integrity}"),
+        "sanitize_integrity_ok": "verified",
+        "sanitize_integrity_fail": "FAILED ({k} files)",
+        "sanitize_failed_files": "\nFailed files:\n{files}",
+        "sanitize_no_files": "No .txt/.md files to sanitize.",
         "about_license": "MIT License \u00a9 2026 Kai IWASAKI",
     },
     "ja": {
@@ -184,6 +196,18 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "about_tagline": "Sieveシリーズの汎用観測ツール。",
         "about_version": "バージョン {version}",
         "about_engines_label": "使用エンジン:",
+        "sanitize_button": "サニタイズ...",
+        "sanitize_config_title": "Redactルールファイルを選択",
+        "sanitize_running": "サニタイズ中...",
+        "sanitize_done_title": "サニタイズ完了",
+        "sanitize_done_label": (
+            "{n}件中{ok}件を処理しました。\n"
+            "マスク件数: {masked}\n"
+            "バイト完全性: {integrity}"),
+        "sanitize_integrity_ok": "検証済み",
+        "sanitize_integrity_fail": "失敗（{k}件）",
+        "sanitize_failed_files": "\n失敗したファイル:\n{files}",
+        "sanitize_no_files": "サニタイズ対象の .txt/.md ファイルがありません。",
         "about_license": "MIT License \u00a9 2026 Kai IWASAKI",
     },
 }

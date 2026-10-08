@@ -31,7 +31,14 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QColor, QIcon, QAction
 
-from sieve_tray import run_scan, render, ScanResult, __version__
+from sieve_tray import (
+    run_scan,
+    render,
+    ScanResult,
+    sanitize_file,
+    TEXT_EXTS,
+    __version__,
+)
 from sieve_tray_storage import Storage, RunSummary
 from sieve_tray_i18n import (
     tr, normalize_language, SUPPORTED_LANGUAGES, LANGUAGE_NAMES,
@@ -306,9 +313,13 @@ class MainWindow(QMainWindow):
         self.run_btn.clicked.connect(self.start_scan)
         settings_btn = QPushButton(self._("settings_button"))
         settings_btn.clicked.connect(self.open_settings)
+        self.sanitize_btn = QPushButton(self._("sanitize_button"))
+        self.sanitize_btn.setEnabled(False)
+        self.sanitize_btn.clicked.connect(self.sanitize_folder)
         picker_row.addWidget(self.path_edit, stretch=1)
         picker_row.addWidget(browse_btn)
         picker_row.addWidget(self.run_btn)
+        picker_row.addWidget(self.sanitize_btn)
         picker_row.addWidget(settings_btn)
         layout.addLayout(picker_row)
 
@@ -424,12 +435,70 @@ class MainWindow(QMainWindow):
     # actions
     # ------------------------------------------------------------------
 
+    def sanitize_folder(self):
+        input_dir = Path(self.path_edit.text())
+        if not input_dir.is_dir():
+            QMessageBox.warning(
+                self, self._("error_title"), self._("error_select_valid_folder"))
+            return
+        config_path, _ = QFileDialog.getOpenFileName(
+            self, self._("sanitize_config_title"), "",
+            "Text Files (*.txt);;All Files (*)")
+        if not config_path:
+            return
+        export_dir = Path(self.storage.get_setting("export_dir"))
+        out_root = export_dir / (input_dir.name + "_sanitized")
+        files = [f for f in sorted(input_dir.rglob("*"))
+                 if f.is_file() and f.suffix.lower() in TEXT_EXTS]
+        if not files:
+            QMessageBox.information(
+                self, self._("sanitize_done_title"), self._("sanitize_no_files"))
+            return
+
+        self.run_btn.setEnabled(False)
+        self.sanitize_btn.setEnabled(False)
+        self.export_btn.setEnabled(False)
+        self.summary_label.setText(self._("sanitize_running"))
+
+        results = []
+        for f in files:
+            rel = f.relative_to(input_dir)
+            out_path = out_root / rel
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            rec_path = out_path.with_name(out_path.name + ".receipt.json")
+            results.append(
+                (rel, sanitize_file(f, Path(config_path), out_path,
+                                    receipt_path=rec_path)))
+
+        ok_results = [r for _, r in results if r["ok"]]
+        failed = [(rel, r) for rel, r in results if not r["ok"]]
+        masked = sum(r["masked_count"] for r in ok_results)
+        integrity_bad = sum(1 for _, r in ok_results
+                            if not r["integrity_verified"])
+        if integrity_bad:
+            integrity = self._("sanitize_integrity_fail", k=integrity_bad)
+        else:
+            integrity = self._("sanitize_integrity_ok")
+        message = self._("sanitize_done_label", n=len(files),
+                         ok=len(ok_results), masked=masked,
+                         integrity=integrity)
+        if failed:
+            listing = "\n".join(str(rel) for rel, _ in failed)
+            message += self._("sanitize_failed_files", files=listing)
+
+        self.summary_label.setText(message)
+        self.run_btn.setEnabled(True)
+        self.sanitize_btn.setEnabled(True)
+        self.export_btn.setEnabled(True)
+        QMessageBox.information(self, self._("sanitize_done_title"), message)
+
     def choose_folder(self):
         path = QFileDialog.getExistingDirectory(
             self, self._("choose_folder_dialog_title"))
         if path:
             self.path_edit.setText(path)
             self.run_btn.setEnabled(True)
+            self.sanitize_btn.setEnabled(True)
 
     def open_settings(self):
         dialog = SettingsDialog(self.storage, self.lang, self)
