@@ -166,3 +166,24 @@ def test_sanitize_tree_reports_failures(tmp_path):
     assert summary["ok_count"] == 0
     assert len(summary["failed"]) == 1
     assert str(summary["failed"][0][0]) == "a.txt"
+
+
+def test_sanitize_failure_handler_is_thin():
+    from pathlib import Path
+    text = (Path(__file__).resolve().parent.parent
+            / "sieve_tray_gui.py").read_text(encoding="utf-8")
+    lines = text.split("\n")
+    i = [k for k, ln in enumerate(lines)
+         if ln == "    def _on_sanitize_failed(self, message: str):"]
+    assert len(i) == 1, "failure handler missing or duplicated"
+    rest = lines[i[0] + 1:]
+    j = 0
+    while j < len(rest) and not rest[j].startswith("    def "):
+        j += 1
+    body = "\n".join(rest[:j])
+    assert "QFileDialog" not in body, \
+        "failure handler re-runs sanitize (old synchronous body absorbed)"
+    assert "sanitize_file(" not in body, \
+        "failure handler re-runs sanitize (old synchronous body absorbed)"
+    assert text.count("    sanitize_tree,\n") == 1, "duplicate sanitize_tree import"
+    assert text.count("    sanitize_file,\n") == 1, "duplicate sanitize_file import"

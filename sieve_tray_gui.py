@@ -34,8 +34,9 @@ from PySide6.QtGui import QColor, QIcon, QAction
 from sieve_tray import (
     run_scan,
     render,
-    ScanResult,
     sanitize_file,
+    sanitize_tree,
+    ScanResult,
     TEXT_EXTS,
     __version__,
 )
@@ -82,6 +83,28 @@ class ScanWorker(QObject):
         except Exception as e:
             self.failed.emit(f"{type(e).__name__}: {e}")
 
+
+class SanitizeWorker(QObject):
+    """Runs sanitize_tree() on a background thread (same pattern as
+    ScanWorker) so the UI stays responsive on large folders."""
+
+    progress = Signal(str)
+    finished = Signal(object)   # sanitize_tree summary dict
+    failed = Signal(str)
+
+    def __init__(self, input_dir: Path, config_path: Path, out_root: Path):
+        super().__init__()
+        self.input_dir = input_dir
+        self.config_path = config_path
+        self.out_root = out_root
+
+    def run(self):
+        try:
+            summary = sanitize_tree(self.input_dir, self.config_path,
+                                    self.out_root, progress=self.progress.emit)
+            self.finished.emit(summary)
+        except Exception as e:
+            self.failed.emit(f"{type(e).__name__}: {e}")
 
 class SettingsDialog(QDialog):
     """Default export folder, history retention, and UI language."""
@@ -405,6 +428,9 @@ class MainWindow(QMainWindow):
         if self._scan_running and self._thread is not None:
             self._thread.quit()
             self._thread.wait(5000)
+        if getattr(self, "_sanitize_thread", None) is not None:
+            self._sanitize_thread.quit()
+            self._sanitize_thread.wait(5000)
         super().closeEvent(event)
 
     @staticmethod
@@ -448,49 +474,54 @@ class MainWindow(QMainWindow):
             return
         export_dir = Path(self.storage.get_setting("export_dir"))
         out_root = export_dir / (input_dir.name + "_sanitized")
-        files = [f for f in sorted(input_dir.rglob("*"))
-                 if f.is_file() and f.suffix.lower() in TEXT_EXTS]
-        if not files:
-            QMessageBox.information(
-                self, self._("sanitize_done_title"), self._("sanitize_no_files"))
-            return
 
         self.run_btn.setEnabled(False)
         self.sanitize_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
         self.summary_label.setText(self._("sanitize_running"))
+        self._sanitize_thread = QThread(self)
+        self._sanitize_worker = SanitizeWorker(
+            input_dir, Path(config_path), out_root)
+        self._sanitize_worker.moveToThread(self._sanitize_thread)
+        self._sanitize_thread.started.connect(self._sanitize_worker.run)
+        self._sanitize_worker.progress.connect(self.log_view.appendPlainText)
+        self._sanitize_worker.finished.connect(
+            lambda summary: self._on_sanitize_finished(summary))
+        self._sanitize_worker.failed.connect(self._on_sanitize_failed)
+        self._sanitize_worker.finished.connect(self._sanitize_thread.quit)
+        self._sanitize_worker.failed.connect(self._sanitize_thread.quit)
+        self._sanitize_thread.finished.connect(self._sanitize_thread.deleteLater)
+        self._sanitize_thread.start()
 
-        results = []
-        for f in files:
-            rel = f.relative_to(input_dir)
-            out_path = out_root / rel
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            rec_path = out_path.with_name(out_path.name + ".receipt.json")
-            results.append(
-                (rel, sanitize_file(f, Path(config_path), out_path,
-                                    receipt_path=rec_path)))
-
-        ok_results = [r for _, r in results if r["ok"]]
-        failed = [(rel, r) for rel, r in results if not r["ok"]]
-        masked = sum(r["masked_count"] for r in ok_results)
-        integrity_bad = sum(1 for _, r in ok_results
-                            if not r["integrity_verified"])
-        if integrity_bad:
-            integrity = self._("sanitize_integrity_fail", k=integrity_bad)
+    def _on_sanitize_finished(self, summary):
+        if summary["skipped"]:
+            self.summary_label.setText(self._("sanitize_skipped"))
+            message = self._("sanitize_skipped")
         else:
-            integrity = self._("sanitize_integrity_ok")
-        message = self._("sanitize_done_label", n=len(files),
-                         ok=len(ok_results), masked=masked,
-                         integrity=integrity)
-        if failed:
-            listing = "\n".join(str(rel) for rel, _ in failed)
-            message += self._("sanitize_failed_files", files=listing)
-
-        self.summary_label.setText(message)
+            masked = summary["masked_total"]
+            integrity_bad = summary["integrity_bad_count"]
+            if integrity_bad:
+                integrity = self._("sanitize_integrity_fail", k=integrity_bad)
+            else:
+                integrity = self._("sanitize_integrity_ok")
+            message = self._("sanitize_done_label", n=summary["n_files"],
+                             ok=summary["ok_count"], masked=masked,
+                             integrity=integrity)
+            if summary["failed"]:
+                listing = "\n".join(str(rel) for rel, _ in summary["failed"])
+                message += self._("sanitize_failed_files", files=listing)
+            self.summary_label.setText(message)
         self.run_btn.setEnabled(True)
         self.sanitize_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
         QMessageBox.information(self, self._("sanitize_done_title"), message)
+
+    def _on_sanitize_failed(self, message: str):
+        self.summary_label.setText(message)
+        self.run_btn.setEnabled(True)
+        self.sanitize_btn.setEnabled(True)
+        self.export_btn.setEnabled(True)
+        QMessageBox.critical(self, self._("error_title"), message)
 
     def choose_folder(self):
         path = QFileDialog.getExistingDirectory(
