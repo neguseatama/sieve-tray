@@ -234,6 +234,73 @@ def compare_text(text_map: Dict[str, str],
     return pairs
 
 
+def sanitize_file(input_path, config_path, output_path,
+                  receipt_path=None) -> dict:
+    """Mask a text file through the vendored Redact engine (in-process).
+
+    Runs sieve_redact.main() and maps its exit-code contract
+    (0 ok / 1 other / 2 usage / 3 strict) without letting SystemExit
+    escape. Returns a summary dict the GUI can surface directly:
+    masked_count / integrity_verified / residue come from the receipt,
+    which never contains the sensitive body itself. When no receipt
+    path is given, one is generated in a temp directory and parsed
+    before being discarded, so callers always get the numbers.
+    """
+    import contextlib
+    import io
+    import json as _json
+    import tempfile
+
+    try:
+        import sieve_redact
+    except ImportError:
+        return {"ok": False, "rc": None, "skipped": True,
+                "masked_count": 0, "integrity_verified": False,
+                "residue": None, "stdout": "",
+                "stderr": "sieve-redact is not available; skipping sanitize."}
+
+    own_tmp = None
+    if receipt_path is None:
+        own_tmp = tempfile.TemporaryDirectory()
+        receipt_path = Path(own_tmp.name) / "receipt.json"
+
+    argv = [str(input_path), "-o", str(output_path),
+            "--config", str(config_path), "--receipt", str(receipt_path)]
+
+    out_buf, err_buf = io.StringIO(), io.StringIO()
+    rc = None
+    try:
+        with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+            rc = sieve_redact.main(argv)
+    except SystemExit as exc:
+        code = exc.code
+        if code is None:
+            rc = 0
+        elif isinstance(code, int):
+            rc = code
+        else:
+            rc = 1
+    if rc is None:
+        rc = 0
+
+    result = {"ok": rc == 0, "rc": rc, "skipped": False,
+              "masked_count": 0, "integrity_verified": False,
+              "residue": None,
+              "stdout": out_buf.getvalue(), "stderr": err_buf.getvalue()}
+
+    if rc == 0:
+        try:
+            data = _json.loads(Path(receipt_path).read_text(encoding="utf-8"))
+            result["masked_count"] = data.get("total_redactions", 0)
+            result["integrity_verified"] = bool(
+                data.get("byte_integrity_verified", False))
+            result["residue"] = data.get("pattern_appearance_in_output")
+        except (OSError, ValueError):
+            result["integrity_verified"] = False
+    if own_tmp is not None:
+        own_tmp.cleanup()
+    return result
+
 def run_scan(input_dir: Path, progress: ProgressCallback = _silent) -> ScanResult:
     """Core entry point. Scans input_dir and returns a ScanResult.
 

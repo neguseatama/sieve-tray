@@ -1,0 +1,99 @@
+"""Sanitize integration: the vendored Redact engine driven by the tray core.
+
+The wrapper in sieve_tray.py runs the vendored sieve_redact in-process,
+maps its exit-code contract (0 ok / 1 other / 2 usage / 3 strict) without
+letting SystemExit escape, and exposes the receipt numbers the GUI must
+surface: masked count, byte integrity, and the residue measurement.
+"""
+
+import json
+import sys
+
+import pytest
+
+import sieve_tray as st
+
+NOT_IMPL = "sieve_tray.sanitize_file is not implemented"
+
+
+def _fn():
+    return getattr(st, "sanitize_file", None)
+
+
+def test_wrapper_exists():
+    assert _fn() is not None, NOT_IMPL
+
+
+def test_sanitize_reports_receipt_numbers(tmp_path):
+    fn = _fn()
+    assert fn is not None, NOT_IMPL
+    inp = tmp_path / "in.txt"
+    inp.write_text("call 090-1234-5678 now\n", encoding="utf-8")
+    cfg = tmp_path / "rules.txt"
+    cfg.write_text("builtin phone-jp:delete\n", encoding="utf-8")
+    out = tmp_path / "out.txt"
+    rec = tmp_path / "receipt.json"
+    result = fn(inp, cfg, out, receipt_path=rec)
+    assert result["ok"] is True
+    assert result["rc"] == 0
+    assert out.read_text(encoding="utf-8") == "call  now\n"
+    data = json.loads(rec.read_text(encoding="utf-8"))
+    assert data["total_redactions"] == 1
+    assert result["masked_count"] == 1
+    assert result["integrity_verified"] is True
+    assert result["residue"] == "none"
+
+
+def test_sanitize_usage_error_maps_to_rc2(tmp_path):
+    fn = _fn()
+    assert fn is not None, NOT_IMPL
+    inp = tmp_path / "in.txt"
+    inp.write_text("hello\n", encoding="utf-8")
+    cfg = tmp_path / "rules.txt"
+    cfg.write_text("bogus line\n", encoding="utf-8")
+    result = fn(inp, cfg, tmp_path / "out.txt")
+    assert result["ok"] is False
+    assert result["rc"] == 2
+
+
+def test_sanitize_missing_input_maps_to_rc1(tmp_path):
+    # main() raises SystemExit on runtime failures; the wrapper maps the
+    # code (documented contract: 1 = other failures) instead of leaking it.
+    fn = _fn()
+    assert fn is not None, NOT_IMPL
+    cfg = tmp_path / "rules.txt"
+    cfg.write_text("builtin phone-jp:delete\n", encoding="utf-8")
+    result = fn(tmp_path / "missing.txt", cfg, tmp_path / "out.txt")
+    assert result["ok"] is False
+    assert result["rc"] == 1
+
+
+def test_sanitize_skips_gracefully_without_module(tmp_path, monkeypatch):
+    # Synthetic module absence: a None entry in sys.modules makes
+    # "import sieve_redact" raise ImportError even though the file exists.
+    fn = _fn()
+    assert fn is not None, NOT_IMPL
+    monkeypatch.setitem(sys.modules, "sieve_redact", None)
+    inp = tmp_path / "in.txt"
+    inp.write_text("hello\n", encoding="utf-8")
+    cfg = tmp_path / "rules.txt"
+    cfg.write_text("builtin phone-jp:delete\n", encoding="utf-8")
+    result = fn(inp, cfg, tmp_path / "out.txt")
+    assert result["ok"] is False
+    assert result["skipped"] is True
+
+
+def test_sanitize_zero_redactions(tmp_path):
+    fn = _fn()
+    assert fn is not None, NOT_IMPL
+    inp = tmp_path / "in.txt"
+    inp.write_text("nothing to mask here\n", encoding="utf-8")
+    cfg = tmp_path / "rules.txt"
+    cfg.write_text("builtin phone-jp:delete\n", encoding="utf-8")
+    out = tmp_path / "out.txt"
+    result = fn(inp, cfg, out)
+    assert result["ok"] is True
+    assert result["rc"] == 0
+    assert result["masked_count"] == 0
+    assert result["integrity_verified"] is True
+    assert out.read_text(encoding="utf-8") == "nothing to mask here\n"
