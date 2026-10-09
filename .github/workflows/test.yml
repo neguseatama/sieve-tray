@@ -29,7 +29,7 @@ jobs:
 
       - name: Verify vendored sieve_redact matches the published release
         run: |
-          curl -fsSL https://raw.githubusercontent.com/neguseatama/sieve-redact/v0.5.0/sieve_redact.py -o /tmp/upstream_redact.py
+          curl -fsSL https://raw.githubusercontent.com/neguseatama/sieve-redact/v0.6.0/sieve_redact.py -o /tmp/upstream_redact.py
           PIN=$(python3 -c "import re, pathlib; print(re.search(r'PINNED_SHA256 = \"([0-9a-f]+)\"', pathlib.Path('tests/test_redact_vendor_sync.py').read_text()).group(1))")
           echo "pinned sha256: $PIN"
           echo "$PIN  /tmp/upstream_redact.py" | sha256sum -c -
