@@ -66,6 +66,18 @@ class Storage:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS sanitizations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    input_dir TEXT NOT NULL,
+                    config_path TEXT NOT NULL,
+                    out_root TEXT NOT NULL,
+                    n_files INTEGER NOT NULL,
+                    ok_count INTEGER NOT NULL,
+                    masked_total INTEGER NOT NULL,
+                    integrity_bad_count INTEGER NOT NULL,
+                    skipped INTEGER NOT NULL
+                ),
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -155,6 +167,34 @@ class Storage:
         with closing(self._connect()) as conn, conn:
             conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
 
+    def save_sanitization(self, summary: dict, input_dir,
+                          config_path, out_root) -> int:
+        """Persist one sanitize run; returns the row id."""
+        from datetime import datetime
+        cur = self._conn.execute(
+            "INSERT INTO sanitizations (timestamp, input_dir, config_path,"
+            " out_root, n_files, ok_count, masked_total,"
+            " integrity_bad_count, skipped) VALUES (?,?,?,?,?,?,?,?,?)",
+            (datetime.now().isoformat(timespec="seconds"),
+             str(input_dir), str(config_path), str(out_root),
+             summary.get("n_files", 0), summary.get("ok_count", 0),
+             summary.get("masked_total", 0),
+             summary.get("integrity_bad_count", 0),
+             1 if summary.get("skipped") else 0))
+        self._conn.commit()
+        return cur.lastrowid
+
+    def load_sanitizations(self, limit: int = 20) -> list:
+        rows = self._conn.execute(
+            "SELECT id, timestamp, input_dir, config_path, out_root,"
+            " n_files, ok_count, masked_total, integrity_bad_count, skipped"
+            " FROM sanitizations ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [{"id": r[0], "timestamp": r[1], "input_dir": r[2],
+                 "config_path": r[3], "out_root": r[4], "n_files": r[5],
+                 "ok_count": r[6], "masked_total": r[7],
+                 "integrity_bad_count": r[8], "skipped": bool(r[9])}
+                for r in rows]
+
     def prune_history(self) -> None:
         """Keep only the newest N runs, where N = history_retention setting.
 
@@ -172,5 +212,10 @@ class Storage:
             conn.execute(
                 "DELETE FROM runs WHERE id NOT IN "
                 "(SELECT id FROM runs ORDER BY id DESC LIMIT ?)",
+                (retention,),
+            )
+            conn.execute(
+                "DELETE FROM sanitizations WHERE id NOT IN "
+                "(SELECT id FROM sanitizations ORDER BY id DESC LIMIT ?)",
                 (retention,),
             )

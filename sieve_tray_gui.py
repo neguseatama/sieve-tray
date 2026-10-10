@@ -479,6 +479,9 @@ class MainWindow(QMainWindow):
         self.sanitize_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
         self.summary_label.setText(self._("sanitize_running"))
+        self._sanitize_input_dir = input_dir
+        self._sanitize_config_path = Path(config_path)
+        self._sanitize_out_root = out_root
         self._sanitize_thread = QThread(self)
         self._sanitize_worker = SanitizeWorker(
             input_dir, Path(config_path), out_root)
@@ -514,6 +517,10 @@ class MainWindow(QMainWindow):
         self.run_btn.setEnabled(True)
         self.sanitize_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
+        if not summary["skipped"]:
+            self.storage.save_sanitization(
+                summary, self._sanitize_input_dir,
+                self._sanitize_config_path, self._sanitize_out_root)
         QMessageBox.information(self, self._("sanitize_done_title"), message)
 
     def _on_sanitize_failed(self, message: str):

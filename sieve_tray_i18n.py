@@ -116,6 +116,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "sanitize_failed_files": "\nFailed files:\n{files}",
         "sanitize_no_files": "No .txt/.md files to sanitize.",
         "sanitize_skipped": "Sieve Redact is not available; nothing was sanitized.",
+        "sanitize_history_title": "Sanitize history",
         "about_license": "MIT License \u00a9 2026 Kai IWASAKI",
     },
     "ja": {
@@ -210,6 +211,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "sanitize_failed_files": "\n失敗したファイル:\n{files}",
         "sanitize_no_files": "サニタイズ対象の .txt/.md ファイルがありません。",
         "sanitize_skipped": "Sieve Redact が利用できないため、サニタイズは実行されませんでした。",
+        "sanitize_history_title": "サニタイズ履歴",
         "about_license": "MIT License \u00a9 2026 Kai IWASAKI",
     },
 }
