@@ -1,6 +1,6 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v0.4.1
+# Sieve Tray v0.5.0
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
@@ -94,6 +94,10 @@ Redact removes it with a receipt that proves nothing else changed.
   selected folder's `.txt`/`.md` files with a rules file of your choice;
   every output gets a machine-readable receipt, and the summary always
   reports the masked item count and the byte-integrity verification.
+- **Sanitize an image** — drag rectangles on a PNG (8-bit RGB/RGBA) in the
+  region editor, preview the real engine output in place, and save a reusable
+  region config; every output gets a machine-readable receipt (pixel integrity
+  is verified; byte integrity is not applicable to PNG re-encoding).
 - **Runs entirely on your machine** — scanning happens 100% locally. Submission
   contents never leave your device: no cloud upload, no API calls involved.
 - **Zero-dependency core** — the scanning engine (`sieve_tray.py`) itself
@@ -216,12 +220,14 @@ pip install -e . pytest
 pytest -v
 ```
 
-35 tests cover the core scan/render pipeline (including regression tests for
+69 tests cover the core scan/render pipeline (including regression tests for
 a CSS rendering bug and for Sieve Referee's paraphrase detection), the
 history/settings storage layer (save / load / delete / retention pruning,
 including migration from pre-Referee databases), and the i18n string tables
 (English/Japanese key parity), plus the vendored Sieve Redact
-integration (byte-pin sync and exit-code mapping).
+integration (byte-pin sync and exit-code mapping), and the image
+sanitize path (region helpers, receipt handling, and editor widgets
+under an offscreen Qt platform).
 
 CI runs this suite on every push (Python 3.10 and 3.12, on Ubuntu), and
 builds Windows/macOS desktop apps on every version tag.
@@ -246,10 +252,11 @@ builds Windows/macOS desktop apps on every version tag.
 5. **This is an observation tool, not a judgment tool** (inherited from
    Sieve Lens, Sieve Scope, and Sieve Referee). A flag means "a human should
    look at this", not "this is confirmed misconduct".
-6. **Sanitize covers plain text only** — the Sanitize action processes
-   `.txt`/`.md` files in a background thread and writes a machine-readable
-   receipt next to every output. PDF/image masking is not supported by
-   the bundled engine yet.
+6. **Sanitize covers plain text and PNG images only** — the folder Sanitize
+   action processes `.txt`/`.md` files in a background thread; the image
+   editor handles single PNGs (8-bit RGB/RGBA, non-interlaced). Both write
+   a machine-readable receipt next to every output. PDF masking is not
+   supported by the bundled engine yet.
 
 ---
 
@@ -265,6 +272,8 @@ builds Windows/macOS desktop apps on every version tag.
 ---
 
 ## 🎨 Application Icon
+
+![Application icon](assets/icon.png)
 
 Design: [AURA_HYSTERICA](http://www.maroon.dti.ne.jp/clover-hp/)
 
