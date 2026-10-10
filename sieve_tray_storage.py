@@ -77,7 +77,7 @@ class Storage:
                     masked_total INTEGER NOT NULL,
                     integrity_bad_count INTEGER NOT NULL,
                     skipped INTEGER NOT NULL
-                ),
+                )
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
