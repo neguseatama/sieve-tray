@@ -2,6 +2,7 @@ from pathlib import Path
 
 from sieve_tray import ScanResult, run_scan
 from sieve_tray_storage import Storage
+import unittest
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -80,3 +81,62 @@ def test_history_retention_zero_means_unlimited(tmp_path):
         storage.save_run(FIXTURES, result)
 
     assert len(storage.list_runs()) == 5
+
+
+class TestSanitizations(unittest.TestCase):
+    """Sanitize run history: save / load / prune (separate table,
+    ScanResult schema untouched)."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from sieve_tray_storage import Storage
+        tmp = tempfile.TemporaryDirectory()
+        self._tmp = tmp
+        self.storage = Storage(Path(tmp.name) / "history.db")
+        self.addCleanup(tmp.cleanup)
+
+    def test_save_and_load_sanitization(self):
+        summary = {"n_files": 5, "ok_count": 4, "masked_total": 7,
+                   "integrity_bad_count": 1, "failed": [],
+                   "skipped": False}
+        from pathlib import Path
+        sid = self.storage.save_sanitization(
+            summary, Path("/data/submissions"),
+            Path("/data/rules.cfg"), Path("/export/submissions_sanitized"))
+        rows = self.storage.load_sanitizations(limit=10)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["n_files"], 5)
+        self.assertEqual(row["ok_count"], 4)
+        self.assertEqual(row["masked_total"], 7)
+        self.assertEqual(row["integrity_bad_count"], 1)
+        self.assertFalse(row["skipped"])
+        self.assertEqual(row["input_dir"], "/data/submissions")
+        self.assertEqual(row["out_root"], "/export/submissions_sanitized")
+
+    def test_load_empty(self):
+        rows = self.storage.load_sanitizations(limit=10)
+        self.assertEqual(rows, [])
+
+    def test_load_limit_orders_newest_first(self):
+        from pathlib import Path
+        for i in range(3):
+            self.storage.save_sanitization(
+                {"n_files": i, "ok_count": 0, "masked_total": 0,
+                 "integrity_bad_count": 0, "failed": [], "skipped": False},
+                Path("/d%d" % i), Path("/r.cfg"), Path("/o%d" % i))
+        rows = self.storage.load_sanitizations(limit=2)
+        self.assertEqual(len(rows), 2)
+
+    def test_prune_sanitizations(self):
+        from pathlib import Path
+        for i in range(4):
+            self.storage.save_sanitization(
+                {"n_files": 0, "ok_count": 0, "masked_total": 0,
+                 "integrity_bad_count": 0, "failed": [], "skipped": False},
+                Path("/d%d" % i), Path("/r.cfg"), Path("/o%d" % i))
+        # retention 2: only the newest 2 sanitizations remain
+        self.storage.prune_history()
+        rows = self.storage.load_sanitizations(limit=10)
+        self.assertLessEqual(len(rows), 2)
