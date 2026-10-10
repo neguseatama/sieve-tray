@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QDialog, QFormLayout, QSpinBox, QDialogButtonBox, QCheckBox,
     QComboBox,
 )
-from PySide6.QtGui import QColor, QIcon, QAction
+from PySide6.QtGui import QColor, QIcon, QAction, QPainter
 
 from sieve_tray import (
     run_scan,
@@ -105,6 +105,103 @@ class SanitizeWorker(QObject):
             self.finished.emit(summary)
         except Exception as e:
             self.failed.emit(f"{type(e).__name__}: {e}")
+
+def normalize_rect(x1, y1, x2, y2):
+    """Normalize two drag endpoints into an x/y/w/h dict (direction-
+    agnostic)."""
+    return {"x": min(x1, x2), "y": min(y1, y2),
+            "w": abs(x2 - x1), "h": abs(y2 - y1)}
+
+
+def clamp_point(x, y, img_w, img_h):
+    """Clamp a pixel coordinate into the 0..img_w-1 / 0..img_h-1 bounds."""
+    return (max(0, min(x, img_w - 1)), max(0, min(y, img_h - 1)))
+
+
+class ImageCanvas(QLabel):
+    """1:1 image view with translucent region overlays and drag-to-select.
+
+    Canvas coordinates are pixel coordinates (the 1:1 display removes
+    coordinate mapping from the risk surface). A completed drag emits
+    region_selected(x, y, w, h); zero-area drags are ignored because the
+    engine rejects zero-area regions (exit code 2). Overlay geometry is
+    clamped to the image bounds.
+    """
+
+    OVERLAY_FILL = QColor(255, 0, 0, 128)
+
+    region_selected = Signal(int, int, int, int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pixmap = None
+        self._regions = []
+        self._drag_origin = None
+        self._drag_current = None
+
+    def set_image(self, pixmap):
+        self._pixmap = pixmap
+        self.setPixmap(pixmap)
+        self._regions = []
+        self._drag_origin = None
+        self._drag_current = None
+        self.setFixedSize(pixmap.size())
+        self.update()
+
+    def set_regions(self, regions):
+        self._regions = list(regions)
+        self.update()
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton and self._pixmap:
+            pos = ev.position().toPoint()
+            self._drag_origin = clamp_point(pos.x(), pos.y(),
+                                            self._pixmap.width(),
+                                            self._pixmap.height())
+            self._drag_current = self._drag_origin
+            self.update()
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        if self._drag_origin is not None and self._pixmap:
+            pos = ev.position().toPoint()
+            self._drag_current = clamp_point(pos.x(), pos.y(),
+                                             self._pixmap.width(),
+                                             self._pixmap.height())
+            self.update()
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if (ev.button() == Qt.MouseButton.LeftButton
+                and self._drag_origin is not None and self._pixmap):
+            pos = ev.position().toPoint()
+            cur = clamp_point(pos.x(), pos.y(), self._pixmap.width(),
+                              self._pixmap.height())
+            rect = normalize_rect(self._drag_origin[0], self._drag_origin[1],
+                                  cur[0], cur[1])
+            self._drag_origin = None
+            self._drag_current = None
+            self.update()
+            if rect["w"] > 0 and rect["h"] > 0:
+                self.region_selected.emit(rect["x"], rect["y"],
+                                          rect["w"], rect["h"])
+        super().mouseReleaseEvent(ev)
+
+    def paintEvent(self, ev):
+        super().paintEvent(ev)
+        if not self._pixmap:
+            return
+        p = QPainter(self)
+        for r in self._regions:
+            p.fillRect(r["x"], r["y"], r["w"], r["h"], self.OVERLAY_FILL)
+        if self._drag_origin is not None and self._drag_current is not None:
+            rect = normalize_rect(self._drag_origin[0], self._drag_origin[1],
+                                  self._drag_current[0],
+                                  self._drag_current[1])
+            if rect["w"] > 0 and rect["h"] > 0:
+                p.fillRect(rect["x"], rect["y"], rect["w"], rect["h"],
+                           self.OVERLAY_FILL)
+        p.end()
 
 class SettingsDialog(QDialog):
     """Default export folder, history retention, and UI language."""
