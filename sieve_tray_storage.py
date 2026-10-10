@@ -187,6 +187,7 @@ class Storage:
                  summary.get("integrity_bad_count", 0),
                  1 if summary.get("skipped") else 0))
             row_id = cur.lastrowid
+        self.prune_history()
         return row_id
 
     def load_sanitizations(self, limit: int = 20) -> list:
