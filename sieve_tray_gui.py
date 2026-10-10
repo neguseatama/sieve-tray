@@ -27,9 +27,9 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QTableWidget, QTableWidgetItem,
     QTabWidget, QPlainTextEdit, QFileDialog, QMessageBox, QHeaderView,
     QDialog, QFormLayout, QSpinBox, QDialogButtonBox, QCheckBox,
-    QComboBox,
+    QComboBox, QListWidget, QScrollArea,
 )
-from PySide6.QtGui import QColor, QIcon, QAction, QPainter
+from PySide6.QtGui import QColor, QIcon, QAction, QPainter, QPixmap
 
 from sieve_tray import (
     run_scan,
@@ -39,6 +39,10 @@ from sieve_tray import (
     ScanResult,
     TEXT_EXTS,
     __version__,
+    make_region_spec,
+    validate_region_spec,
+    build_region_config,
+    validate_rect,
 )
 from sieve_tray_storage import Storage, RunSummary
 from sieve_tray_i18n import (
@@ -202,6 +206,166 @@ class ImageCanvas(QLabel):
                 p.fillRect(rect["x"], rect["y"], rect["w"], rect["h"],
                            self.OVERLAY_FILL)
         p.end()
+
+class ImageRegionEditorDialog(QDialog):
+    """Drag regions on the source PNG, list them, and export a config.
+
+    Region addition validates through the tray core helpers (engine
+    grammar via validate_region_spec, bounds via validate_rect), so
+    invalid regions are rejected before any engine run. The preview is
+    a synchronous real engine run into a temp output (no hand-drawn
+    imitation) and reports the receipt verdict honestly: pixel
+    integrity is the measured value; byte integrity is not applicable
+    to PNG re-encoding.
+    """
+
+    def __init__(self, image_path, lang, parent=None):
+        super().__init__(parent)
+        self._ = lambda key, **kw: tr(lang, key, **kw)
+        self._input_path = Path(image_path)
+        from PIL import Image as PILImage
+
+        with PILImage.open(self._input_path) as im:
+            self._img_w, self._img_h = im.size
+        self._specs = []
+        self._rects = []
+        self._preview_result = None
+
+        self.setWindowTitle(self._("image_editor_title"))
+
+        self.canvas = ImageCanvas()
+        self.canvas.set_image(QPixmap(str(self._input_path)))
+        self.canvas.region_selected.connect(self._on_region_selected)
+        scroll = QScrollArea()
+        scroll.setWidget(self.canvas)
+
+        import sieve_redact
+
+        self.mode_combo = QComboBox()
+        for mode in sieve_redact.REGION_MODES:
+            self.mode_combo.addItem(mode)
+        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
+
+        self.arg_edit = QLineEdit()
+        self.arg_edit.setEnabled(False)
+
+        self.spec_list = QListWidget()
+
+        delete_btn = QPushButton(self._("image_delete_button"))
+        delete_btn.clicked.connect(self.delete_selected_region)
+        save_btn = QPushButton(self._("image_save_config_button"))
+        save_btn.clicked.connect(self.save_config)
+        preview_btn = QPushButton(self._("image_preview_button"))
+        preview_btn.clicked.connect(self.run_preview)
+
+        self.integrity_label = QLabel("")
+        self.preview_label = QLabel()
+
+        form = QFormLayout()
+        form.addRow(self._("image_mode_label"), self.mode_combo)
+        form.addRow(self._("image_arg_label"), self.arg_edit)
+        right = QVBoxLayout()
+        right.addLayout(form)
+        right.addWidget(self.spec_list)
+        right.addWidget(delete_btn)
+        right.addWidget(save_btn)
+        right.addWidget(preview_btn)
+        right.addWidget(self.integrity_label)
+        right.addWidget(self.preview_label)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText(self._("ok_button"))
+        buttons.button(QDialogButtonBox.Cancel).setText(
+            self._("cancel_button"))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        cols = QHBoxLayout()
+        cols.addWidget(scroll, stretch=3)
+        cols.addLayout(right, stretch=2)
+        outer = QVBoxLayout(self)
+        outer.addLayout(cols)
+        outer.addWidget(buttons)
+
+    def _on_mode_changed(self, mode):
+        self.arg_edit.setEnabled(mode not in ("delete", "noise"))
+
+    def _on_region_selected(self, x, y, w, h):
+        mode = self.mode_combo.currentText()
+        arg = self.arg_edit.text().strip()
+        try:
+            self.add_region(x, y, w, h, mode, arg or None)
+        except ValueError as exc:
+            QMessageBox.warning(self, self._("image_invalid_arg"), str(exc))
+
+    def add_region(self, x, y, w, h, mode, arg=None):
+        spec = make_region_spec(x, y, w, h, mode, arg)
+        rect = validate_region_spec(spec)
+        if not validate_rect(rect, self._img_w, self._img_h):
+            raise ValueError("region outside the image bounds: %s" % spec)
+        self._specs.append(spec)
+        self._rects.append(rect)
+        self._refresh()
+        return spec
+
+    def regions(self):
+        return list(self._specs)
+
+    def config_text(self):
+        return build_region_config(self._specs)
+
+    def delete_selected_region(self):
+        row = self.spec_list.currentRow()
+        if 0 <= row < len(self._specs):
+            del self._specs[row]
+            del self._rects[row]
+            self._refresh()
+
+    def save_config(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, self._("image_save_config_button"), "",
+            "Redact config (*.txt)")
+        if not path:
+            return
+        Path(path).write_text(self.config_text(), encoding="utf-8")
+
+    def run_preview(self):
+        import tempfile
+
+        import sieve_tray as core
+
+        if not self._specs:
+            self._preview_result = None
+            self.preview_label.setPixmap(QPixmap())
+            self.integrity_label.setText("")
+            return
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "regions.txt"
+            cfg_path.write_text(self.config_text(), encoding="utf-8")
+            out_path = Path(td) / "preview.png"
+            result = core.sanitize_file(self._input_path, cfg_path,
+                                        out_path)
+            preview_pm = QPixmap(str(out_path)) if result["ok"] else None
+        self._preview_result = result
+        if result["ok"] and result["integrity_verified"] and preview_pm:
+            self.preview_label.setPixmap(preview_pm)
+            self.integrity_label.setText(
+                self._("image_integrity_measured") + " / "
+                + self._("image_byte_not_applicable"))
+        else:
+            self.preview_label.setPixmap(QPixmap())
+            self.integrity_label.setText(
+                self._("image_preview_failed", rc=result["rc"]))
+
+    def preview_result(self):
+        return self._preview_result
+
+    def _refresh(self):
+        self.spec_list.clear()
+        self.spec_list.addItems(self._specs)
+        self.canvas.set_regions(self._rects)
+
 
 class SettingsDialog(QDialog):
     """Default export folder, history retention, and UI language."""
