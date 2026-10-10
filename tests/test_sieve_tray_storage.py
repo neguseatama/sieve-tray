@@ -131,6 +131,7 @@ class TestSanitizations(unittest.TestCase):
 
     def test_prune_sanitizations(self):
         from pathlib import Path
+        self.storage.set_setting("history_retention", "2")
         for i in range(4):
             self.storage.save_sanitization(
                 {"n_files": 0, "ok_count": 0, "masked_total": 0,
