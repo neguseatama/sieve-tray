@@ -127,6 +127,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "image_byte_not_applicable": "byte integrity not applicable (PNG re-encode)",
         "image_preview_failed": "preview failed (rc {rc})",
         "image_invalid_arg": "invalid region",
+        "sanitize_image_button": "Sanitize Image...",
+        "sanitize_image_failed": "image sanitize failed (rc {rc})",
         "about_license": "MIT License \u00a9 2026 Kai IWASAKI",
     },
     "ja": {
@@ -232,6 +234,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "image_byte_not_applicable": "バイト完全性は測定対象外（PNG再エンコード）",
         "image_preview_failed": "プレビュー失敗（rc {rc}）",
         "image_invalid_arg": "無効な領域",
+        "sanitize_image_button": "画像をサニタイズ...",
+        "sanitize_image_failed": "画像のサニタイズに失敗しました（rc {rc}）",
         "about_license": "MIT License \u00a9 2026 Kai IWASAKI",
     },
 }

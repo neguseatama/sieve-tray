@@ -122,6 +122,13 @@ def clamp_point(x, y, img_w, img_h):
     return (max(0, min(x, img_w - 1)), max(0, min(y, img_h - 1)))
 
 
+def image_output_paths(image_path, export_dir):
+    """Build the auto config and output paths for one PNG sanitize run."""
+    src = Path(image_path)
+    return (Path(export_dir) / (src.stem + "_regions.txt"),
+            Path(export_dir) / (src.stem + "_sanitized.png"))
+
+
 class ImageCanvas(QLabel):
     """1:1 image view with translucent region overlays and drag-to-select.
 
@@ -230,6 +237,7 @@ class ImageRegionEditorDialog(QDialog):
         self._specs = []
         self._rects = []
         self._preview_result = None
+        self._saved_config_path = None
 
         self.setWindowTitle(self._("image_editor_title"))
 
@@ -329,6 +337,7 @@ class ImageRegionEditorDialog(QDialog):
         if not path:
             return
         Path(path).write_text(self.config_text(), encoding="utf-8")
+        self._saved_config_path = Path(path)
 
     def run_preview(self):
         import tempfile
@@ -360,6 +369,9 @@ class ImageRegionEditorDialog(QDialog):
 
     def preview_result(self):
         return self._preview_result
+
+    def saved_config_path(self):
+        return self._saved_config_path
 
     def _refresh(self):
         self.spec_list.clear()
@@ -600,10 +612,15 @@ class MainWindow(QMainWindow):
         self.sanitize_btn = QPushButton(self._("sanitize_button"))
         self.sanitize_btn.setEnabled(False)
         self.sanitize_btn.clicked.connect(self.sanitize_folder)
+        self.sanitize_image_btn = QPushButton(
+            self._("sanitize_image_button"))
+        self.sanitize_image_btn.setEnabled(True)
+        self.sanitize_image_btn.clicked.connect(self.sanitize_image)
         picker_row.addWidget(self.path_edit, stretch=1)
         picker_row.addWidget(browse_btn)
         picker_row.addWidget(self.run_btn)
         picker_row.addWidget(self.sanitize_btn)
+        picker_row.addWidget(self.sanitize_image_btn)
         picker_row.addWidget(settings_btn)
         layout.addLayout(picker_row)
 
@@ -790,6 +807,60 @@ class MainWindow(QMainWindow):
         self.sanitize_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
         QMessageBox.critical(self, self._("error_title"), message)
+
+    def sanitize_image(self):
+        image_path, _ = QFileDialog.getOpenFileName(
+            self, self._("sanitize_image_button"), "",
+            "PNG Images (*.png)")
+        if not image_path:
+            return
+        editor = ImageRegionEditorDialog(image_path, self.lang, parent=self)
+        if editor.exec() != QDialog.Accepted:
+            return
+        export_dir = Path(self.storage.get_setting("export_dir"))
+        cfg_path, out_path = image_output_paths(image_path, export_dir)
+        saved = editor.saved_config_path()
+        if saved is None:
+            cfg_path.write_text(editor.config_text(), encoding="utf-8")
+        else:
+            cfg_path = saved
+        result = self.run_image_sanitize(image_path, cfg_path, out_path)
+        if result["ok"]:
+            message = (
+                self._("sanitize_done_label", n=1, ok=1,
+                       masked=result["masked_count"],
+                       integrity=self._("image_integrity_measured"))
+                + "\n" + self._("image_byte_not_applicable"))
+        else:
+            message = self._("sanitize_image_failed", rc=result["rc"])
+        self.summary_label.setText(message)
+        QMessageBox.information(self, self._("sanitize_done_title"), message)
+
+    def run_image_sanitize(self, image_path, config_path, output_path):
+        """Run one PNG through the engine synchronously and record history.
+
+        The receipt lands next to the output (sanitize_tree convention);
+        the history row is saved unless the engine is unavailable
+        (folder-flow convention: failures are recorded too).
+        """
+        receipt_path = output_path.with_name(
+            output_path.name + ".receipt.json")
+        result = sanitize_file(Path(image_path), Path(config_path),
+                               output_path, receipt_path=receipt_path)
+        summary = {
+            "n_files": 1,
+            "ok_count": 1 if result["ok"] else 0,
+            "masked_total": result["masked_count"],
+            "integrity_bad_count": 0 if result["integrity_verified"] else 1,
+            "failed": [] if result["ok"] else [(str(image_path),
+                                                result["rc"])],
+            "skipped": bool(result["skipped"]),
+        }
+        if not summary["skipped"]:
+            self.storage.save_sanitization(
+                summary, Path(image_path).parent, Path(config_path),
+                Path(output_path).parent)
+        return result
 
     def choose_folder(self):
         path = QFileDialog.getExistingDirectory(
