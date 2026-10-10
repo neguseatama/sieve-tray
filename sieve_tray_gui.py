@@ -246,6 +246,8 @@ class ImageRegionEditorDialog(QDialog):
         self.canvas.region_selected.connect(self._on_region_selected)
         scroll = QScrollArea()
         scroll.setWidget(self.canvas)
+        scroll.setMaximumHeight(480)
+        self.canvas_scroll = scroll
 
         import sieve_redact
 
@@ -268,6 +270,9 @@ class ImageRegionEditorDialog(QDialog):
 
         self.integrity_label = QLabel("")
         self.preview_label = QLabel()
+        self.preview_scroll = QScrollArea()
+        self.preview_scroll.setWidget(self.preview_label)
+        self.preview_scroll.setMaximumHeight(240)
 
         form = QFormLayout()
         form.addRow(self._("image_mode_label"), self.mode_combo)
@@ -279,7 +284,7 @@ class ImageRegionEditorDialog(QDialog):
         right.addWidget(save_btn)
         right.addWidget(preview_btn)
         right.addWidget(self.integrity_label)
-        right.addWidget(self.preview_label)
+        right.addWidget(self.preview_scroll)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -295,6 +300,9 @@ class ImageRegionEditorDialog(QDialog):
         outer = QVBoxLayout(self)
         outer.addLayout(cols)
         outer.addWidget(buttons)
+
+        self.resize(960, 640)
+        self.setSizeGripEnabled(True)
 
     def _on_mode_changed(self, mode):
         self.arg_edit.setEnabled(mode not in ("delete", "noise"))
