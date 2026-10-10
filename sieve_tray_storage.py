@@ -78,6 +78,10 @@ class Storage:
                     integrity_bad_count INTEGER NOT NULL,
                     skipped INTEGER NOT NULL
                 )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
