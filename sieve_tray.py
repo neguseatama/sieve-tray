@@ -234,6 +234,53 @@ def compare_text(text_map: Dict[str, str],
     return pairs
 
 
+def make_region_spec(x, y, w, h, mode, arg=None):
+    """Build one region spec string 'x,y,w,h:MODE[:ARG]'.
+
+    Raises ValueError when ARG contains ':' - the engine parser splits
+    the spec on colons and would misread it.
+    """
+    if arg is not None and ":" in arg:
+        raise ValueError("region ARG must not contain ':'")
+    spec = "%d,%d,%d,%d:%s" % (x, y, w, h, mode)
+    if arg is not None:
+        spec += ":" + arg
+    return spec
+
+
+def validate_region_spec(spec):
+    """Validate a region spec with the vendored engine parser.
+
+    Returns the parsed rect dict; raises ValueError when the engine
+    would reject the spec. The engine parser is the single source of
+    truth for the spec grammar.
+    """
+    import sieve_redact
+
+    return sieve_redact.parse_region_spec(spec)
+
+
+def build_region_config(specs):
+    """Build the text of a region-only Redact config file.
+
+    One 'region <spec>' line per spec, no trailing newline. Region
+    lines only: the engine rejects rule/builtin lines in image mode.
+    """
+    return "\n".join("region " + s for s in specs)
+
+
+def validate_rect(rect, img_w, img_h):
+    """Return True when a rect dict (x, y, w, h) lies fully inside an
+    img_w x img_h image with positive area. The engine rejects
+    out-of-range regions with exit code 2; this pre-check lets callers
+    warn before running.
+    """
+    return (rect["x"] >= 0 and rect["y"] >= 0
+            and rect["w"] > 0 and rect["h"] > 0
+            and rect["x"] + rect["w"] <= img_w
+            and rect["y"] + rect["h"] <= img_h)
+
+
 def sanitize_file(input_path, config_path, output_path,
                   receipt_path=None) -> dict:
     """Mask a text file through the vendored Redact engine (in-process).
@@ -291,9 +338,21 @@ def sanitize_file(input_path, config_path, output_path,
     if rc == 0:
         try:
             data = _json.loads(Path(receipt_path).read_text(encoding="utf-8"))
-            result["masked_count"] = data.get("total_redactions", 0)
-            result["integrity_verified"] = bool(
-                data.get("byte_integrity_verified", False))
+            if "pixel_integrity_verified" in data:
+                # Image receipt: pixel integrity is the measured value and
+                # rects carries the region rows (total_redactions is a
+                # literal 0 in the image contract). byte_integrity_verified
+                # is null there (PNG re-encoding changes bytes structurally),
+                # so it must never be surfaced as a failure.
+                result["masked_count"] = len(data.get("rects", []))
+                result["integrity_verified"] = bool(
+                    data.get("pixel_integrity_verified", False))
+                result["byte_integrity_applicable"] = False
+            else:
+                result["masked_count"] = data.get("total_redactions", 0)
+                result["integrity_verified"] = bool(
+                    data.get("byte_integrity_verified", False))
+                result["byte_integrity_applicable"] = True
             result["residue"] = data.get("pattern_appearance_in_output")
         except (OSError, ValueError):
             result["integrity_verified"] = False
