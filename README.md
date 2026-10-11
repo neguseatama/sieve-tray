@@ -1,6 +1,6 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v0.7.0
+# Sieve Tray v0.7.1
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
@@ -230,7 +230,7 @@ pip install -e . pytest
 pytest -v
 ```
 
-88 tests cover the core scan/render pipeline (including regression tests for
+89 tests cover the core scan/render pipeline (including regression tests for
 a CSS rendering bug and for Sieve Referee's paraphrase detection), the
 history/settings storage layer (save / load / delete / retention pruning,
 including migration from pre-Referee databases), and the i18n string tables
