@@ -1,6 +1,6 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v0.5.0
+# Sieve Tray v0.6.0
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
@@ -98,6 +98,12 @@ Redact removes it with a receipt that proves nothing else changed.
   region editor, preview the real engine output in place, and save a reusable
   region config; every output gets a machine-readable receipt (pixel integrity
   is verified; byte integrity is not applicable to PNG re-encoding).
+- **Sanitize a folder of images** — apply one region config to every PNG
+  (8-bit RGB/RGBA) in the folder. The config kind routes the run:
+  region-only configs target PNGs, rule/builtin configs target
+  `.txt`/`.md`, and files that don't match are reported as excluded
+  (never as failures). A config mixing both kinds is rejected up front
+  with nothing processed. Every output gets a machine-readable receipt.
 - **Runs entirely on your machine** — scanning happens 100% locally. Submission
   contents never leave your device: no cloud upload, no API calls involved.
 - **Zero-dependency core** — the scanning engine (`sieve_tray.py`) itself
@@ -220,14 +226,16 @@ pip install -e . pytest
 pytest -v
 ```
 
-69 tests cover the core scan/render pipeline (including regression tests for
+82 tests cover the core scan/render pipeline (including regression tests for
 a CSS rendering bug and for Sieve Referee's paraphrase detection), the
 history/settings storage layer (save / load / delete / retention pruning,
 including migration from pre-Referee databases), and the i18n string tables
 (English/Japanese key parity), plus the vendored Sieve Redact
 integration (byte-pin sync and exit-code mapping), and the image
 sanitize path (region helpers, receipt handling, and editor widgets
-under an offscreen Qt platform).
+under an offscreen Qt platform), and the folder-uniform image
+sanitize flow (config-kind routing, excluded-file reporting, and
+tree-level config errors).
 
 CI runs this suite on every push (Python 3.10 and 3.12, on Ubuntu), and
 builds Windows/macOS desktop apps on every version tag.
@@ -253,10 +261,11 @@ builds Windows/macOS desktop apps on every version tag.
    Sieve Lens, Sieve Scope, and Sieve Referee). A flag means "a human should
    look at this", not "this is confirmed misconduct".
 6. **Sanitize covers plain text and PNG images only** — the folder Sanitize
-   action processes `.txt`/`.md` files in a background thread; the image
-   editor handles single PNGs (8-bit RGB/RGBA, non-interlaced). Both write
-   a machine-readable receipt next to every output. PDF masking is not
-   supported by the bundled engine yet.
+   action routes by config kind (region-only configs target PNGs,
+   rule/builtin configs target `.txt`/`.md`) in a background thread; the
+   image editor handles single PNGs (8-bit RGB/RGBA, non-interlaced). Both
+   write a machine-readable receipt next to every output. PDF and JPEG
+   masking are not supported by the bundled engine.
 
 ---
 
