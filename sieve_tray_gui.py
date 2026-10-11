@@ -774,8 +774,7 @@ class MainWindow(QMainWindow):
         self._sanitize_worker.moveToThread(self._sanitize_thread)
         self._sanitize_thread.started.connect(self._sanitize_worker.run)
         self._sanitize_worker.progress.connect(self.log_view.appendPlainText)
-        self._sanitize_worker.finished.connect(
-            lambda summary: self._on_sanitize_finished(summary))
+        self._sanitize_worker.finished.connect(self._on_sanitize_finished)
         self._sanitize_worker.failed.connect(self._on_sanitize_failed)
         self._sanitize_worker.finished.connect(self._sanitize_thread.quit)
         self._sanitize_worker.failed.connect(self._sanitize_thread.quit)
@@ -922,8 +921,8 @@ class MainWindow(QMainWindow):
 
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self.log_view.appendPlainText)
-        self._worker.finished.connect(
-            lambda result: self._on_finished(input_dir, result))
+        self._scan_input_dir = input_dir
+        self._worker.finished.connect(self._on_scan_finished)
         self._worker.failed.connect(self._on_failed)
         self._worker.finished.connect(self._thread.quit)
         self._worker.failed.connect(self._thread.quit)
@@ -939,6 +938,14 @@ class MainWindow(QMainWindow):
         self.tabs.setTabText(self._doc_tab_index, self._("doc_tab", n=0))
         self.tabs.setTabText(self._code_tab_index, self._("code_tab", n=0))
         self.tabs.setTabText(self._text_tab_index, self._("text_tab", n=0))
+
+    def _on_scan_finished(self, result: ScanResult):
+        """Main-thread adapter for the scan worker's finished
+        signal: a bound-method connection gives Qt a receiver, so
+        the call is queued to the main thread (the handler touches
+        widgets and must never run on the worker thread).
+        """
+        self._on_finished(self._scan_input_dir, result)
 
     def _on_finished(self, input_dir: Path, result: ScanResult):
         self._scan_running = False
