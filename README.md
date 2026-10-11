@@ -1,6 +1,6 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v0.6.1
+# Sieve Tray v0.7.0
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
@@ -104,6 +104,10 @@ Redact removes it with a receipt that proves nothing else changed.
   `.txt`/`.md`, and files that don't match are reported as excluded
   (never as failures). A config mixing both kinds is rejected up front
   with nothing processed. Every output gets a machine-readable receipt.
+- **Sanitize history tab** — every sanitize run (folder and single
+  image) is listed in its own tab with timestamp, folder, config,
+  output location, files and ok count, masked items, and integrity
+  failures, and refreshes the moment a run completes.
 - **Runs entirely on your machine** — scanning happens 100% locally. Submission
   contents never leave your device: no cloud upload, no API calls involved.
 - **Zero-dependency core** — the scanning engine (`sieve_tray.py`) itself
@@ -226,7 +230,7 @@ pip install -e . pytest
 pytest -v
 ```
 
-84 tests cover the core scan/render pipeline (including regression tests for
+88 tests cover the core scan/render pipeline (including regression tests for
 a CSS rendering bug and for Sieve Referee's paraphrase detection), the
 history/settings storage layer (save / load / delete / retention pruning,
 including migration from pre-Referee databases), and the i18n string tables
