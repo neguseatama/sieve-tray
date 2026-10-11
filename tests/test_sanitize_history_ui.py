@@ -139,3 +139,28 @@ def test_on_sanitize_finished_refreshes_immediately(
     assert window.tabs.tabText(
         window._sanitize_history_tab_index) == tr(
         "en", "sanitize_history_tab", n=1)
+
+
+BASE_PNG = Path(__file__).resolve().parent / "fixtures" / \
+    "image_sanitize_base.png"
+
+
+def test_run_image_sanitize_refreshes_immediately(window, tmp_path):
+    """The single-image path saves history directly in
+    run_image_sanitize (not via _on_sanitize_finished), so it must
+    refresh the sanitize history table too - every save site is
+    covered by the display contract (found by the v0.7.0 manual
+    smoke: the tab did not change after single-image runs)."""
+    cfg = tmp_path / "regions.txt"
+    cfg.write_text("region 4,4,8,8:delete\n", encoding="utf-8")
+    out = tmp_path / "image_sanitize_base_sanitized.png"
+    result = window.run_image_sanitize(str(BASE_PNG), cfg, out)
+    assert result["ok"] is True, result
+    t = window.sanitize_history_table
+    assert t.rowCount() == 1, \
+        "single-image sanitize must refresh the history immediately"
+    assert t.item(0, 2).text() == str(cfg)
+    assert t.item(0, 4).text() == "1 (1)"
+    assert window.tabs.tabText(
+        window._sanitize_history_tab_index) == tr(
+        "en", "sanitize_history_tab", n=1)

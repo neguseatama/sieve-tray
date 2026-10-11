@@ -892,6 +892,7 @@ class MainWindow(QMainWindow):
             self.storage.save_sanitization(
                 summary, Path(image_path).parent, Path(config_path),
                 Path(output_path).parent)
+            self._refresh_sanitize_history_table()
         return result
 
     def choose_folder(self):
