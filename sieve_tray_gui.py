@@ -679,6 +679,18 @@ class MainWindow(QMainWindow):
         self.history_table.cellDoubleClicked.connect(self._on_history_row_activated)
         self._history_tab_index = self.tabs.addTab(
             self.history_table, self._("history_tab", n=0))
+        self.sanitize_history_table = self._make_table([
+            self._("history_header_timestamp"),
+            self._("history_header_folder"),
+            self._("sanitize_history_header_config"),
+            self._("sanitize_history_header_output"),
+            self._("sanitize_history_header_files"),
+            self._("sanitize_history_header_masked"),
+            self._("sanitize_history_header_integrity"),
+        ])
+        self._sanitize_history_tab_index = self.tabs.addTab(
+            self.sanitize_history_table,
+            self._("sanitize_history_tab", n=0))
 
         layout.addWidget(self.tabs, stretch=3)
 
@@ -814,6 +826,7 @@ class MainWindow(QMainWindow):
             self.storage.save_sanitization(
                 summary, self._sanitize_input_dir,
                 self._sanitize_config_path, self._sanitize_out_root)
+            self._refresh_sanitize_history_table()
         if summary.get("config_error"):
             QMessageBox.warning(self, self._("error_title"), message)
         else:
@@ -1122,6 +1135,34 @@ class MainWindow(QMainWindow):
     # history
     # ------------------------------------------------------------------
 
+    def _refresh_sanitize_history_table(self):
+        rows = self.storage.load_sanitizations()
+        self.sanitize_history_table.setSortingEnabled(False)
+        self.sanitize_history_table.setRowCount(len(rows))
+        for row, r in enumerate(rows):
+            self.sanitize_history_table.setItem(
+                row, 0, QTableWidgetItem(r["timestamp"]))
+            self.sanitize_history_table.setItem(
+                row, 1, QTableWidgetItem(r["input_dir"]))
+            self.sanitize_history_table.setItem(
+                row, 2, QTableWidgetItem(r["config_path"]))
+            self.sanitize_history_table.setItem(
+                row, 3, QTableWidgetItem(r["out_root"]))
+            self.sanitize_history_table.setItem(
+                row, 4, QTableWidgetItem(
+                    "%d (%d)" % (r["n_files"], r["ok_count"])))
+            self.sanitize_history_table.setItem(
+                row, 5, QTableWidgetItem(str(r["masked_total"])))
+            self.sanitize_history_table.setItem(
+                row, 6, QTableWidgetItem(
+                    str(r["integrity_bad_count"])))
+            self.sanitize_history_table.item(row, 0).setData(
+                Qt.UserRole, r["id"])
+        self.tabs.setTabText(
+            self._sanitize_history_tab_index,
+            self._("sanitize_history_tab", n=len(rows)))
+        self.sanitize_history_table.setSortingEnabled(True)
+
     def _refresh_history_table(self):
         runs = self.storage.list_runs()
         self.history_table.setSortingEnabled(False)
@@ -1143,6 +1184,7 @@ class MainWindow(QMainWindow):
         self.tabs.setTabText(
             self._history_tab_index, self._("history_tab", n=len(runs)))
         self.history_table.setSortingEnabled(True)
+        self._refresh_sanitize_history_table()
 
     def _on_history_row_activated(self, row: int, _column: int):
         item = self.history_table.item(row, 0)
