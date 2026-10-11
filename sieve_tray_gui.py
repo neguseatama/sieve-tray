@@ -783,7 +783,11 @@ class MainWindow(QMainWindow):
         self._sanitize_thread.start()
 
     def _on_sanitize_finished(self, summary):
-        if summary["skipped"]:
+        if summary.get("config_error"):
+            message = self._("sanitize_config_error",
+                             err=summary["config_error"])
+            self.summary_label.setText(message)
+        elif summary["skipped"]:
             self.summary_label.setText(self._("sanitize_skipped"))
             message = self._("sanitize_skipped")
         else:
@@ -799,15 +803,23 @@ class MainWindow(QMainWindow):
             if summary["failed"]:
                 listing = "\n".join(str(rel) for rel, _ in summary["failed"])
                 message += self._("sanitize_failed_files", files=listing)
+            if summary.get("excluded"):
+                listing = "\n".join("%s (%s)" % (rel, reason)
+                                    for rel, reason in summary["excluded"])
+                message += self._("sanitize_excluded_files", files=listing)
             self.summary_label.setText(message)
         self.run_btn.setEnabled(True)
         self.sanitize_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
-        if not summary["skipped"]:
+        if not summary["skipped"] and not summary.get("config_error"):
             self.storage.save_sanitization(
                 summary, self._sanitize_input_dir,
                 self._sanitize_config_path, self._sanitize_out_root)
-        QMessageBox.information(self, self._("sanitize_done_title"), message)
+        if summary.get("config_error"):
+            QMessageBox.warning(self, self._("error_title"), message)
+        else:
+            QMessageBox.information(
+                self, self._("sanitize_done_title"), message)
 
     def _on_sanitize_failed(self, message: str):
         self.summary_label.setText(message)

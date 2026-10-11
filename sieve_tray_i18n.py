@@ -129,6 +129,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "image_invalid_arg": "invalid region",
         "sanitize_image_button": "Sanitize Image...",
         "sanitize_image_failed": "image sanitize failed (rc {rc})",
+        "sanitize_config_error": "Config error (nothing was sanitized): {err}",
+        "sanitize_excluded_files": "\nExcluded files (not eligible for this config):\n{files}",
         "about_license": "MIT License \u00a9 2026 Kai IWASAKI",
     },
     "ja": {
@@ -236,6 +238,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "image_invalid_arg": "無効な領域",
         "sanitize_image_button": "画像をサニタイズ...",
         "sanitize_image_failed": "画像のサニタイズに失敗しました（rc {rc}）",
+        "sanitize_config_error": "設定エラー（サニタイズ未実行）: {err}",
+        "sanitize_excluded_files": "\n対象外ファイル（この設定の対象外）:\n{files}",
         "about_license": "MIT License \u00a9 2026 Kai IWASAKI",
     },
 }
