@@ -158,14 +158,16 @@ def test_sanitize_tree_reports_failures(tmp_path):
     assert fn is not None, "sieve_tray.sanitize_tree is not implemented"
     src = tmp_path / "submissions"
     src.mkdir()
-    (src / "a.txt").write_text("hello\n", encoding="utf-8")
-    cfg = tmp_path / "broken.txt"
-    cfg.write_text("bogus line\n", encoding="utf-8")
+    (src / "a.txt").write_bytes(b"\xff\xfe\x00bad")  # not UTF-8 -> rc 1
+    cfg = tmp_path / "rules.txt"
+    cfg.write_text("builtin phone-jp:delete\n", encoding="utf-8")
     summary = fn(src, cfg, tmp_path / "out")
+    assert summary["config_error"] is None
     assert summary["n_files"] == 1
     assert summary["ok_count"] == 0
     assert len(summary["failed"]) == 1
     assert str(summary["failed"][0][0]) == "a.txt"
+    assert summary["failed"][0][1]["rc"] == 1
 
 
 def test_sanitize_failure_handler_is_thin():

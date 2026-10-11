@@ -55,6 +55,7 @@ DOC_EXTS = {
 # pairwise. Referee only accepts plain text, so rich formats (.docx, .pdf,
 # images, .html) are excluded even though Sieve-Lens still observes them.
 TEXT_EXTS = {".txt", ".md"}
+IMAGE_EXTS = {".png"}
 
 # A progress callback takes a single human-readable status string.
 # The CLI passes `print`; a GUI can pass e.g. a Qt signal emitter or
@@ -362,23 +363,77 @@ def sanitize_file(input_path, config_path, output_path,
 
 def sanitize_tree(input_dir, config_path, out_root,
                  progress=None) -> dict:
-    """Mask every .txt/.md file under input_dir via the vendored Redact
+    """Mask every eligible file under input_dir via the vendored Redact
     engine, preserving the relative folder structure and writing a
-    receipt next to each output. Returns a summary dict the GUI can
-    surface: n_files / ok_count / masked_total / integrity_bad_count /
-    failed [(rel, result)] / skipped. Module absence is a tree-level
-    condition (skipped=True) rather than a per-file failure.
+    receipt next to each output. The config kind selects the target
+    extension set (measured against the vendored v0.6.0 engine, where
+    a region-only config routes any input to image mode):
+      - region-only config  -> .png files; every other file is excluded
+      - rule/builtin config -> TEXT_EXTS files (text flow unchanged);
+        .png files are excluded
+      - mixed / unreadable / invalid config -> tree-level config_error
+        and nothing is processed
+    Per-file engine failures (out-of-range region, unsupported color
+    type or bit depth) keep the tree running. Returns a summary dict
+    the GUI can surface: n_files / ok_count / masked_total /
+    integrity_bad_count / failed [(rel, result)] / skipped /
+    excluded [(rel, reason)] / config_error (None or message). Module
+    absence is a tree-level condition (skipped=True) rather than a
+    per-file failure.
     """
     try:
-        import sieve_redact  # noqa: F401
+        import sieve_redact
     except ImportError:
         return {"n_files": 0, "ok_count": 0, "masked_total": 0,
-                "integrity_bad_count": 0, "failed": [], "skipped": True}
+                "integrity_bad_count": 0, "failed": [], "skipped": True,
+                "excluded": [], "config_error": None}
 
-    files = [f for f in sorted(Path(input_dir).rglob("*"))
-             if f.is_file() and f.suffix.lower() in TEXT_EXTS]
-    summary = {"n_files": len(files), "ok_count": 0, "masked_total": 0,
-               "integrity_bad_count": 0, "failed": [], "skipped": False}
+    cfg_path = Path(config_path)
+    base = {"n_files": 0, "ok_count": 0, "masked_total": 0,
+            "integrity_bad_count": 0, "failed": [], "skipped": False,
+            "excluded": [], "config_error": None}
+
+    try:
+        cfg_text = cfg_path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        base["config_error"] = "cannot read config: %s" % exc
+        return base
+
+    try:
+        kinds = [k for k, _ in
+                 sieve_redact.parse_config_lines(cfg_text, str(cfg_path))]
+    except sieve_redact.UsageError as exc:
+        base["config_error"] = str(exc)
+        return base
+
+    has_region = "region" in kinds
+    has_matcher = any(k in ("rule", "builtin") for k in kinds)
+    if has_region and has_matcher:
+        base["config_error"] = ("config rule/builtin lines cannot be "
+                                "combined with image mode (--region)")
+        return base
+
+    if has_region:
+        target_exts = IMAGE_EXTS
+        exclude_any = True     # every non-png file is reported excluded
+        exclude_reason = "not a PNG (region config)"
+    else:
+        target_exts = TEXT_EXTS
+        exclude_any = False    # only .png files are reported excluded
+        exclude_reason = "PNG not eligible (text config)"
+
+    files = []
+    for f in sorted(Path(input_dir).rglob("*")):
+        if not f.is_file():
+            continue
+        ext = f.suffix.lower()
+        if ext in target_exts:
+            files.append(f)
+        elif exclude_any or ext == ".png":
+            base["excluded"].append((f.relative_to(input_dir),
+                                     exclude_reason))
+
+    base["n_files"] = len(files)
     for f in files:
         rel = f.relative_to(input_dir)
         out_path = Path(out_root) / rel
@@ -386,16 +441,16 @@ def sanitize_tree(input_dir, config_path, out_root,
         rec_path = out_path.with_name(out_path.name + ".receipt.json")
         if progress is not None:
             progress(str(rel))
-        result = sanitize_file(f, Path(config_path), out_path,
+        result = sanitize_file(f, cfg_path, out_path,
                                receipt_path=rec_path)
         if result["ok"]:
-            summary["ok_count"] += 1
-            summary["masked_total"] += result["masked_count"]
+            base["ok_count"] += 1
+            base["masked_total"] += result["masked_count"]
             if not result["integrity_verified"]:
-                summary["integrity_bad_count"] += 1
+                base["integrity_bad_count"] += 1
         else:
-            summary["failed"].append((rel, result))
-    return summary
+            base["failed"].append((rel, result))
+    return base
 
 def run_scan(input_dir: Path, progress: ProgressCallback = _silent) -> ScanResult:
     """Core entry point. Scans input_dir and returns a ScanResult.
