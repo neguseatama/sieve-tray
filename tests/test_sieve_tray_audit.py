@@ -241,12 +241,12 @@ class TestDefaultModifierVocabPath(unittest.TestCase):
 
 
 class TestVersionBump(unittest.TestCase):
-    """v0.8.0 marker - guards against accidental version revert."""
+    """v0.9.1 marker - guards against accidental version revert."""
 
-    def test_version_is_0_9_0(self):
-        # v0.9.0: bumped for the file-selection / clear-history /
-        # render-text / signal-color improvements.
-        self.assertEqual(sieve_tray.__version__, "0.9.0")
+    def test_version_is_0_9_1(self):
+        # v0.9.1: bumped for the export button label fix
+        # ("Export HTML Report" -> "Export Report" / "レポートを書き出す").
+        self.assertEqual(sieve_tray.__version__, "0.9.1")
 
 
 class TestRunScanGroupsArgument(unittest.TestCase):
