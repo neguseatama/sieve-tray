@@ -23,14 +23,10 @@ sieve-tray-gui = "sieve_tray_gui:main"
 
 [tool.setuptools]
 py-modules = ["sieve_tray", "sieve_tray_gui", "sieve_tray_storage", "sieve_tray_i18n", "sieve_redact"]
-# v0.8.0: ship the bundled default modifier-vocab file so the audit
-# lane works out of the box. The path is referenced from
-# sieve_tray.DEFAULT_MODIFIER_VOCAB_PATH (resolved relative to the
-# module file, which setuptools installs alongside this file).
-include-package-data = true
-
-[tool.setuptools.package-data]
-"*" = ["epistemic_modifiers_ja_v1.txt"]
+# v0.8.0: the default modifier vocab is sourced from sieve_referee's
+# embedded DEFAULT_MODIFIER_VOCAB at runtime (no separate data file
+# shipped). The bundled epistemic_modifiers_ja_v1.txt stays in the
+# repo as a reference file for users who want to copy/edit it.
 
 [tool.setuptools.dynamic]
 version = { attr = "sieve_tray.__version__" }

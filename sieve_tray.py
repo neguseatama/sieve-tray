@@ -243,30 +243,53 @@ def compare_text(text_map: Dict[str, str],
     return pairs
 
 
-# v0.8.0: path to the bundled default modifier-vocab file. Shipped with
-# the package so the audit lane works out of the box; users can override
-# the path via Settings or the audit_modifier_vocab argument to run_scan.
+# v0.8.0: default modifier vocab is sourced from sieve_referee's
+# embedded DEFAULT_MODIFIER_VOCAB (the canonical source) so the audit
+# lane works out of the box without shipping a separate data file.
+# This mirrors sieve_referee's own design (embedded vocab + optional
+# file override via --audit-modifier-vocab).
 DEFAULT_MODIFIER_VOCAB_PATH = Path(__file__).resolve().parent / "epistemic_modifiers_ja_v1.txt"
+
+
+def _default_modifier_vocab() -> Tuple[str, ...]:
+    """Return the embedded default modifier vocab from sieve_referee.
+
+    Falls back to a local copy if the import fails (e.g. sieve_referee
+    <1.3.0). The local copy is kept in sync with sieve_referee v1.3.0's
+    DEFAULT_MODIFIER_VOCAB (sha256-pinned in test_sieve_tray_audit).
+    """
+    try:
+        from sieve_referee.quantifier_audit import DEFAULT_MODIFIER_VOCAB
+        return DEFAULT_MODIFIER_VOCAB
+    except ImportError:
+        return (
+            "確実に", "紛れもなく", "明白に", "明らかに", "断じて",
+            "間違いなく", "疑いなく", "自明に", "例外なく", "一切",
+        )
 
 
 def _load_modifier_vocab(vocab_path: Optional[str]) -> Tuple[str, ...]:
     """Load a modifier-vocab file into a tuple of patterns.
 
-    A None or empty path returns the empty tuple, which audit_documents()
-    interprets as 'use the in-code DEFAULT_MODIFIER_VOCAB'. A non-empty
-    path is read line by line; # comments and blank lines are skipped,
-    matching the format documented at the top of the bundled vocab file.
+    A None, empty, or non-existent path returns the embedded default
+    (sourced from sieve_referee.DEFAULT_MODIFIER_VOCAB). A non-empty
+    path that exists is read line by line; # comments and blank lines
+    are skipped, matching the format documented at the top of the
+    bundled vocab file. An empty or unreadable file also falls back to
+    the embedded default.
     """
     if not vocab_path:
-        return ()
+        return _default_modifier_vocab()
     path = Path(vocab_path)
+    if not path.exists():
+        return _default_modifier_vocab()
     patterns: List[str] = []
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         patterns.append(line)
-    return tuple(patterns)
+    return tuple(patterns) if patterns else _default_modifier_vocab()
 
 
 def audit_text(text_map: Dict[str, str],

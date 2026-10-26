@@ -71,7 +71,7 @@ def test_sanitize_history_tab_structure(window):
     assert table.columnCount() == 7
     headers = [table.horizontalHeaderItem(c).text() for c in range(7)]
     assert headers == EXPECTED_HEADERS
-    assert window.tabs.count() == 5
+    assert window.tabs.count() == 6  # v0.8.0: +1 for Quantifier Audit tab
     label = window.tabs.tabText(window._sanitize_history_tab_index)
     assert label == tr("en", "sanitize_history_tab", n=0), \
         "initial tab label must show count 0"
