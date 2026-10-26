@@ -34,6 +34,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "doc_tab": "Documents ({n})",
         "code_tab": "Code Pairs ({n})",
         "text_tab": "Text Similarity ({n})",
+        "audit_tab": "Quantifier Audit ({n})",
         "history_tab": "History ({n})",
         "doc_header_file": "File",
         "doc_header_mask": "Mask",
@@ -45,12 +46,20 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "text_header_b": "File B",
         "text_header_signal": "Signal",
         "text_header_pattern": "Pattern",
+        "audit_header_file": "File",
+        "audit_header_sentence": "Sentence",
+        "audit_header_signal": "Signal",
+        "audit_header_pattern": "Pattern",
+        "audit_header_backing": "Backing",
+        "audit_header_scope": "Scope",
+        "audit_header_certainty": "Certainty",
         "history_header_timestamp": "Timestamp (UTC)",
         "history_header_folder": "Folder",
         "history_header_groups": "Groups",
         "history_header_docs": "Documents (flagged)",
         "history_header_code_pairs": "Code Pairs",
         "history_header_text_pairs": "Text Pairs",
+        "history_header_audit": "Audit",
         "filter_by_filename": "Filter by filename",
         "flagged_only": "Flagged only",
         "log_label": "Log",
@@ -60,11 +69,12 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "scanning": "Scanning...",
         "summary_done": (
             "Done: {groups} groups / Documents {docs} ({flagged} flagged) / "
-            "Code Pairs {pairs} / Text Pairs {tpairs}"
+            "Code Pairs {pairs} / Text Pairs {tpairs} / Audit {audit}"
         ),
         "summary_history": (
             "Viewing history #{run_id}: {groups} groups / Documents {docs} "
-            "({flagged} flagged) / Code Pairs {pairs} / Text Pairs {tpairs}"
+            "({flagged} flagged) / Code Pairs {pairs} / Text Pairs {tpairs} / "
+            "Audit {audit}"
         ),
         "summary_error": "An error occurred",
         "error_title": "Error",
@@ -80,6 +90,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "settings_retention_unlimited": "Unlimited",
         "settings_language": "Language:",
         "settings_language_note": "(takes effect after restart)",
+        "settings_audit_vocab": "Modifier-vocab file for audit lane (empty = bundled default):",
+        "settings_audit_vocab_browse": "Browse...",
+        "settings_audit_vocab_dialog_title": "Select modifier-vocab file",
         "settings_browse_dialog_title": "Select export folder",
         "ok_button": "OK",
         "cancel_button": "Cancel",
@@ -95,6 +108,12 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "detail_doc_title": "Document Detail: {name}",
         "detail_code_title": "Code Pair Detail: {a} / {b}",
         "detail_text_title": "Text Pair Detail: {a} / {b}",
+        "detail_audit_title": "Audit Sentence Detail: {file}",
+        "detail_certainty_section": "Certainty Markers",
+        "detail_certainty_none": "No certainty markers in this sentence.",
+        "detail_certainty_vocab_label": "Modifier-vocab sha256: {sha}",
+        "detail_certainty_count_label": "Modifier-vocab count: {n}",
+        "detail_certainty_flagged_label": "Certainty-flagged sentences in this scan: {n}",
         "choose_folder_dialog_title": "Select a folder to scan",
         "save_report_dialog_title": "Save Report",
         "help_menu": "Help",
@@ -148,6 +167,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "doc_tab": "ドキュメント ({n})",
         "code_tab": "コードペア ({n})",
         "text_tab": "テキスト類似度 ({n})",
+        "audit_tab": "量化子監査 ({n})",
         "history_tab": "履歴 ({n})",
         "doc_header_file": "ファイル",
         "doc_header_mask": "マスク",
@@ -159,12 +179,20 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "text_header_b": "ファイルB",
         "text_header_signal": "シグナル",
         "text_header_pattern": "パターン",
+        "audit_header_file": "ファイル",
+        "audit_header_sentence": "文",
+        "audit_header_signal": "シグナル",
+        "audit_header_pattern": "パターン",
+        "audit_header_backing": "裏付け",
+        "audit_header_scope": "スコープ",
+        "audit_header_certainty": "確信度",
         "history_header_timestamp": "日時 (UTC)",
         "history_header_folder": "フォルダ",
         "history_header_groups": "グループ",
         "history_header_docs": "文書(フラグ)",
         "history_header_code_pairs": "コードペア",
         "history_header_text_pairs": "テキストペア",
+        "history_header_audit": "監査",
         "filter_by_filename": "ファイル名で絞り込み",
         "flagged_only": "フラグのみ表示",
         "log_label": "ログ",
@@ -174,12 +202,12 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "scanning": "スキャン中...",
         "summary_done": (
             "完了: {groups}グループ / 文書 {docs}件（うちフラグ {flagged}件） / "
-            "コードペア {pairs}件 / テキストペア {tpairs}件"
+            "コードペア {pairs}件 / テキストペア {tpairs}件 / 監査 {audit}件"
         ),
         "summary_history": (
             "履歴 #{run_id} を表示中: {groups}グループ / 文書 {docs}件"
             "（うちフラグ {flagged}件） / コードペア {pairs}件 / "
-            "テキストペア {tpairs}件"
+            "テキストペア {tpairs}件 / 監査 {audit}件"
         ),
         "summary_error": "エラーが発生しました",
         "error_title": "エラー",
@@ -195,6 +223,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "settings_retention_unlimited": "無制限",
         "settings_language": "言語:",
         "settings_language_note": "（再起動後に反映されます）",
+        "settings_audit_vocab": "監査レーンの確信度マーカー語彙ファイル（空 = 同梱デフォルト）:",
+        "settings_audit_vocab_browse": "参照...",
+        "settings_audit_vocab_dialog_title": "語彙ファイルを選択",
         "settings_browse_dialog_title": "保存先フォルダを選択",
         "ok_button": "OK",
         "cancel_button": "キャンセル",
@@ -210,6 +241,12 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "detail_doc_title": "ドキュメントの詳細: {name}",
         "detail_code_title": "コードペアの詳細: {a} / {b}",
         "detail_text_title": "テキストペアの詳細: {a} / {b}",
+        "detail_audit_title": "監査文の詳細: {file}",
+        "detail_certainty_section": "確信度マーカー",
+        "detail_certainty_none": "この文に確信度マーカーはありません。",
+        "detail_certainty_vocab_label": "確信度マーカー語彙 sha256: {sha}",
+        "detail_certainty_count_label": "語彙収録数: {n}",
+        "detail_certainty_flagged_label": "このスキャン中の確信度フラグ件数: {n}",
         "choose_folder_dialog_title": "スキャンするフォルダを選択",
         "save_report_dialog_title": "レポートを保存",
         "help_menu": "ヘルプ",

@@ -36,13 +36,13 @@ import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 # Single source of truth for the package version. pyproject.toml reads
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "0.7.1"
+__version__ = "0.8.0"
 
 
 CODE_EXTS = {".py"}
@@ -79,6 +79,11 @@ class ScanResult:
     doc_results: List[dict] = field(default_factory=list)
     code_pairs: List[dict] = field(default_factory=list)
     text_pairs: List[dict] = field(default_factory=list)
+    # v0.8.0: quantifier audit lane (Sieve Referee >=1.3.0).
+    # Each entry represents one flagged sentence across the scanned text
+    # files; empty list = no flagged sentences (or audit lane not run).
+    # See audit_text() for the entry shape.
+    audit_results: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """JSON-serializable form, used by sieve_tray_storage for history."""
@@ -87,13 +92,16 @@ class ScanResult:
             "doc_results": self.doc_results,
             "code_pairs": self.code_pairs,
             "text_pairs": self.text_pairs,
+            "audit_results": self.audit_results,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "ScanResult":
         groups = [(name, [Path(p) for p in files]) for name, files in d["groups"]]
         return cls(groups=groups, doc_results=d["doc_results"],
-                    code_pairs=d["code_pairs"], text_pairs=d.get("text_pairs", []))
+                    code_pairs=d["code_pairs"],
+                    text_pairs=d.get("text_pairs", []),
+                    audit_results=d.get("audit_results", []))
 
 
 def scan(input_dir: Path) -> List[Tuple[str, List[Path]]]:
@@ -233,6 +241,131 @@ def compare_text(text_map: Dict[str, str],
             },
         })
     return pairs
+
+
+# v0.8.0: path to the bundled default modifier-vocab file. Shipped with
+# the package so the audit lane works out of the box; users can override
+# the path via Settings or the audit_modifier_vocab argument to run_scan.
+DEFAULT_MODIFIER_VOCAB_PATH = Path(__file__).resolve().parent / "epistemic_modifiers_ja_v1.txt"
+
+
+def _load_modifier_vocab(vocab_path: Optional[str]) -> Tuple[str, ...]:
+    """Load a modifier-vocab file into a tuple of patterns.
+
+    A None or empty path returns the empty tuple, which audit_documents()
+    interprets as 'use the in-code DEFAULT_MODIFIER_VOCAB'. A non-empty
+    path is read line by line; # comments and blank lines are skipped,
+    matching the format documented at the top of the bundled vocab file.
+    """
+    if not vocab_path:
+        return ()
+    path = Path(vocab_path)
+    patterns: List[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        patterns.append(line)
+    return tuple(patterns)
+
+
+def audit_text(text_map: Dict[str, str],
+               modifier_vocab_path: Optional[str] = None,
+               progress: ProgressCallback = _silent) -> Tuple[List[dict], Optional[dict]]:
+    """Quantifier-audit lane via Sieve-Referee (>=1.3.0).
+
+    Returns (audit_results, summary) where audit_results is a flat list
+    of one entry per flagged sentence across all input files, and
+    summary is the engine's receipt-level summary dict (or None when
+    the audit lane could not run - e.g. sieve-referee <1.3.0 or no
+    eligible text files).
+
+    Entry shape (one per flagged sentence):
+        {
+          "file": <item_id>,
+          "sentence_sha256": <64-hex>,
+          "sentence_text": <the flagged sentence, truncated to 200 chars>,
+          "patterns": [<matched universal-scope patterns>],
+          "backing": <theorem|enumerated|sample|unbacked>,
+          "scope": <universal|measured>,
+          "signal": <GREEN|YELLOW|RED>,
+          "pattern_name": <e.g. UNBACKED_UNIVERSAL>,
+          "reason": <engine reason, Japanese>,
+          "certainty_markers": [<matched modifier-vocab patterns>],
+          "modifier_vocab_sha256": <64-hex or None>,
+          "modifier_vocab_count": <int or 0>,
+        }
+
+    Only sentences whose signal is YELLOW or RED are surfaced - GREEN
+    sentences are not 'flagged' and would just clutter the table.
+    The audit lane is opt-in per scan: an empty text_map returns ([], None)
+    without calling the engine.
+    """
+    if not text_map:
+        return [], None
+    try:
+        from sieve_referee import audit_documents
+    except ImportError:
+        progress("Note: sieve-referee not installed; skipping quantifier audit.")
+        return [], None
+
+    modifier_vocab = _load_modifier_vocab(modifier_vocab_path)
+    try:
+        report = audit_documents(
+            text_map,
+            modifier_vocab=modifier_vocab if modifier_vocab else None,
+        )
+    except Exception as exc:
+        progress(f"Note: quantifier audit failed: {type(exc).__name__}: {exc}")
+        return [], None
+
+    audit_results: List[dict] = []
+    # worksheets carries per-file sentence detail (with sentence_text);
+    # the receipt's documents[].candidates[] carries the same per-sentence
+    # fields without sentence_text - we join on sentence_sha256.
+    worksheet_by_file = {k: v for k, v in report.worksheets.items()}
+    text_by_sha: Dict[str, str] = {}
+    for file_id, entries in worksheet_by_file.items():
+        for e in entries:
+            sha = e.get("sentence_sha256")
+            if sha and sha not in text_by_sha:
+                # Truncate to keep the table readable and the DB row bounded;
+                # the full text is in the worksheet if a future detail view
+                # needs it.
+                text_by_sha[sha] = (e.get("sentence_text") or "")[:200]
+
+    for doc in report.receipt.get("documents", []):
+        file_id = doc.get("item_id", "")
+        for cand in doc.get("candidates", []):
+            signal = cand.get("signal", "")
+            if signal == "GREEN":
+                continue
+            sha = cand.get("sentence_sha256", "")
+            audit_results.append({
+                "file": file_id,
+                "sentence_sha256": sha,
+                "sentence_text": text_by_sha.get(sha, ""),
+                "patterns": list(cand.get("patterns", [])),
+                "backing": cand.get("backing", ""),
+                "scope": cand.get("scope", ""),
+                "signal": signal,
+                "pattern_name": cand.get("pattern_name", ""),
+                "reason": cand.get("reason", ""),
+                "certainty_markers": list(cand.get("certainty_markers", [])),
+                "modifier_vocab_sha256": report.receipt.get("modifier_vocab_sha256"),
+                "modifier_vocab_count": int(report.receipt.get("modifier_vocab_count", 0)),
+            })
+
+    summary = {
+        "vocab_sha256": report.receipt.get("vocab_sha256"),
+        "vocab_count": int(report.receipt.get("vocab_count", 0)),
+        "modifier_vocab_sha256": report.receipt.get("modifier_vocab_sha256"),
+        "modifier_vocab_count": int(report.receipt.get("modifier_vocab_count", 0)),
+        "unverified_remaining": int(report.receipt.get("unverified_remaining", 0)),
+        "certainty_flagged": int(report.receipt.get("certainty_flagged", 0)),
+        "tag_counts": dict(report.receipt.get("tag_counts", {})),
+    }
+    return audit_results, summary
 
 
 def make_region_spec(x, y, w, h, mode, arg=None):
@@ -452,13 +585,21 @@ def sanitize_tree(input_dir, config_path, out_root,
             base["failed"].append((rel, result))
     return base
 
-def run_scan(input_dir: Path, progress: ProgressCallback = _silent) -> ScanResult:
+def run_scan(input_dir: Path,
+             progress: ProgressCallback = _silent,
+             audit_modifier_vocab: Optional[str] = None) -> ScanResult:
     """Core entry point. Scans input_dir and returns a ScanResult.
 
     This is the single function a GUI needs to call; it does no I/O
     other than reading the input files, and reports status purely
     through `progress` rather than printing directly, so it is safe
     to call from a background/worker thread.
+
+    audit_modifier_vocab (v0.8.0): path to a modifier-vocab file for
+    the quantifier audit lane. None = use the bundled default
+    (DEFAULT_MODIFIER_VOCAB_PATH, shipped with the package). An empty
+    string disables the override and falls back to the bundled default
+    as well. A non-empty path is read line-by-line (see _load_modifier_vocab).
     """
     groups = scan(input_dir)
     progress(f"Found {len(groups)} groups.")
@@ -492,8 +633,12 @@ def run_scan(input_dir: Path, progress: ProgressCallback = _silent) -> ScanResul
     progress(f"Comparing {len(text_map)} text files for similarity...")
     text_pairs = compare_text(text_map, progress)
 
+    progress(f"Auditing {len(text_map)} text files for ungrounded universalization...")
+    audit_results, _ = audit_text(text_map, audit_modifier_vocab, progress)
+
     return ScanResult(groups=groups, doc_results=doc_results,
-                       code_pairs=code_pairs, text_pairs=text_pairs)
+                       code_pairs=code_pairs, text_pairs=text_pairs,
+                       audit_results=audit_results)
 
 
 CSS = """
@@ -516,6 +661,7 @@ def render(result: ScanResult) -> str:
     groups = result.groups
     doc_results, code_pairs, text_pairs = (
         result.doc_results, result.code_pairs, result.text_pairs)
+    audit_results = result.audit_results
 
     parts = ["<!DOCTYPE html>",
              "<html><head><meta charset='UTF-8'>",
@@ -569,6 +715,31 @@ def render(result: ScanResult) -> str:
                 f"<td><code>{html.escape(p['b'])}</code></td>"
                 f"<td>{html.escape(p['signal'])}</td>"
                 f"<td>{html.escape(p['pattern_name'])}</td>"
+                f"</tr>"
+            )
+        parts.append("</table>")
+
+    parts.append("<h2>Quantifier Audit</h2>")
+    if not audit_results:
+        parts.append("<p>No flagged universalization candidates.</p>")
+    else:
+        parts.append(
+            "<table><tr><th>File</th><th>Sentence</th>"
+            "<th>Signal</th><th>Pattern</th><th>Backing</th>"
+            "<th>Scope</th><th>Certainty</th></tr>")
+        for a in audit_results:
+            cls = " class='flagged'" if a["signal"] == "RED" else ""
+            sentence = a.get("sentence_text") or a.get("sentence_sha256", "")[:16]
+            certainty = ", ".join(a.get("certainty_markers", [])) or "—"
+            parts.append(
+                f"<tr{cls}>"
+                f"<td><code>{html.escape(a['file'])}</code></td>"
+                f"<td>{html.escape(sentence)}</td>"
+                f"<td>{html.escape(a['signal'])}</td>"
+                f"<td>{html.escape(a['pattern_name'])}</td>"
+                f"<td>{html.escape(a['backing'])}</td>"
+                f"<td>{html.escape(a['scope'])}</td>"
+                f"<td>{html.escape(certainty)}</td>"
                 f"</tr>"
             )
         parts.append("</table>")

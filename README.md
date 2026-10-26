@@ -1,16 +1,18 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v0.7.1
+# Sieve Tray v0.8.0
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
 > Combines [Sieve Lens](https://github.com/neguseatama/sieve-lens)'s invisible-content
 > observation, [Sieve Scope](https://github.com/neguseatama/sieve-scope)'s code
 > similarity detection, and [Sieve Referee](https://github.com/neguseatama/sieve-referee)'s
-> text paraphrase detection into a single desktop app. Point it at a folder of
+> text paraphrase detection — plus, new in v0.8.0, Sieve Referee's quantifier
+> audit lane — into a single desktop app. Point it at a folder of
 > submissions and it detects and reports, in one pass, documents containing
 > invisible content or hidden prompts, code pairs with suspicious structural
-> similarity, and text pairs that look paraphrased or reused.
+> similarity, text pairs that look paraphrased or reused, and sentences that
+> make ungrounded universal claims (hallucination candidates).
 
 [![Test](https://github.com/neguseatama/sieve-tray/actions/workflows/test.yml/badge.svg)](https://github.com/neguseatama/sieve-tray/actions/workflows/test.yml)
 [![Release](https://github.com/neguseatama/sieve-tray/actions/workflows/release.yml/badge.svg)](https://github.com/neguseatama/sieve-tray/actions/workflows/release.yml)
@@ -35,10 +37,11 @@ cross-referencing the output yourself.
 subfolder per submission, and it automatically routes each file to the right
 engine: documents go to Sieve Lens, `.py` files go to Sieve Scope's pairwise
 comparison, and plain-text files (`.txt`/`.md`) additionally go to Sieve
-Referee's pairwise paraphrase comparison. Results land in a single window,
-with local history so nothing has to be re-run, and a detail view showing
-exactly which observation axis fired and why — never a bare verdict, only
-what the underlying engines actually observed.
+Referee's pairwise paraphrase comparison **and** Sieve Referee's quantifier
+audit lane (new in v0.8.0, powered by Sieve Referee >=1.3.0). Results land in
+a single window, with local history so nothing has to be re-run, and a detail
+view showing exactly which observation axis fired and why — never a bare
+verdict, only what the underlying engines actually observed.
 
 > Like the rest of the Sieve series, this is an **observation tool, not a
 > judgment tool**. A flagged item means "this deserves a human look", not
@@ -68,7 +71,8 @@ Redact removes it with a receipt that proves nothing else changed.
 ## 🔥 Key Features
 
 - **One folder in, everything checked** — routes `.py` files to Sieve Scope,
-  plain-text files (`.txt`, `.md`) additionally to Sieve Referee, and all
+  plain-text files (`.txt`, `.md`) additionally to Sieve Referee (both pairwise
+  paraphrase comparison **and** the quantifier audit lane), and all
   documents (including `.html`, `.docx`, `.pdf`, images) to Sieve Lens,
   automatically, by extension.
 - **Background-threaded GUI** — scanning never freezes the window, even on
@@ -84,10 +88,23 @@ Redact removes it with a receipt that proves nothing else changed.
 - **Detail dialog** — double-click any row to see the per-axis observation
   states and the underlying evidence/scores/reason the engine recorded, not
   just the mask string.
+- **Quantifier Audit lane (new in v0.8.0)** — every scanned `.txt`/`.md`
+  file is also passed through Sieve Referee's quantifier audit lane, which
+  flags sentences that make universal claims without backing (`theorem` /
+  `enumerated` / `sample`) — the kind of "all X are Y" claim that, with no
+  proof or finite enumeration behind it, is a hallucination candidate.
+  Flagged sentences surface in their own **Quantifier Audit** tab, one row
+  per sentence, with the signal (RED = unbacked universal, YELLOW =
+  sample-only or unbacked measured), the matched patterns, and a separate
+  **Certainty Markers** section in the detail dialog showing any epistemic
+  certainty markers (e.g. 「明白に」「例外なく」) co-occurring in the sentence.
+  The lane ships with a bundled default modifier-vocab file; users can
+  override the path from Settings to swap in a custom vocabulary.
 - **Local history** — every scan is saved to a local SQLite database
   (`~/.sieve_tray/history.db`); revisit a past run without re-scanning.
-- **Configurable** — default export folder, history retention, and UI
-  language are all adjustable from a Settings dialog.
+- **Configurable** — default export folder, history retention, UI language,
+  and the audit lane's modifier-vocab file (empty = bundled default) are all
+  adjustable from a Settings dialog.
 - **Self-contained HTML export** — every result can be exported as a
   standalone HTML report, for sharing or archiving.
 - **Sanitize text files** — run the bundled Sieve Redact engine over the
@@ -168,9 +185,10 @@ pip install -e .
 2. Click **Select Folder...** and pick a directory containing one subfolder
    per submission.
 3. Click **Run Scan**.
-4. Browse results in the **Documents**, **Code Pairs**, and **Text
-   Similarity** tabs — sort by column, filter by filename, and double-click
-   any row for the full per-axis breakdown.
+4. Browse results in the **Documents**, **Code Pairs**, **Text Similarity**,
+   and **Quantifier Audit** tabs — sort by column, filter by filename, and
+   double-click any row for the full per-axis breakdown (audit rows show a
+   separate **Certainty Markers** section in the detail dialog).
 5. Export a shareable report with **Export HTML Report**. Past runs are
    always available under the **History** tab.
 
@@ -205,6 +223,10 @@ result = run_scan(Path("submissions"), progress=print)
 print(result.doc_results)   # path / mask / flagged / h_states / evidence
 print(result.code_pairs)    # a / b / mask / h_states / scores
 print(result.text_pairs)    # a / b / signal / mask / pattern_name / reason / h_states / scores
+print(result.audit_results) # v0.8.0: file / sentence_sha256 / sentence_text /
+                           #         patterns / backing / scope / signal /
+                           #         pattern_name / reason / certainty_markers /
+                           #         modifier_vocab_sha256 / modifier_vocab_count
 
 Path("report.html").write_text(render(result))
 ```
@@ -270,6 +292,19 @@ builds Windows/macOS desktop apps on every version tag.
    image editor handles single PNGs (8-bit RGB/RGBA, non-interlaced). Both
    write a machine-readable receipt next to every output. PDF and JPEG
    masking are not supported by the bundled engine.
+7. **Quantifier audit is Japanese-calibrated** (new in v0.8.0). The audit
+   lane's default universal-scope vocabulary and modifier vocabulary are
+   tuned for Japanese text; sentences in other languages may not trigger the
+   lane even when they make equivalent universal claims. The lane surfaces
+   the vocab sha256 and count in the detail dialog so the calibration is
+   visible, and the modifier-vocab file can be overridden from Settings.
+8. **Quantifier audit surfaces candidates, not verdicts.** A RED signal
+   means "this sentence makes a universal claim with no backing recorded in
+   the tagfile" — it is a hallucination *candidate*, not a confirmed
+   hallucination. The tagfile is the source of truth for backing labels
+   (`theorem` / `enumerated` / `sample` / `unbacked`); audit_text() does not
+   populate the tagfile automatically. A human must confirm whether a
+   flagged sentence is actually unbacked or merely un-tagged.
 
 ---
 

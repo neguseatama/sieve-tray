@@ -1,15 +1,17 @@
 [English](README.md) | **日本語**
 
-# Sieve Tray v0.7.1
+# Sieve Tray v0.8.0
 
 **汎用観測ツール — Sieveシリーズのデスクトップフロントエンド**
 
 > [Sieve Lens](https://github.com/neguseatama/sieve-lens)の不可視コンテンツ観測、
 > [Sieve Scope](https://github.com/neguseatama/sieve-scope)のコード類似度検知、
-> [Sieve Referee](https://github.com/neguseatama/sieve-referee)のテキストパラフレーズ検知を、
+> [Sieve Referee](https://github.com/neguseatama/sieve-referee)のテキストパラフレーズ検知 —
+> そしてv0.8.0で新たに追加されたSieve Refereeの量化子監査レーン — を、
 > 1つのデスクトップアプリに統合しました。提出物のフォルダを指定するだけで、
 > 不可視のコンテンツや隠されたプロンプトを含む文書、構造的に疑わしく似ているコードペア、
-> 言い換え・流用の疑いがあるテキストペアを、一度にまとめて検出、報告します。
+> 言い換え・流用の疑いがあるテキストペア、根拠のない全称主張（ハルシネーション候補）を
+> 含む文を、一度にまとめて検出、報告します。
 
 [![Test](https://github.com/neguseatama/sieve-tray/actions/workflows/test.yml/badge.svg)](https://github.com/neguseatama/sieve-tray/actions/workflows/test.yml)
 [![Release](https://github.com/neguseatama/sieve-tray/actions/workflows/release.yml/badge.svg)](https://github.com/neguseatama/sieve-tray/actions/workflows/release.yml)
@@ -33,7 +35,8 @@ Sieveシリーズらしい、外部依存ゼロ・決定論的な観測エンジ
 **Sieve Tray**はその手間をなくします。1提出者につき1サブフォルダ、という構造の
 フォルダを指定するだけで、ファイルごとに適切なエンジンへ自動的に振り分けます
 （文書はSieve Lensへ、`.py`ファイルはSieve Scopeのペア比較へ、プレーンテキスト
-（`.txt`/`.md`）はさらにSieve Refereeのペア比較へ）。結果は1つのウィンドウに
+（`.txt`/`.md`）はさらにSieve Refereeのペア比較**と量化子監査レーン**へ
+（v0.8.0で追加・Sieve Referee >=1.3.0 が必要）。結果は1つのウィンドウに
 まとまり、履歴が残るので再スキャンは不要、さらにどの観測軸が反応し、その根拠が
 何だったかまで詳細表示で確認できます。単なる「白黒の判定」ではなく、エンジンが
 実際に観測した事実だけを提示します。
@@ -66,8 +69,9 @@ Redact が「他は何も変わっていない」ことを証明するレシー�
 ## 🔥 主な特徴
 
 - **フォルダ1つで全部チェック** — `.py`ファイルはSieve Scopeへ、プレーンテキスト
-  （`.txt`、`.md`）はさらにSieve Refereeへ、全ての文書（`.html`、`.docx`、`.pdf`、
-  画像を含む）はSieve Lensへ、拡張子で自動的に振り分け
+  （`.txt`、`.md`）はさらにSieve Refereeへ（ペア比較**と量化子監査レーン**の両方）、
+  全ての文書（`.html`、`.docx`、`.pdf`、画像を含む）はSieve Lensへ、
+  拡張子で自動的に振り分け
 - **バックグラウンドスレッドで動くGUI** — 大量の提出物でもスキャン中にウィンドウが
   固まらない
 - **英語・日本語UI** — 設定画面からいつでも切り替え可能（デフォルトは英語）。なお
@@ -78,10 +82,21 @@ Redact が「他は何も変わっていない」ことを証明するレシー�
   「フラグのみ表示」で絞り込み可能
 - **詳細ダイアログ** — 行をダブルクリックすると、マスク文字列だけでなく観測軸ごとの
   結果と、エンジンが記録した根拠・スコア・理由まで確認できる
+- **量化子監査レーン（v0.8.0新機能）** — スキャンした`.txt`/`.md`ファイルは、
+  Sieve Refereeの量化子監査レーンにも渡されます。定理証明 (`theorem`)・
+  有限全列挙 (`enumerated`)・標本 (`sample`) のいずれの裏付けもなく全称主張を
+  閉じる「すべてのXはYである」型の文を検出し、ハルシネーション候補として
+  フラグします。フラグされた文は専用の**量化子監査**タブに1行1文で表示され、
+  シグナル (RED = 裏付けのない全称、YELLOW = 標本のみまたは裏付けのない測定値) ・
+  マッチした語彙パターン・裏付け・スコープが確認できます。詳細ダイアログには
+  **確信度マーカー**セクションが別途用意され、文中に共起した認識的確信度マーカー
+  （例：「明白に」「例外なく」）を表示します。レーンは同梱のデフォルト語彙
+  ファイルで初期状態から動作し、設定画面から語彙ファイルを上書き可能です
 - **ローカル履歴** — スキャンのたびにローカルのSQLiteデータベース
   （`~/.sieve_tray/history.db`）に自動保存。再スキャンせずに過去の結果を見返せる
-- **設定可能** — レポートの保存先フォルダ、履歴の保持件数、UI言語を、設定画面から
-  変更可能
+- **設定可能** — レポートの保存先フォルダ、履歴の保持件数、UI言語、
+  そして監査レーンの確信度マーカー語彙ファイル（空 = 同梱デフォルト）を、
+  設定画面から変更可能
 - **自己完結型HTMLエクスポート** — どの結果も、共有・保管しやすい単体のHTML
   レポートとして書き出せる
 - **テキストのサニタイズ** — 選択フォルダ内の`.txt`/`.md`ファイルに対し、
@@ -159,8 +174,9 @@ pip install -e .
 1. アプリを起動
 2. 「フォルダを選択...」から、1提出者につき1サブフォルダという構造のフォルダを選択
 3. 「Run Scan」をクリック
-4. 「Documents」「Code Pairs」「Text Similarity」タブで結果を確認 — 列見出しで
-   並び替え、ファイル名で絞り込み、行をダブルクリックで観測軸ごとの詳細を表示
+4. 「Documents」「Code Pairs」「Text Similarity」「量化子監査」タブで結果を確認 —
+   列見出しで並び替え、ファイル名で絞り込み、行をダブルクリックで観測軸ごとの詳細を表示
+   （監査行の詳細ダイアログには別途「確信度マーカー」セクションが表示されます）
 5. 「Export HTML Report」で共有可能なレポートを出力。過去のスキャンは常に
    「History」タブから確認できます
 
@@ -195,6 +211,10 @@ result = run_scan(Path("submissions"), progress=print)
 print(result.doc_results)   # path / mask / flagged / h_states / evidence
 print(result.code_pairs)    # a / b / mask / h_states / scores
 print(result.text_pairs)    # a / b / signal / mask / pattern_name / reason / h_states / scores
+print(result.audit_results) # v0.8.0: file / sentence_sha256 / sentence_text /
+                           #         patterns / backing / scope / signal /
+                           #         pattern_name / reason / certainty_markers /
+                           #         modifier_vocab_sha256 / modifier_vocab_count
 
 Path("report.html").write_text(render(result))
 ```
@@ -251,6 +271,17 @@ CIはpushのたびにこのテストスイートを実行し（Ubuntu上でPytho
    設定は`.txt`/`.md`をバックグラウンドスレッドで処理）。画像エディタは単一のPNG
    （8bit RGB/RGBA・非インターレース）を扱います。いずれも出力ごとに機械可読な
    レシートを書き出します。PDF・JPEGのマスキングは同梱エンジンでは未対応です
+7. **量化子監査レーンは日本語調整**（v0.8.0新機能）。監査レーンのデフォルトの
+   全称スコープ語彙・確信度マーカー語彙は日本語テキストを前提に調整されています。
+   他言語の文は同等の全称主張であっても反応しない場合があります。語彙のsha256・
+   収録数は詳細ダイアログに表示されるため調整状況が透明で、語彙ファイルは
+   設定画面から上書き可能です
+8. **量化子監査レーンは候補を表示するもので、判定ではない。** REDシグナルは
+   「この文はtagfileに裏付けが記録されていない全称主張を含む」という意味で、
+   ハルシネーションの**候補**であって確定ではありません。tagfileが裏付けラベル
+   （`theorem` / `enumerated` / `sample` / `unbacked`）の真の情報源であり、
+   audit_text()はtagfileを自動で埋めません。フラグされた文が本当に裏付け不足
+   なのか、単にtagfile未登録なのかは人間が確認する必要があります
 
 ---
 

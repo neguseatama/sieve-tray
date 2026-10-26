@@ -24,6 +24,10 @@ DEFAULT_SETTINGS = {
     "export_dir": str(Path.home()),
     "history_retention": "50",
     "language": "en",
+    # v0.8.0: optional override path for the quantifier audit lane's
+    # modifier-vocab file. Empty string = use the bundled default
+    # (DEFAULT_MODIFIER_VOCAB_PATH in sieve_tray.py).
+    "audit_modifier_vocab_path": "",
 }
 
 
@@ -37,6 +41,7 @@ class RunSummary:
     flagged_doc_count: int
     pair_count: int
     text_pair_count: int = 0
+    audit_count: int = 0  # v0.8.0: quantifier audit flagged sentences
 
 
 class Storage:
@@ -99,6 +104,13 @@ class Storage:
                     "ALTER TABLE runs ADD COLUMN "
                     "text_pair_count INTEGER NOT NULL DEFAULT 0"
                 )
+            # v0.8.0: audit_count column for the quantifier audit lane.
+            # Same forward-compatible ALTER pattern as text_pair_count.
+            if "audit_count" not in cols:
+                conn.execute(
+                    "ALTER TABLE runs ADD COLUMN "
+                    "audit_count INTEGER NOT NULL DEFAULT 0"
+                )
 
     # ------------------------------------------------------------------
     # settings
@@ -131,8 +143,9 @@ class Storage:
             cur = conn.execute(
                 "INSERT INTO runs "
                 "(timestamp, input_dir, groups_count, doc_count, "
-                " flagged_doc_count, pair_count, text_pair_count, result_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " flagged_doc_count, pair_count, text_pair_count, "
+                " audit_count, result_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     str(input_dir),
@@ -141,6 +154,7 @@ class Storage:
                     flagged,
                     len(result.code_pairs),
                     len(result.text_pairs),
+                    len(result.audit_results),
                     json.dumps(result.to_dict()),
                 ),
             )
@@ -152,8 +166,8 @@ class Storage:
         with closing(self._connect()) as conn:
             rows = conn.execute(
                 "SELECT id, timestamp, input_dir, groups_count, doc_count, "
-                "flagged_doc_count, pair_count, text_pair_count FROM runs "
-                "ORDER BY id DESC LIMIT ?",
+                "flagged_doc_count, pair_count, text_pair_count, audit_count "
+                "FROM runs ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [RunSummary(*row) for row in rows]

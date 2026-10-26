@@ -76,13 +76,21 @@ class ScanWorker(QObject):
     finished = Signal(object)   # ScanResult
     failed = Signal(str)
 
-    def __init__(self, input_dir: Path):
+    def __init__(self, input_dir: Path, audit_modifier_vocab: str = ""):
         super().__init__()
         self.input_dir = input_dir
+        # v0.8.0: optional override path for the audit lane's modifier
+        # vocab. Empty string = use the bundled default (audit_documents
+        # falls back to sieve_referee.DEFAULT_MODIFIER_VOCAB).
+        self.audit_modifier_vocab = audit_modifier_vocab
 
     def run(self):
         try:
-            result = run_scan(self.input_dir, progress=self.progress.emit)
+            result = run_scan(
+                self.input_dir,
+                progress=self.progress.emit,
+                audit_modifier_vocab=self.audit_modifier_vocab or None,
+            )
             self.finished.emit(result)
         except Exception as e:
             self.failed.emit(f"{type(e).__name__}: {e}")
@@ -419,12 +427,24 @@ class SettingsDialog(QDialog):
         current_lang = normalize_language(storage.get_setting("language"))
         self.language_combo.setCurrentIndex(SUPPORTED_LANGUAGES.index(current_lang))
 
+        # v0.8.0: optional override path for the audit lane's modifier
+        # vocab. Empty = use the bundled default
+        # (sieve_tray.DEFAULT_MODIFIER_VOCAB_PATH).
+        self.audit_vocab_edit = QLineEdit(
+            storage.get_setting("audit_modifier_vocab_path"))
+        audit_browse_btn = QPushButton(self._("settings_audit_vocab_browse"))
+        audit_browse_btn.clicked.connect(self._browse_audit_vocab)
+        audit_row = QHBoxLayout()
+        audit_row.addWidget(self.audit_vocab_edit, stretch=1)
+        audit_row.addWidget(audit_browse_btn)
+
         form = QFormLayout()
         form.addRow(self._("settings_export_dir"), export_row)
         form.addRow(self._("settings_retention"), self.retention_spin)
         form.addRow(
             f"{self._('settings_language')} {self._('settings_language_note')}",
             self.language_combo)
+        form.addRow(self._("settings_audit_vocab"), audit_row)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -444,6 +464,14 @@ class SettingsDialog(QDialog):
         if path:
             self.export_dir_edit.setText(path)
 
+    def _browse_audit_vocab(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, self._("settings_audit_vocab_dialog_title"),
+            self.audit_vocab_edit.text(),
+            "Text files (*.txt);;All files (*)")
+        if path:
+            self.audit_vocab_edit.setText(path)
+
     def selected_language(self) -> str:
         return self.language_combo.currentData()
 
@@ -452,6 +480,9 @@ class SettingsDialog(QDialog):
         self.storage.set_setting(
             "history_retention", str(self.retention_spin.value()))
         self.storage.set_setting("language", self.selected_language())
+        # v0.8.0: persist the audit-vocab override path (empty = default).
+        self.storage.set_setting(
+            "audit_modifier_vocab_path", self.audit_vocab_edit.text().strip())
         self.storage.prune_history()
 
 
@@ -464,15 +495,22 @@ class DetailDialog(QDialog):
     top) - it surfaces exactly what the underlying Sieve engine
     observed, consistent with those engines' own "observation, not
     judgment" stance.
+
+    v0.8.0: an optional `certainty` dict adds a separate "Certainty
+    Markers" section for the quantifier audit lane, surfacing the
+    modifier-vocab sha256, vocab count, and the per-sentence
+    certainty markers (or "no markers" when the sentence had none).
+    Pass None for non-audit dialogs and the section is omitted.
     """
 
     def __init__(self, title: str, h_states: dict, labels: dict, lang: str,
                  evidence: dict | None = None, scores: dict | None = None,
-                 reason: str | None = None, parent=None):
+                 reason: str | None = None, certainty: dict | None = None,
+                 parent=None):
         super().__init__(parent)
         self._ = lambda key, **kw: tr(lang, key, **kw)
         self.setWindowTitle(title)
-        self.resize(560, 480)
+        self.resize(560, 560)
 
         layout = QVBoxLayout(self)
 
@@ -515,6 +553,37 @@ class DetailDialog(QDialog):
             "\n".join(lines) if lines else self._("detail_no_extra_info"))
         layout.addWidget(QLabel(self._("detail_section_label")))
         layout.addWidget(detail_view)
+
+        # v0.8.0: separate Certainty Markers section for audit-sentence
+        # details. Omitted entirely when `certainty` is None (non-audit
+        # dialogs). When present, shows the modifier-vocab provenance
+        # (sha256 + count) and the per-sentence certainty markers (or
+        # a "no markers" line when the sentence had none).
+        if certainty is not None:
+            layout.addWidget(QLabel(self._("detail_certainty_section")))
+            cert_view = QPlainTextEdit()
+            cert_view.setReadOnly(True)
+            cert_lines: list[str] = []
+            sha = certainty.get("modifier_vocab_sha256")
+            count = int(certainty.get("modifier_vocab_count", 0))
+            if sha:
+                cert_lines.append(
+                    self._("detail_certainty_vocab_label", sha=sha))
+            cert_lines.append(self._("detail_certainty_count_label", n=count))
+            flagged = certainty.get("certainty_flagged")
+            if flagged is not None:
+                cert_lines.append(
+                    self._("detail_certainty_flagged_label", n=int(flagged)))
+            markers = certainty.get("certainty_markers", [])
+            if markers:
+                cert_lines.append("")
+                for m in markers:
+                    cert_lines.append(f"  - {m}")
+            else:
+                cert_lines.append("")
+                cert_lines.append(self._("detail_certainty_none"))
+            cert_view.setPlainText("\n".join(cert_lines))
+            layout.addWidget(cert_view)
 
         close_btn = QPushButton(self._("close_button"))
         close_btn.clicked.connect(self.accept)
@@ -671,10 +740,27 @@ class MainWindow(QMainWindow):
             self._make_filterable_tab(self.text_table, self.text_filter_edit),
             self._("text_tab", n=0))
 
+        # v0.8.0: Quantifier Audit tab. One row per flagged sentence
+        # across all scanned .txt/.md files. Double-click opens a
+        # DetailDialog with a separate Certainty Markers section.
+        self.audit_table = self._make_table(
+            [self._("audit_header_file"), self._("audit_header_sentence"),
+             self._("audit_header_signal"), self._("audit_header_pattern"),
+             self._("audit_header_backing"), self._("audit_header_scope"),
+             self._("audit_header_certainty")])
+        self.audit_table.cellDoubleClicked.connect(self._on_audit_row_activated)
+        self.audit_filter_edit = QLineEdit()
+        self.audit_filter_edit.setPlaceholderText(self._("filter_by_filename"))
+        self.audit_filter_edit.textChanged.connect(self._apply_audit_filter)
+        self._audit_tab_index = self.tabs.addTab(
+            self._make_filterable_tab(self.audit_table, self.audit_filter_edit),
+            self._("audit_tab", n=0))
+
         self.history_table = self._make_table([
             self._("history_header_timestamp"), self._("history_header_folder"),
             self._("history_header_groups"), self._("history_header_docs"),
             self._("history_header_code_pairs"), self._("history_header_text_pairs"),
+            self._("history_header_audit"),
         ])
         self.history_table.cellDoubleClicked.connect(self._on_history_row_activated)
         self._history_tab_index = self.tabs.addTab(
@@ -926,11 +1012,14 @@ class MainWindow(QMainWindow):
         self.doc_flagged_only_cb.setChecked(False)
         self.code_filter_edit.clear()
         self.text_filter_edit.clear()
+        self.audit_filter_edit.clear()
         self._clear_result_tables()
         self.summary_label.setText(self._("scanning"))
 
         self._thread = QThread(self)
-        self._worker = ScanWorker(input_dir)
+        # v0.8.0: pass the user's audit-vocab override (empty = bundled default).
+        audit_vocab = self.storage.get_setting("audit_modifier_vocab_path") or ""
+        self._worker = ScanWorker(input_dir, audit_modifier_vocab=audit_vocab)
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
@@ -949,9 +1038,11 @@ class MainWindow(QMainWindow):
         self.doc_table.setRowCount(0)
         self.code_table.setRowCount(0)
         self.text_table.setRowCount(0)
+        self.audit_table.setRowCount(0)
         self.tabs.setTabText(self._doc_tab_index, self._("doc_tab", n=0))
         self.tabs.setTabText(self._code_tab_index, self._("code_tab", n=0))
         self.tabs.setTabText(self._text_tab_index, self._("text_tab", n=0))
+        self.tabs.setTabText(self._audit_tab_index, self._("audit_tab", n=0))
 
     def _on_scan_finished(self, result: ScanResult):
         """Main-thread adapter for the scan worker's finished
@@ -969,7 +1060,8 @@ class MainWindow(QMainWindow):
         self.summary_label.setText(self._(
             "summary_done", groups=len(result.groups),
             docs=len(result.doc_results), flagged=flagged_docs,
-            pairs=len(result.code_pairs), tpairs=len(result.text_pairs)))
+            pairs=len(result.code_pairs), tpairs=len(result.text_pairs),
+            audit=len(result.audit_results)))
         self.run_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
 
@@ -1036,6 +1128,31 @@ class MainWindow(QMainWindow):
         self.text_table.setSortingEnabled(True)
         self._apply_text_filter()
 
+        # v0.8.0: Quantifier Audit table - one row per flagged sentence.
+        # The full audit entry is stashed on column 0's UserRole so the
+        # detail dialog can rebuild the Certainty Markers section.
+        self.audit_table.setSortingEnabled(False)
+        self.audit_table.setRowCount(len(result.audit_results))
+        for row, a in enumerate(result.audit_results):
+            file_item = QTableWidgetItem(a["file"])
+            file_item.setData(Qt.UserRole, a)
+            self.audit_table.setItem(row, 0, file_item)
+            sentence = a.get("sentence_text") or ""
+            self.audit_table.setItem(row, 1, QTableWidgetItem(sentence))
+            self.audit_table.setItem(row, 2, QTableWidgetItem(a["signal"]))
+            self.audit_table.setItem(row, 3, QTableWidgetItem(a["pattern_name"]))
+            self.audit_table.setItem(row, 4, QTableWidgetItem(a["backing"]))
+            self.audit_table.setItem(row, 5, QTableWidgetItem(a["scope"]))
+            certainty = ", ".join(a.get("certainty_markers", [])) or "—"
+            self.audit_table.setItem(row, 6, QTableWidgetItem(certainty))
+            bg = SIGNAL_BG.get(a["signal"], FLAGGED_BG)
+            for col in range(7):
+                self.audit_table.item(row, col).setBackground(bg)
+        self.tabs.setTabText(
+            self._audit_tab_index, self._("audit_tab", n=len(result.audit_results)))
+        self.audit_table.setSortingEnabled(True)
+        self._apply_audit_filter()
+
     def export_html(self):
         if self._last_result is None:
             return
@@ -1089,6 +1206,16 @@ class MainWindow(QMainWindow):
             combined = (a_item.text() + " " + b_item.text()).lower()
             self.text_table.setRowHidden(row, text not in combined)
 
+    def _apply_audit_filter(self):
+        text = self.audit_filter_edit.text().lower()
+        for row in range(self.audit_table.rowCount()):
+            file_item = self.audit_table.item(row, 0)
+            sentence_item = self.audit_table.item(row, 1)
+            if file_item is None or sentence_item is None:
+                continue
+            combined = (file_item.text() + " " + sentence_item.text()).lower()
+            self.audit_table.setRowHidden(row, text not in combined)
+
     # ------------------------------------------------------------------
     # detail dialogs
     # ------------------------------------------------------------------
@@ -1130,6 +1257,33 @@ class MainWindow(QMainWindow):
             self._("detail_text_title", a=p["a"], b=p["b"]),
             p.get("h_states", {}), TEXT_AXIS_LABELS[self.lang], self.lang,
             scores=p.get("scores"), reason=p.get("reason"), parent=self)
+        dialog.exec()
+
+    def _on_audit_row_activated(self, row: int, _column: int):
+        # v0.8.0: open a DetailDialog for a quantifier-audit sentence.
+        # The audit lane has no H1-H7 axes (it's a separate lane), so
+        # we pass an empty h_states/labels pair and surface everything
+        # through the `certainty` section + reason.
+        item = self.audit_table.item(row, 0)
+        if item is None:
+            return
+        a = item.data(Qt.UserRole)
+        if not a:
+            return
+        # Fake a single "axis" so the axis_table isn't empty - the
+        # audit lane has one verdict per sentence, surfaced as a single
+        # row whose "axis" is the sentence's signal.
+        audit_labels = {"S": {"en": "Signal", "ja": "シグナル"}[self.lang]}
+        h_states = {"S": 1 if a["signal"] == "RED" else 0}
+        certainty = {
+            "modifier_vocab_sha256": a.get("modifier_vocab_sha256"),
+            "modifier_vocab_count": int(a.get("modifier_vocab_count", 0)),
+            "certainty_markers": list(a.get("certainty_markers", [])),
+        }
+        dialog = DetailDialog(
+            self._("detail_audit_title", file=a["file"]),
+            h_states, audit_labels, self.lang,
+            reason=a.get("reason"), certainty=certainty, parent=self)
         dialog.exec()
 
     # ------------------------------------------------------------------
@@ -1180,6 +1334,9 @@ class MainWindow(QMainWindow):
                 row, 4, QTableWidgetItem(str(r.pair_count)))
             self.history_table.setItem(
                 row, 5, QTableWidgetItem(str(r.text_pair_count)))
+            # v0.8.0: audit count column
+            self.history_table.setItem(
+                row, 6, QTableWidgetItem(str(r.audit_count)))
             # stash the run id on the row for double-click lookup
             self.history_table.item(row, 0).setData(Qt.UserRole, r.id)
         self.tabs.setTabText(
@@ -1203,7 +1360,8 @@ class MainWindow(QMainWindow):
         self.summary_label.setText(self._(
             "summary_history", run_id=run_id, groups=len(result.groups),
             docs=len(result.doc_results), flagged=flagged_docs,
-            pairs=len(result.code_pairs), tpairs=len(result.text_pairs)))
+            pairs=len(result.code_pairs), tpairs=len(result.text_pairs),
+            audit=len(result.audit_results)))
         self.export_btn.setEnabled(True)
         self.tabs.setCurrentIndex(self._doc_tab_index)
 
