@@ -141,3 +141,28 @@ class TestSanitizations(unittest.TestCase):
         self.storage.prune_history()
         rows = self.storage.load_sanitizations(limit=10)
         self.assertLessEqual(len(rows), 2)
+
+    def test_clear_sanitizations(self):
+        # v0.9.0: clear_sanitizations() wipes all sanitize history rows.
+        from pathlib import Path
+        for i in range(3):
+            self.storage.save_sanitization(
+                {"n_files": 1, "ok_count": 1, "masked_total": 0,
+                 "integrity_bad_count": 0, "failed": [], "skipped": False},
+                Path("/d%d" % i), Path("/r.cfg"), Path("/o%d" % i))
+        self.assertGreater(len(self.storage.load_sanitizations(limit=10)), 0)
+        deleted = self.storage.clear_sanitizations()
+        self.assertGreaterEqual(deleted, 3)
+        self.assertEqual(self.storage.load_sanitizations(limit=10), [])
+
+
+def test_clear_runs(tmp_path):
+    # v0.9.0: clear_runs() wipes all scan history rows.
+    storage = make_storage(tmp_path)
+    result = run_scan(FIXTURES)
+    storage.save_run(FIXTURES, result)
+    storage.save_run(FIXTURES, result)
+    assert len(storage.list_runs()) == 2
+    deleted = storage.clear_runs()
+    assert deleted == 2
+    assert storage.list_runs() == []

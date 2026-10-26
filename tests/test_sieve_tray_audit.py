@@ -17,6 +17,7 @@ from sieve_tray import (
     audit_text,
     run_scan,
     render,
+    render_text,
     DEFAULT_MODIFIER_VOCAB_PATH,
 )
 
@@ -242,8 +243,77 @@ class TestDefaultModifierVocabPath(unittest.TestCase):
 class TestVersionBump(unittest.TestCase):
     """v0.8.0 marker - guards against accidental version revert."""
 
-    def test_version_is_0_8_0(self):
-        self.assertEqual(sieve_tray.__version__, "0.8.0")
+    def test_version_is_0_9_0(self):
+        # v0.9.0: bumped for the file-selection / clear-history /
+        # render-text / signal-color improvements.
+        self.assertEqual(sieve_tray.__version__, "0.9.0")
+
+
+class TestRunScanGroupsArgument(unittest.TestCase):
+    """v0.9.0: run_scan accepts an explicit `groups` list (file mode)."""
+
+    def test_run_scan_with_groups_skips_scan_dir(self):
+        # When groups is provided, scan(input_dir) is bypassed - this
+        # lets the GUI pass a single group of user-picked files even
+        # when input_dir is not a real directory.
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)
+            (p / "doc.txt").write_text(
+                "すべての自然数は偶数である。", encoding="utf-8")
+            files = [p / "doc.txt"]
+            groups = [("selected", files)]
+            # input_dir points to the temp dir; with groups=, it is
+            # not actually scanned (subdirectories are looked up).
+            result = run_scan(p, groups=groups)
+            self.assertEqual(len(result.groups), 1)
+            self.assertEqual(result.groups[0][0], "selected")
+
+    def test_run_scan_groups_none_uses_scan_dir(self):
+        # When groups=None (default), the folder-mode path is taken -
+        # this is the backward-compatible behavior from v0.8.0.
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)
+            (p / "group_a").mkdir()
+            (p / "group_a" / "doc.txt").write_text(
+                "3個のリンゴがある。", encoding="utf-8")
+            result = run_scan(p, groups=None)
+            self.assertEqual(len(result.groups), 1)
+            self.assertEqual(result.groups[0][0], "group_a")
+
+
+class TestRenderText(unittest.TestCase):
+    """v0.9.0: render_text produces a Markdown alternative to render()."""
+
+    def test_render_text_has_section_headings(self):
+        r = ScanResult()
+        out = render_text(r)
+        self.assertIn("# Sieve Tray Report", out)
+        self.assertIn("## Documents", out)
+        self.assertIn("## Code Pairs", out)
+        self.assertIn("## Text Pairs", out)
+        self.assertIn("## Quantifier Audit", out)
+
+    def test_render_text_with_audit_results_shows_table(self):
+        r = ScanResult(audit_results=[{
+            "file": "group_a/essay.txt",
+            "sentence_sha256": "a" * 64,
+            "sentence_text": "すべての自然数は偶数である。",
+            "patterns": ["すべて"],
+            "backing": "unbacked",
+            "scope": "universal",
+            "signal": "RED",
+            "pattern_name": "UNBACKED_UNIVERSAL",
+            "reason": "裏づけのない全称文です。",
+            "certainty_markers": ["確実に"],
+            "modifier_vocab_sha256": None,
+            "modifier_vocab_count": 10,
+        }])
+        out = render_text(r)
+        self.assertIn("| File |", out)
+        self.assertIn("UNBACKED_UNIVERSAL", out)
+        self.assertIn("確実に", out)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v0.8.0
+# Sieve Tray v0.9.0
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
@@ -105,8 +105,20 @@ Redact removes it with a receipt that proves nothing else changed.
 - **Configurable** — default export folder, history retention, UI language,
   and the audit lane's modifier-vocab file (empty = bundled default) are all
   adjustable from a Settings dialog.
-- **Self-contained HTML export** — every result can be exported as a
-  standalone HTML report, for sharing or archiving.
+- **File or folder selection (new in v0.9.0)** — point Sieve Tray
+  at a whole folder (the original mode) or pick individual files; the
+  audit lane runs on a single document, so file-selection mode is a
+  natural fit for quick one-off checks.
+- **Self-contained report export (HTML or Markdown)** — every result
+  can be exported as a standalone HTML report, or as a Markdown report
+  for plain-text / version-controlled workflows.
+- **History clear (new in v0.9.0)** — the History and Sanitize History
+  tabs each have a "Clear History" button for when you want to wipe the
+  local SQLite store.
+- **Improved signal colors (new in v0.9.0)** — RED and YELLOW rows
+  have stronger pastel backgrounds and the signal column is rendered
+  in a signal-colored foreground, so flagged rows are easy to spot at a
+  glance even on calibrated monitors.
 - **Sanitize text files** — run the bundled Sieve Redact engine over the
   selected folder's `.txt`/`.md` files with a rules file of your choice;
   every output gets a machine-readable receipt, and the summary always

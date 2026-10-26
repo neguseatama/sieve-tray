@@ -42,7 +42,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 
 CODE_EXTS = {".py"}
@@ -610,7 +610,8 @@ def sanitize_tree(input_dir, config_path, out_root,
 
 def run_scan(input_dir: Path,
              progress: ProgressCallback = _silent,
-             audit_modifier_vocab: Optional[str] = None) -> ScanResult:
+             audit_modifier_vocab: Optional[str] = None,
+             groups: Optional[List[Tuple[str, List[Path]]]] = None) -> ScanResult:
     """Core entry point. Scans input_dir and returns a ScanResult.
 
     This is the single function a GUI needs to call; it does no I/O
@@ -623,8 +624,16 @@ def run_scan(input_dir: Path,
     (DEFAULT_MODIFIER_VOCAB_PATH, shipped with the package). An empty
     string disables the override and falls back to the bundled default
     as well. A non-empty path is read line-by-line (see _load_modifier_vocab).
+
+    groups (v0.9.0): optional explicit list of (group_name, files) to
+    scan instead of discovering groups from input_dir subdirectories.
+    When provided, scan(input_dir) is skipped and the supplied groups
+    are used directly - this enables file-selection mode where the GUI
+    passes a single group of user-picked files (any suffix). When None
+    (default), behavior is unchanged from v0.8.0 (subdirectory scan).
     """
-    groups = scan(input_dir)
+    if groups is None:
+        groups = scan(input_dir)
     progress(f"Found {len(groups)} groups.")
 
     code_map: Dict[str, str] = {}
@@ -772,6 +781,78 @@ def render(result: ScanResult) -> str:
                  "Human review is required.</p>")
     parts.append("</body></html>")
     return "\n".join(parts)
+
+
+def render_text(result: ScanResult) -> str:
+    """Render a ScanResult as Markdown (v0.9.0).
+
+    Plain-text alternative to render() for users who want to read the
+    report in a text editor, paste it into a code review, or version it
+    in git. Markdown tables are used so the output renders on GitHub
+    while remaining readable as plain text.
+    """
+    groups = result.groups
+    doc_results, code_pairs, text_pairs = (
+        result.doc_results, result.code_pairs, result.text_pairs)
+    audit_results = result.audit_results
+
+    lines = ["# Sieve Tray Report", "",
+             f"_{len(groups)} groups scanned._", ""]
+
+    lines.append("## Documents")
+    if not doc_results:
+        lines.append("No documents analyzed.")
+    else:
+        lines.append("| File | Mask | Status |")
+        lines.append("| --- | --- | --- |")
+        for r in doc_results:
+            status = "flagged" if r["flagged"] else "clean"
+            lines.append(f"| `{r['path']}` | `{r['mask']}` | {status} |")
+    lines.append("")
+
+    lines.append("## Code Pairs")
+    if not code_pairs:
+        lines.append("No suspicious code pairs.")
+    else:
+        lines.append("| File A | File B | Mask |")
+        lines.append("| --- | --- | --- |")
+        for p in code_pairs:
+            lines.append(f"| `{p['a']}` | `{p['b']}` | `{p['mask']}` |")
+    lines.append("")
+
+    lines.append("## Text Pairs")
+    if not text_pairs:
+        lines.append("No suspicious text pairs.")
+    else:
+        lines.append("| File A | File B | Signal | Pattern |")
+        lines.append("| --- | --- | --- | --- |")
+        for p in text_pairs:
+            lines.append(
+                f"| `{p['a']}` | `{p['b']}` | {p['signal']} "
+                f"| {p['pattern_name']} |")
+    lines.append("")
+
+    lines.append("## Quantifier Audit")
+    if not audit_results:
+        lines.append("No flagged universalization candidates.")
+    else:
+        lines.append("| File | Sentence | Signal | Pattern | Backing "
+                     "| Scope | Certainty |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        for a in audit_results:
+            sentence = a.get("sentence_text") or a.get("sentence_sha256", "")[:16]
+            # Escape pipes in cell content so the Markdown table doesn't break.
+            sentence = sentence.replace("|", "\\|")
+            certainty = ", ".join(a.get("certainty_markers", [])) or "—"
+            lines.append(
+                f"| `{a['file']}` | {sentence} | {a['signal']} "
+                f"| {a['pattern_name']} | {a['backing']} | {a['scope']} "
+                f"| {certainty} |")
+    lines.append("")
+
+    lines.append("_This is an observation report, not a judgment. "
+                 "Human review is required._")
+    return "\n".join(lines)
 
 
 def main():

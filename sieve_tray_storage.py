@@ -241,3 +241,24 @@ class Storage:
                 "(SELECT id FROM sanitizations ORDER BY id DESC LIMIT ?)",
                 (retention,),
             )
+
+    def clear_runs(self) -> int:
+        """Delete all scan history rows; returns the number of rows deleted.
+
+        v0.9.0: exposed for the GUI's 'Clear history' button on the
+        History tab. Does not touch the sanitizations table.
+        """
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute("DELETE FROM runs")
+            return cur.rowcount
+
+    def clear_sanitizations(self) -> int:
+        """Delete all sanitize history rows; returns the number of rows
+        deleted.
+
+        v0.9.0: exposed for the GUI's 'Clear history' button on the
+        Sanitize History tab. Does not touch the runs table.
+        """
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute("DELETE FROM sanitizations")
+            return cur.rowcount

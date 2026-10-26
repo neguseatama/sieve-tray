@@ -34,6 +34,7 @@ from PySide6.QtGui import QColor, QIcon, QAction, QPainter, QPixmap
 from sieve_tray import (
     run_scan,
     render,
+    render_text,
     sanitize_file,
     sanitize_tree,
     ScanResult,
@@ -64,8 +65,15 @@ def resource_path(relative: str) -> Path:
 
 FLAGGED_BG = QColor("#fff5f5")
 SIGNAL_BG = {
-    "RED": QColor("#fff5f5"),
-    "YELLOW": QColor("#fffbea"),
+    "RED": QColor("#ffe0e0"),
+    "YELLOW": QColor("#fff4cc"),
+}
+# v0.9.0: signal-colored text for the Signal column so the row is
+# identifiable even on a calibrated monitor where the pastel background
+# alone may be too subtle. RED/YELLOW get distinct hues for foreground.
+SIGNAL_FG = {
+    "RED": QColor("#b00000"),
+    "YELLOW": QColor("#8a5a00"),
 }
 
 
@@ -76,13 +84,18 @@ class ScanWorker(QObject):
     finished = Signal(object)   # ScanResult
     failed = Signal(str)
 
-    def __init__(self, input_dir: Path, audit_modifier_vocab: str = ""):
+    def __init__(self, input_dir: Path, audit_modifier_vocab: str = "",
+                 groups=None):
         super().__init__()
         self.input_dir = input_dir
         # v0.8.0: optional override path for the audit lane's modifier
         # vocab. Empty string = use the bundled default (audit_documents
         # falls back to sieve_referee.DEFAULT_MODIFIER_VOCAB).
         self.audit_modifier_vocab = audit_modifier_vocab
+        # v0.9.0: optional explicit groups list (file-selection mode).
+        # When set, run_scan skips scan(input_dir) and uses these groups
+        # directly. None = folder mode (unchanged from v0.8.0).
+        self.groups = groups
 
     def run(self):
         try:
@@ -90,6 +103,7 @@ class ScanWorker(QObject):
                 self.input_dir,
                 progress=self.progress.emit,
                 audit_modifier_vocab=self.audit_modifier_vocab or None,
+                groups=self.groups,
             )
             self.finished.emit(result)
         except Exception as e:
@@ -681,6 +695,10 @@ class MainWindow(QMainWindow):
         self.path_edit.setPlaceholderText(self._("select_folder_placeholder"))
         browse_btn = QPushButton(self._("browse_folder"))
         browse_btn.clicked.connect(self.choose_folder)
+        # v0.9.0: file-selection mode (audit lane works on a single
+        # document, so users can pick a file without grouping).
+        choose_files_btn = QPushButton(self._("choose_files_button"))
+        choose_files_btn.clicked.connect(self.start_scan_files)
         self.run_btn = QPushButton(self._("run_scan"))
         self.run_btn.setEnabled(False)
         self.run_btn.clicked.connect(self.start_scan)
@@ -695,6 +713,7 @@ class MainWindow(QMainWindow):
         self.sanitize_image_btn.clicked.connect(self.sanitize_image)
         picker_row.addWidget(self.path_edit, stretch=1)
         picker_row.addWidget(browse_btn)
+        picker_row.addWidget(choose_files_btn)
         picker_row.addWidget(self.run_btn)
         picker_row.addWidget(self.sanitize_btn)
         picker_row.addWidget(self.sanitize_image_btn)
@@ -763,8 +782,17 @@ class MainWindow(QMainWindow):
             self._("history_header_audit"),
         ])
         self.history_table.cellDoubleClicked.connect(self._on_history_row_activated)
+        # v0.9.0: wrap the history table in a container with a 'Clear'
+        # button beneath it (PLAN D93 - Sanitize History also has one).
+        self.history_clear_btn = QPushButton(self._("history_clear"))
+        self.history_clear_btn.clicked.connect(self._on_history_clear)
+        history_container = QWidget()
+        history_layout = QVBoxLayout(history_container)
+        history_layout.setContentsMargins(0, 0, 0, 0)
+        history_layout.addWidget(self.history_table, stretch=1)
+        history_layout.addWidget(self.history_clear_btn)
         self._history_tab_index = self.tabs.addTab(
-            self.history_table, self._("history_tab", n=0))
+            history_container, self._("history_tab", n=0))
         self.sanitize_history_table = self._make_table([
             self._("history_header_timestamp"),
             self._("history_header_folder"),
@@ -774,8 +802,17 @@ class MainWindow(QMainWindow):
             self._("sanitize_history_header_masked"),
             self._("sanitize_history_header_integrity"),
         ])
+        self.sanitize_history_clear_btn = QPushButton(
+            self._("sanitize_history_clear"))
+        self.sanitize_history_clear_btn.clicked.connect(
+            self._on_sanitize_history_clear)
+        sanitize_history_container = QWidget()
+        sanitize_history_layout = QVBoxLayout(sanitize_history_container)
+        sanitize_history_layout.setContentsMargins(0, 0, 0, 0)
+        sanitize_history_layout.addWidget(self.sanitize_history_table, stretch=1)
+        sanitize_history_layout.addWidget(self.sanitize_history_clear_btn)
         self._sanitize_history_tab_index = self.tabs.addTab(
-            self.sanitize_history_table,
+            sanitize_history_container,
             self._("sanitize_history_tab", n=0))
 
         layout.addWidget(self.tabs, stretch=3)
@@ -1004,7 +1041,31 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, self._("error_title"), self._("error_select_valid_folder"))
             return
+        self._launch_scan(input_dir, groups=None)
 
+    def start_scan_files(self):
+        """v0.9.0: file-selection mode. User picks one or more files; they
+        are scanned as a single group (any suffix). code_pairs and
+        text_pairs will be 0 since there is only one group; the audit
+        lane still runs (Sieve-Referee §9: single document + audit
+        enabled = standalone audit run)."""
+        path, _ = QFileDialog.getOpenFileNames(
+            self, self._("choose_files_dialog_title"), "",
+            self._("choose_files_filter"))
+        if not path:
+            return
+        files = [Path(p) for p in path]
+        # Use the first file's parent as the nominal input_dir so
+        # history save_run has a reasonable path to record.
+        input_dir = files[0].parent
+        # Single group named after the common parent (matches the
+        # folder-mode key shape "{group}/{file}").
+        group_name = input_dir.name or "selected"
+        groups = [(group_name, files)]
+        self._launch_scan(input_dir, groups=groups)
+
+    def _launch_scan(self, input_dir: Path, groups=None):
+        """Shared scan launcher for folder and file modes."""
         self.run_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
         self.log_view.clear()
@@ -1019,7 +1080,8 @@ class MainWindow(QMainWindow):
         self._thread = QThread(self)
         # v0.8.0: pass the user's audit-vocab override (empty = bundled default).
         audit_vocab = self.storage.get_setting("audit_modifier_vocab_path") or ""
-        self._worker = ScanWorker(input_dir, audit_modifier_vocab=audit_vocab)
+        self._worker = ScanWorker(
+            input_dir, audit_modifier_vocab=audit_vocab, groups=groups)
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
@@ -1123,6 +1185,9 @@ class MainWindow(QMainWindow):
             bg = SIGNAL_BG.get(p["signal"], FLAGGED_BG)
             for col in range(4):
                 self.text_table.item(row, col).setBackground(bg)
+            fg = SIGNAL_FG.get(p["signal"])
+            if fg is not None:
+                self.text_table.item(row, 2).setForeground(fg)
         self.tabs.setTabText(
             self._text_tab_index, self._("text_tab", n=len(result.text_pairs)))
         self.text_table.setSortingEnabled(True)
@@ -1148,6 +1213,11 @@ class MainWindow(QMainWindow):
             bg = SIGNAL_BG.get(a["signal"], FLAGGED_BG)
             for col in range(7):
                 self.audit_table.item(row, col).setBackground(bg)
+            # Signal column gets a signal-colored foreground so the row
+            # is identifiable even when the pastel background is subtle.
+            fg = SIGNAL_FG.get(a["signal"])
+            if fg is not None:
+                self.audit_table.item(row, 2).setForeground(fg)
         self.tabs.setTabText(
             self._audit_tab_index, self._("audit_tab", n=len(result.audit_results)))
         self.audit_table.setSortingEnabled(True)
@@ -1158,15 +1228,52 @@ class MainWindow(QMainWindow):
             return
         default_dir = self.storage.get_setting("export_dir")
         default_path = str(Path(default_dir) / "report.html")
-        path, _ = QFileDialog.getSaveFileName(
+        # v0.9.0: format picker - HTML or Markdown (render_text).
+        path, selected_filter = QFileDialog.getSaveFileName(
             self, self._("save_report_dialog_title"), default_path,
-            "HTML Files (*.html)")
+            self._("save_report_filter"))
         if not path:
             return
-        Path(path).write_text(render(self._last_result), encoding="utf-8")
+        # Decide the renderer from the selected filter; fall back to
+        # extension-based detection if the platform returned no filter.
+        fmt = "md" if (".md" in (selected_filter or "") or path.endswith(".md")) \
+            else "html"
+        if fmt == "md":
+            content = render_text(self._last_result)
+        else:
+            content = render(self._last_result)
+        Path(path).write_text(content, encoding="utf-8")
         QMessageBox.information(
             self, self._("save_complete_title"),
             self._("save_complete_message", path=path))
+
+    # ------------------------------------------------------------------
+    # v0.9.0: history clear handlers (教訓 67: bound method, not lambda)
+    # ------------------------------------------------------------------
+
+    def _on_history_clear(self):
+        """Bound-method handler for the History tab 'Clear' button."""
+        if QMessageBox.question(
+                self,
+                self._("confirm_clear_title"),
+                self._("confirm_clear_history"),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.storage.clear_runs()
+        self._refresh_history_table()
+
+    def _on_sanitize_history_clear(self):
+        """Bound-method handler for the Sanitize History 'Clear' button."""
+        if QMessageBox.question(
+                self,
+                self._("confirm_clear_title"),
+                self._("confirm_clear_sanitizations"),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.storage.clear_sanitizations()
+        self._refresh_sanitize_history_table()
 
     # ------------------------------------------------------------------
     # filtering
