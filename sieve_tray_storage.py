@@ -111,6 +111,26 @@ class Storage:
                     "ALTER TABLE runs ADD COLUMN "
                     "audit_count INTEGER NOT NULL DEFAULT 0"
                 )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS crowd_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT,
+                    records_in INTEGER NOT NULL,
+                    records_out INTEGER,
+                    suppressed INTEGER,
+                    k_requested INTEGER,
+                    k_achieved INTEGER,
+                    max_risk REAL,
+                    avg_risk REAL,
+                    before_alone INTEGER,
+                    after_alone INTEGER,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
 
     # ------------------------------------------------------------------
     # settings
@@ -261,4 +281,75 @@ class Storage:
         """
         with closing(self._connect()) as conn, conn:
             cur = conn.execute("DELETE FROM sanitizations")
+            return cur.rowcount
+
+    def save_crowd_run(self, summary: dict) -> int:
+        """Persist one crowd run summary dict; returns the row id.
+
+        summary is the flat dict returned by the crowd wrappers in
+        sieve_tray.py. Scalar metrics go into queryable columns and
+        the whole dict into payload_json, mirroring the runs table's
+        result_json pattern. Auto-prunes with the history_retention
+        setting, like save_run() does.
+        """
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute(
+                "INSERT INTO crowd_runs (timestamp, status, reason,"
+                " records_in, records_out, suppressed, k_requested,"
+                " k_achieved, max_risk, avg_risk, before_alone,"
+                " after_alone, payload_json)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                 str(summary.get("status", "")),
+                 summary.get("reason"),
+                 int(summary.get("records_in") or 0),
+                 summary.get("records_out"),
+                 summary.get("suppressed"),
+                 summary.get("k_requested"),
+                 summary.get("k_achieved"),
+                 summary.get("max_risk"),
+                 summary.get("avg_risk"),
+                 summary.get("before_alone"),
+                 summary.get("after_alone"),
+                 json.dumps(summary, ensure_ascii=False, sort_keys=True)))
+            row_id = cur.lastrowid
+        self.prune_crowd_runs()
+        return row_id
+
+    def load_crowd_runs(self, limit: int = 20) -> list:
+        """Return stored crowd run dicts, newest first.
+
+        Each record is the original summary dict with id and timestamp
+        injected, so the GUI can render the receipt straight from it.
+        """
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT id, timestamp, payload_json FROM crowd_runs"
+                " ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        records = []
+        for row_id, timestamp, payload in rows:
+            record = json.loads(payload)
+            record["id"] = row_id
+            record["timestamp"] = timestamp
+            records.append(record)
+        return records
+
+    def prune_crowd_runs(self, keep: Optional[int] = None) -> int:
+        """Keep only the newest keep rows; returns the deleted count.
+
+        keep defaults to the history_retention setting, matching
+        prune_history(); keep <= 0 disables pruning and returns 0.
+        """
+        if keep is None:
+            try:
+                keep = int(self.get_setting("history_retention"))
+            except ValueError:
+                keep = int(DEFAULT_SETTINGS["history_retention"])
+        if keep <= 0:
+            return 0
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute(
+                "DELETE FROM crowd_runs WHERE id NOT IN "
+                "(SELECT id FROM crowd_runs ORDER BY id DESC LIMIT ?)",
+                (keep,))
             return cur.rowcount
