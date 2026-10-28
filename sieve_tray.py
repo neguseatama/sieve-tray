@@ -608,6 +608,120 @@ def sanitize_tree(input_dir, config_path, out_root,
             base["failed"].append((rel, result))
     return base
 
+def crowd_inspect(header, rows) -> list:
+    """Column observations from the crowd engine (no roles guessed).
+
+    Returns one dict per column with the keys name / distinct /
+    empty / unique_ratio / shape. Thin in-process wrapper around the
+    vendored sieve_crowd package, the same pattern as the Redact
+    wrappers above.
+    """
+    from sieve_crowd import inspect_table
+    return inspect_table(header, rows)
+
+
+def crowd_parse_config(config_text):
+    """Parse JSON config text into a sieve_crowd Config.
+
+    JSON syntax errors are re-raised as a crowd ConfigError whose
+    message carries the line number, so the GUI can point at the
+    offending line directly. Crowd-side validation errors (unknown
+    keys, k < 2, roles left at '?') propagate as ConfigError
+    unchanged.
+    """
+    from sieve_crowd import ConfigError, parse_config
+    try:
+        obj = json.loads(config_text)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(
+            f"the configuration is not valid JSON: line {exc.lineno}: {exc.msg}"
+        ) from None
+    return parse_config(obj)
+
+
+def _crowd_atomic_write(path, data):
+    """Write bytes atomically (tempfile + os.replace), the same
+    on-disk contract as the crowd CLI's own writer."""
+    import os
+    import tempfile
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".sieve-tray-crowd-")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _crowd_summary(result, lang) -> dict:
+    """Map a sieve_crowd Result to a flat summary dict the GUI can
+    surface directly.
+
+    Refused runs carry no privacy/result numbers (their receipt has
+    none), so those keys come back as None; records_in survives
+    because every receipt reports it. after_alone is the crowd's
+    records_alone_in_crowd figure - the "After:" number in the
+    receipt text - i.e. records still alone on the qi columns after
+    generalization and suppression.
+    """
+    d = result.report.data
+    privacy = d.get("privacy") or {}
+    res = d.get("result") or {}
+    return {
+        "ok": result.status == "anonymized",
+        "status": result.status,
+        "reason": d.get("reason"),
+        "header": result.header,
+        "rows": result.rows,
+        "report_text": result.report.text(lang),
+        "report_json": result.report.to_json(),
+        "records_in": d.get("input", {}).get("records"),
+        "records_out": res.get("records_out"),
+        "suppressed": res.get("suppressed"),
+        "k_requested": privacy.get("k_requested"),
+        "k_achieved": privacy.get("k_achieved"),
+        "max_risk": privacy.get("max_risk"),
+        "avg_risk": privacy.get("average_risk"),
+        "before_alone": privacy.get("before", {}).get("records_alone"),
+        "after_alone": privacy.get("records_alone_in_crowd"),
+        "io": d.get("io"),
+    }
+
+
+def crowd_dry_run(header, rows, cfg, lang="en") -> dict:
+    """Dry-run measure: run the crowd engine without writing output.
+
+    Returns the same summary dict as crowd_anonymize, including the
+    before/after alone counts (before_alone / after_alone). lang (en
+    or ja) picks the receipt language.
+    """
+    from sieve_crowd import anonymize
+    return _crowd_summary(anonymize(header, rows, cfg), lang)
+
+
+def crowd_anonymize(header, rows, cfg, *, io=None, output_path=None,
+                    lang="en") -> dict:
+    """Run the crowd engine and return a summary dict for the GUI.
+
+    output_path, when given, is written only for status='anonymized':
+    the format is chosen from the file extension and the bytes are
+    written atomically. A refused run never touches the disk. io is
+    the (input_format, output_format) pair recorded in the receipt.
+    lang (en or ja) picks the receipt language.
+    """
+    from sieve_crowd import anonymize
+    from sieve_crowd.tableio import detect_format, write_any
+    result = anonymize(header, rows, cfg, io=io)
+    if output_path is not None and result.status == "anonymized":
+        fmt = detect_format(Path(output_path).suffix)
+        _crowd_atomic_write(output_path, write_any(result.header, result.rows, fmt))
+    return _crowd_summary(result, lang)
+
 def run_scan(input_dir: Path,
              progress: ProgressCallback = _silent,
              audit_modifier_vocab: Optional[str] = None,
