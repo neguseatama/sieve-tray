@@ -20,6 +20,10 @@ dialog with version info and links to the other Sieve engines.
 import sys
 from pathlib import Path
 from multiprocessing import freeze_support
+import json
+import os
+import secrets
+import tempfile
 
 from PySide6.QtCore import Qt, QThread, Signal, QObject
 from PySide6.QtWidgets import (
@@ -50,6 +54,16 @@ from sieve_tray_i18n import (
     tr, normalize_language, SUPPORTED_LANGUAGES, LANGUAGE_NAMES,
     DOC_AXIS_LABELS, CODE_AXIS_LABELS, TEXT_AXIS_LABELS,
 )
+
+from sieve_tray import (
+    crowd_anonymize,
+    crowd_dry_run,
+    crowd_inspect,
+    crowd_parse_config,
+)
+from sieve_crowd import ConfigError, InputError, Role, parse_key
+from sieve_crowd.hints import hint as crowd_hint
+from sieve_crowd.tableio import detect_format, read_any
 
 
 def resource_path(relative: str) -> Path:
@@ -128,6 +142,52 @@ class SanitizeWorker(QObject):
         try:
             summary = sanitize_tree(self.input_dir, self.config_path,
                                     self.out_root, progress=self.progress.emit)
+            self.finished.emit(summary)
+        except Exception as e:
+            self.failed.emit(f"{type(e).__name__}: {e}")
+
+CROWD_FILE_FILTER = "Table Files (*.csv *.json *.xml);;All Files (*)"
+CROWD_OK_BG = QColor("#e2f6e2")
+CROWD_OK_FG = QColor("#1a6b1a")
+
+
+def crowd_default_output(input_path: Path) -> Path:
+    """Default crowd output path: <stem>_anonymized.<ext> next to the
+    input file. The input itself is never the default."""
+    return input_path.with_name(
+        input_path.stem + "_anonymized" + input_path.suffix)
+
+
+class CrowdWorker(QObject):
+    """Runs crowd_dry_run()/crowd_anonymize() on a background thread
+    (same pattern as ScanWorker / SanitizeWorker) so the UI stays
+    responsive on large tables."""
+
+    progress = Signal(str)
+    finished = Signal(object)   # crowd summary dict
+    failed = Signal(str)
+
+    def __init__(self, mode: str, header, rows, cfg, *, io=None,
+                 output_path=None, lang="en"):
+        super().__init__()
+        self.mode = mode                # "dry_run" or "run"
+        self.header = header
+        self.rows = rows
+        self.cfg = cfg
+        self.io = io
+        self.output_path = output_path
+        self.lang = lang
+
+    def run(self):
+        try:
+            if self.mode == "dry_run":
+                summary = crowd_dry_run(self.header, self.rows, self.cfg,
+                                        lang=self.lang)
+            else:
+                summary = crowd_anonymize(self.header, self.rows, self.cfg,
+                                          io=self.io,
+                                          output_path=self.output_path,
+                                          lang=self.lang)
             self.finished.emit(summary)
         except Exception as e:
             self.failed.emit(f"{type(e).__name__}: {e}")
@@ -815,6 +875,116 @@ class MainWindow(QMainWindow):
             sanitize_history_container,
             self._("sanitize_history_tab", n=0))
 
+        # --- Crowd tab (sieve-crowd integration): select a table,
+        # inspect it, edit the k-anonymity config as JSON, measure
+        # (dry-run), then run in the background. Refused runs are a
+        # normal result, not an error.
+        self._crowd_input_path = None
+        self._crowd_header = None
+        self._crowd_rows = None
+        self._crowd_fmt = None
+        self._crowd_inspect_info = None
+        self._crowd_last_dry_run = None
+        self._crowd_key_path = None
+        self._crowd_config_path = None
+        self._crowd_thread = None
+        self._crowd_worker = None
+
+        crowd_page = QWidget()
+        crowd_layout = QVBoxLayout(crowd_page)
+
+        crowd_file_row = QHBoxLayout()
+        self.crowd_file_btn = QPushButton(self._("crowd_file_select"))
+        self.crowd_file_btn.clicked.connect(self.crowd_choose_file)
+        self.crowd_input_label = QLabel("")
+        crowd_file_row.addWidget(self.crowd_file_btn)
+        crowd_file_row.addWidget(self.crowd_input_label, stretch=1)
+        crowd_layout.addLayout(crowd_file_row)
+
+        self.crowd_inspect_btn = QPushButton(self._("crowd_inspect_button"))
+        self.crowd_inspect_btn.setEnabled(False)
+        self.crowd_inspect_btn.clicked.connect(self.crowd_run_inspect)
+        crowd_layout.addWidget(self.crowd_inspect_btn)
+        self.crowd_inspect_table = self._make_table([
+            self._("crowd_inspect_column_name"),
+            self._("crowd_inspect_distinct"),
+            self._("crowd_inspect_empty"),
+            self._("crowd_inspect_unique_ratio"),
+            self._("crowd_inspect_shape"),
+            self._("crowd_inspect_hint"),
+        ])
+        crowd_layout.addWidget(self.crowd_inspect_table)
+
+        crowd_layout.addWidget(QLabel(self._("crowd_config_label")))
+        self.crowd_config_edit = QPlainTextEdit()
+        crowd_layout.addWidget(self.crowd_config_edit, stretch=2)
+        crowd_config_row = QHBoxLayout()
+        self.crowd_config_save_btn = QPushButton(self._("crowd_config_save"))
+        self.crowd_config_save_btn.clicked.connect(self.crowd_save_config)
+        self.crowd_config_load_btn = QPushButton(self._("crowd_config_load"))
+        self.crowd_config_load_btn.clicked.connect(self.crowd_load_config)
+        crowd_config_row.addWidget(self.crowd_config_save_btn)
+        crowd_config_row.addWidget(self.crowd_config_load_btn)
+        crowd_config_row.addStretch(1)
+        self.crowd_config_error_label = QLabel("")
+        crowd_config_row.addWidget(self.crowd_config_error_label, stretch=1)
+        crowd_layout.addLayout(crowd_config_row)
+
+        crowd_dry_row = QHBoxLayout()
+        self.crowd_dry_run_btn = QPushButton(self._("crowd_dry_run_button"))
+        self.crowd_dry_run_btn.setEnabled(False)
+        self.crowd_dry_run_btn.clicked.connect(self.crowd_start_dry_run)
+        self.crowd_dry_run_label = QLabel("")
+        self.crowd_dry_receipt_btn = QPushButton(
+            self._("crowd_result_receipt"))
+        self.crowd_dry_receipt_btn.setEnabled(False)
+        self.crowd_dry_receipt_btn.clicked.connect(
+            self.crowd_show_dry_run_receipt)
+        crowd_dry_row.addWidget(self.crowd_dry_run_btn)
+        crowd_dry_row.addWidget(self.crowd_dry_run_label, stretch=1)
+        crowd_dry_row.addWidget(self.crowd_dry_receipt_btn)
+        crowd_layout.addLayout(crowd_dry_row)
+
+        crowd_key_row = QHBoxLayout()
+        self.crowd_keygen_btn = QPushButton(self._("crowd_keygen_button"))
+        self.crowd_keygen_btn.clicked.connect(self.crowd_keygen)
+        self.crowd_key_file_label = QLabel(self._("crowd_key_file"))
+        crowd_key_row.addWidget(self.crowd_keygen_btn)
+        crowd_key_row.addWidget(self.crowd_key_file_label, stretch=1)
+        crowd_layout.addLayout(crowd_key_row)
+
+        crowd_out_row = QHBoxLayout()
+        self.crowd_output_label = QLabel(self._("crowd_output_label"))
+        self.crowd_output_edit = QLineEdit()
+        self.crowd_output_edit.setPlaceholderText(
+            self._("crowd_output_default"))
+        self.crowd_output_browse_btn = QPushButton(
+            self._("crowd_output_browse"))
+        self.crowd_output_browse_btn.clicked.connect(self.crowd_choose_output)
+        crowd_out_row.addWidget(self.crowd_output_label)
+        crowd_out_row.addWidget(self.crowd_output_edit, stretch=1)
+        crowd_out_row.addWidget(self.crowd_output_browse_btn)
+        crowd_layout.addLayout(crowd_out_row)
+
+        self.crowd_run_btn = QPushButton(self._("crowd_run_button"))
+        self.crowd_run_btn.setEnabled(False)
+        self.crowd_run_btn.clicked.connect(self.crowd_start_run)
+        crowd_layout.addWidget(self.crowd_run_btn)
+
+        self.crowd_result_label = QLabel("")
+        self.crowd_result_label.setWordWrap(True)
+        crowd_layout.addWidget(self.crowd_result_label)
+        crowd_layout.addWidget(QLabel(self._("crowd_result_receipt")))
+        self.crowd_receipt_view = QPlainTextEdit()
+        self.crowd_receipt_view.setReadOnly(True)
+        crowd_layout.addWidget(self.crowd_receipt_view, stretch=2)
+        self.crowd_premise_label = QLabel(self._("crowd_result_premise"))
+        self.crowd_premise_label.setWordWrap(True)
+        crowd_layout.addWidget(self.crowd_premise_label)
+
+        self._crowd_tab_index = self.tabs.addTab(crowd_page,
+                                                 self._("crowd_tab"))
+
         layout.addWidget(self.tabs, stretch=3)
 
         # --- log ---
@@ -852,6 +1022,9 @@ class MainWindow(QMainWindow):
         if getattr(self, "_sanitize_thread", None) is not None:
             self._sanitize_thread.quit()
             self._sanitize_thread.wait(5000)
+        if getattr(self, "_crowd_thread", None) is not None:
+            self._crowd_thread.quit()
+            self._crowd_thread.wait(5000)
         super().closeEvent(event)
 
     @staticmethod
@@ -1471,6 +1644,361 @@ class MainWindow(QMainWindow):
             audit=len(result.audit_results)))
         self.export_btn.setEnabled(True)
         self.tabs.setCurrentIndex(self._doc_tab_index)
+
+    # ------------------------------------------------------------------
+    # Crowd tab (sieve-crowd integration): select a table, inspect it,
+    # edit the k-anonymity config as JSON, measure (dry-run), then run
+    # in the background. Refused runs are a normal result, not an error.
+    # ------------------------------------------------------------------
+
+    def crowd_choose_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, self._("crowd_file_select"), "", CROWD_FILE_FILTER)
+        if path:
+            self.crowd_load_file(Path(path))
+
+    def crowd_load_file(self, path: Path):
+        try:
+            data = path.read_bytes()
+            fmt = detect_format(path.suffix)
+            header, rows = read_any(data, fmt)
+        except (OSError, InputError) as exc:
+            QMessageBox.critical(self, self._("error_title"),
+                                 f"{type(exc).__name__}: {exc}")
+            return
+        self._crowd_input_path = path
+        self._crowd_header = header
+        self._crowd_rows = rows
+        self._crowd_fmt = fmt
+        self._crowd_inspect_info = None
+        self._crowd_last_dry_run = None
+        self.crowd_input_label.setText(str(path))
+        self.crowd_output_edit.setText(str(crowd_default_output(path)))
+        self.crowd_config_error_label.setText("")
+        self.crowd_dry_run_label.setText("")
+        self.crowd_result_label.setText("")
+        self.crowd_result_label.setStyleSheet("")
+        self.crowd_receipt_view.setPlainText("")
+        self.crowd_inspect_btn.setEnabled(True)
+        self.crowd_dry_run_btn.setEnabled(True)
+        self.crowd_run_btn.setEnabled(True)
+        self.crowd_run_inspect()
+        self.crowd_config_edit.setPlainText(self._crowd_config_template())
+
+    def crowd_run_inspect(self):
+        if self._crowd_header is None or self._crowd_rows is None:
+            return
+        info = crowd_inspect(self._crowd_header, self._crowd_rows)
+        self._crowd_inspect_info = info
+        n = len(self._crowd_rows)
+        table = self.crowd_inspect_table
+        table.setSortingEnabled(False)
+        table.setRowCount(len(info))
+        for row, col_info in enumerate(info):
+            role, text_en, text_ja = crowd_hint(col_info["name"], col_info, n)
+            hint_text = ""
+            if role:
+                hint_text = text_en if self.lang == "en" else text_ja
+            values = [
+                col_info["name"],
+                str(col_info["distinct"]),
+                str(col_info["empty"]),
+                "%.0f%%" % (col_info["unique_ratio"] * 100),
+                col_info["shape"],
+                role if role else "-",
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if hint_text:
+                    item.setToolTip(hint_text)
+                table.setItem(row, column, item)
+        table.setSortingEnabled(True)
+
+    def _crowd_config_template(self) -> str:
+        """Initial JSON config from the inspect proposal, the same
+        shape the sieve-crowd CLI writes with its config template:
+        every column starts as role "?" (a suggestion is never
+        applied automatically); hinted columns carry an _hint note
+        that parse_config ignores."""
+        info = self._crowd_inspect_info or []
+        n = len(self._crowd_rows or [])
+        columns = {}
+        for col_info in info:
+            role, text_en, text_ja = crowd_hint(col_info["name"], col_info, n)
+            if role:
+                hint_text = text_en if self.lang == "en" else text_ja
+                columns[col_info["name"]] = {"role": "?", "_hint": hint_text}
+            else:
+                columns[col_info["name"]] = {"role": "?"}
+        template = {"k": 5, "l": 1, "max_suppression": 0.05,
+                    "columns": columns}
+        return json.dumps(template, ensure_ascii=False, indent=2) + "\n"
+
+    def crowd_save_config(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, self._("crowd_config_save"), "",
+            "JSON Files (*.json);;All Files (*)")
+        if not path:
+            return
+        Path(path).write_text(self.crowd_config_edit.toPlainText(),
+                              encoding="utf-8")
+
+    def crowd_load_config(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, self._("crowd_config_load"), "",
+            "JSON Files (*.json);;All Files (*)")
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.critical(self, self._("error_title"),
+                                 f"{type(exc).__name__}: {exc}")
+            return
+        self.crowd_config_edit.setPlainText(text)
+        self._crowd_config_path = Path(path)
+        self.crowd_config_error_label.setText("")
+
+    def crowd_keygen(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, self._("crowd_keygen_button"), "",
+            "Text Files (*.txt);;All Files (*)")
+        if path:
+            self.crowd_keygen_to(Path(path))
+
+    def crowd_keygen_to(self, target: Path):
+        """Write a fresh 64-hex-digit key file atomically with mode
+        600 (the sieve-crowd keygen contract). An existing file is
+        only replaced after confirmation. The key content is read
+        back from the file at run time; it is never kept in the
+        history, receipts or logs."""
+        if target.exists():
+            answer = QMessageBox.question(
+                self, self._("crowd_keygen_button"),
+                "The key file exists. Replace it?",
+                QMessageBox.Yes | QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+        fd, tmp = tempfile.mkstemp(dir=str(target.parent),
+                                   prefix=".sieve-tray-key-")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write((secrets.token_hex(32) + "\n").encode("ascii"))
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, target)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        self._crowd_key_path = target
+        self.crowd_key_file_label.setText(
+            f"{self._('crowd_key_file')} {target}")
+
+    def crowd_choose_output(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, self._("crowd_output_browse"), "", CROWD_FILE_FILTER)
+        if path:
+            self.crowd_output_edit.setText(path)
+
+    def _crowd_build_config(self):
+        """Parse the config editor text (with the optional key file).
+        Returns the Config or None; a failure never starts a worker
+        and the JSON/validation message carries the offending line
+        number from crowd_parse_config."""
+        text = self.crowd_config_edit.toPlainText()
+        overrides = {}
+        if self._crowd_key_path is not None:
+            try:
+                overrides["key"] = parse_key(
+                    self._crowd_key_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ConfigError) as exc:
+                QMessageBox.critical(self, self._("error_title"),
+                                     f"{type(exc).__name__}: {exc}")
+                return None
+        try:
+            return crowd_parse_config(text, **overrides)
+        except ConfigError as exc:
+            self.crowd_config_error_label.setText(
+                f"{self._('crowd_config_json_error')}: {exc}")
+            return None
+
+    def _crowd_identifier_conflicts(self, cfg) -> list:
+        """Columns that look like direct identifiers (the sieve-crowd
+        hint proposal is "id", which is driven by the hints._ID set)
+        but stay in keep or sensitive."""
+        if self._crowd_inspect_info is None:
+            return []
+        info_by_name = {c["name"]: c for c in self._crowd_inspect_info}
+        conflicts = []
+        for name in cfg.names(Role.KEEP) + cfg.names(Role.SENSITIVE):
+            info = info_by_name.get(name)
+            if info is None:
+                continue
+            suggested, _text_en, _text_ja = crowd_hint(
+                name, info, len(self._crowd_rows or []))
+            if suggested == "id":
+                conflicts.append(name)
+        return conflicts
+
+    def _crowd_identifier_gate(self, cfg) -> bool:
+        """Run gate: an identifier-like column left in keep/sensitive
+        must be confirmed by the user before anything runs."""
+        conflicts = self._crowd_identifier_conflicts(cfg)
+        if not conflicts:
+            return True
+        names = "\n".join(conflicts)
+        answer = QMessageBox.question(
+            self, self._("crowd_confirm_identifier_title"),
+            f"{self._('crowd_confirm_identifier_message')}\n{names}",
+            QMessageBox.Yes | QMessageBox.No)
+        return answer == QMessageBox.Yes
+
+    def _crowd_ready(self) -> bool:
+        if self._crowd_header is None or self._crowd_rows is None:
+            QMessageBox.warning(self, self._("error_title"),
+                                self._("crowd_file_select"))
+            return False
+        return True
+
+    def crowd_start_dry_run(self):
+        if not self._crowd_ready():
+            return
+        cfg = self._crowd_build_config()
+        if cfg is None:
+            return
+        if not self._crowd_identifier_gate(cfg):
+            return
+        self.crowd_config_error_label.setText("")
+        self._crowd_launch("dry_run", cfg)
+
+    def crowd_start_run(self):
+        if not self._crowd_ready():
+            return
+        output_text = self.crowd_output_edit.text().strip()
+        if not output_text:
+            return
+        output_path = Path(output_text)
+        if self._crowd_input_path is not None:
+            try:
+                same = (output_path.resolve()
+                        == self._crowd_input_path.resolve())
+            except OSError:
+                same = False
+            if same:
+                QMessageBox.critical(self, self._("error_title"),
+                                     "The output must not be the input file.")
+                return
+        if output_path.exists():
+            answer = QMessageBox.question(
+                self, self._("crowd_output_label"),
+                "The output file exists. Replace it?",
+                QMessageBox.Yes | QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+        cfg = self._crowd_build_config()
+        if cfg is None:
+            return
+        if not self._crowd_identifier_gate(cfg):
+            return
+        self.crowd_config_error_label.setText("")
+        io = (self._crowd_fmt, self._crowd_fmt)
+        self._crowd_launch("run", cfg, io=io, output_path=output_path)
+
+    def _crowd_launch(self, mode, cfg, *, io=None, output_path=None):
+        self._crowd_set_running(True)
+        self._crowd_thread = QThread(self)
+        self._crowd_worker = CrowdWorker(
+            mode, self._crowd_header, self._crowd_rows, cfg,
+            io=io, output_path=output_path, lang=self.lang)
+        self._crowd_worker.moveToThread(self._crowd_thread)
+        self._crowd_thread.started.connect(self._crowd_worker.run)
+        self._crowd_worker.progress.connect(self.log_view.appendPlainText)
+        if mode == "dry_run":
+            self._crowd_worker.finished.connect(
+                self._on_crowd_dry_run_finished)
+        else:
+            self._crowd_worker.finished.connect(self._on_crowd_run_finished)
+        self._crowd_worker.failed.connect(self._on_crowd_failed)
+        self._crowd_worker.finished.connect(self._crowd_thread.quit)
+        self._crowd_worker.failed.connect(self._crowd_thread.quit)
+        self._crowd_thread.finished.connect(self._crowd_thread.deleteLater)
+        self._crowd_thread.start()
+
+    def _crowd_set_running(self, running: bool):
+        has_input = self._crowd_header is not None
+        self.crowd_file_btn.setEnabled(not running)
+        self.crowd_inspect_btn.setEnabled(has_input and not running)
+        self.crowd_dry_run_btn.setEnabled(has_input and not running)
+        self.crowd_run_btn.setEnabled(has_input and not running)
+        self.crowd_config_save_btn.setEnabled(not running)
+        self.crowd_config_load_btn.setEnabled(not running)
+        self.crowd_keygen_btn.setEnabled(not running)
+        self.crowd_output_browse_btn.setEnabled(not running)
+
+    def _on_crowd_dry_run_finished(self, summary):
+        self._crowd_last_dry_run = summary
+        self._crowd_set_running(False)
+        self.crowd_dry_receipt_btn.setEnabled(True)
+        self.crowd_dry_run_label.setText(
+            f"{self._('crowd_dry_run_before')} {summary.get('before_alone')}"
+            f" \u2192 {self._('crowd_dry_run_after')}"
+            f" {summary.get('after_alone')}")
+        self.crowd_receipt_view.setPlainText(
+            summary.get("report_text") or "")
+
+    def crowd_show_dry_run_receipt(self):
+        summary = self._crowd_last_dry_run
+        if summary is not None:
+            self.crowd_receipt_view.setPlainText(
+                summary.get("report_text") or "")
+
+    def _on_crowd_run_finished(self, summary):
+        self._crowd_set_running(False)
+        pairs = [
+            (self._("crowd_result_status"), summary.get("status")),
+            (self._("crowd_result_records_in"), summary.get("records_in")),
+            (self._("crowd_result_records_out"), summary.get("records_out")),
+            (self._("crowd_result_suppressed"), summary.get("suppressed")),
+            (self._("crowd_result_k_achieved"), summary.get("k_achieved")),
+        ]
+        lines = [f"{name}: {value}" for name, value in pairs]
+        if summary.get("ok"):
+            background, foreground = CROWD_OK_BG, CROWD_OK_FG
+        else:
+            background = SIGNAL_BG["YELLOW"]
+            foreground = SIGNAL_FG["YELLOW"]
+            lines.append(self._("crowd_result_refused"))
+            reason = summary.get("reason")
+            if reason:
+                lines.append(
+                    f"{self._('crowd_result_refused_reason')}: {reason}")
+        self.crowd_result_label.setText("\n".join(lines))
+        self.crowd_result_label.setStyleSheet(
+            f"background: {background.name()};"
+            f" color: {foreground.name()};")
+        self.crowd_receipt_view.setPlainText(
+            summary.get("report_text") or "")
+        record = dict(summary)
+        record["input_path"] = (
+            str(self._crowd_input_path)
+            if self._crowd_input_path is not None else None)
+        record["output_path"] = (
+            str(self.crowd_output_edit.text().strip())
+            if summary.get("ok") else None)
+        record["config_path"] = (
+            str(self._crowd_config_path)
+            if self._crowd_config_path is not None else None)
+        self.storage.save_crowd_run(record)
+
+    def _on_crowd_failed(self, message):
+        self._crowd_set_running(False)
+        self.crowd_result_label.setText(message)
+        self.crowd_result_label.setStyleSheet(
+            f"background: {SIGNAL_BG['RED'].name()};"
+            f" color: {SIGNAL_FG['RED'].name()};")
+        QMessageBox.critical(self, self._("error_title"), message)
 
 
 def main():

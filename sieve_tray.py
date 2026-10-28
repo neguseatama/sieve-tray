@@ -620,14 +620,16 @@ def crowd_inspect(header, rows) -> list:
     return inspect_table(header, rows)
 
 
-def crowd_parse_config(config_text):
+def crowd_parse_config(config_text, **overrides):
     """Parse JSON config text into a sieve_crowd Config.
 
     JSON syntax errors are re-raised as a crowd ConfigError whose
     message carries the line number, so the GUI can point at the
     offending line directly. Crowd-side validation errors (unknown
     keys, k < 2, roles left at '?') propagate as ConfigError
-    unchanged.
+    unchanged. Optional keyword overrides (key=...) pass
+    through to sieve_crowd.parse_config, the same contract as
+    the crowd CLI --key-file option.
     """
     from sieve_crowd import ConfigError, parse_config
     try:
@@ -636,7 +638,7 @@ def crowd_parse_config(config_text):
         raise ConfigError(
             f"the configuration is not valid JSON: line {exc.lineno}: {exc.msg}"
         ) from None
-    return parse_config(obj)
+    return parse_config(obj, **overrides)
 
 
 def _crowd_atomic_write(path, data):
