@@ -42,7 +42,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "0.9.1"
+__version__ = "0.10.0"
 
 
 CODE_EXTS = {".py"}
@@ -85,7 +85,7 @@ class ScanResult:
     # See audit_text() for the entry shape.
     audit_results: List[dict] = field(default_factory=list)
 
-    # v1.0.0: crowd run records (newest first) attached at export
+    # v0.10.0: crowd run records (newest first) attached at export
     # time for the report's crowd section. Not serialized by
     # to_dict(); the CLI path leaves it None and the section is
     # skipped entirely.
