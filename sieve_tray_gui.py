@@ -670,6 +670,8 @@ class AboutDialog(QDialog):
         ("Sieve Lens", "https://github.com/neguseatama/sieve-lens"),
         ("Sieve Scope", "https://github.com/neguseatama/sieve-scope"),
         ("Sieve Referee", "https://github.com/neguseatama/sieve-referee"),
+        ("Sieve Redact", "https://github.com/neguseatama/sieve-redact"),
+        ("Sieve Crowd", "https://github.com/neguseatama/sieve-crowd"),
     ]
 
     def __init__(self, lang: str, parent=None):

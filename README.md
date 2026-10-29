@@ -1,6 +1,6 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v0.10.0
+# Sieve Tray v0.10.1
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
@@ -8,7 +8,11 @@
 > observation, [Sieve Scope](https://github.com/neguseatama/sieve-scope)'s code
 > similarity detection, and [Sieve Referee](https://github.com/neguseatama/sieve-referee)'s
 > text paraphrase detection — plus, new in v0.8.0, Sieve Referee's quantifier
-> audit lane — into a single desktop app. Point it at a folder of
+> audit lane — into a single desktop app. It also bundles
+> [Sieve Redact](https://github.com/neguseatama/sieve-redact), the masking
+> engine behind the text/image Sanitize actions, and — new in v0.10.0 —
+> [Sieve Crowd](https://github.com/neguseatama/sieve-crowd), the table
+> anonymization engine behind the Anonymize tab. Point it at a folder of
 > submissions and it detects and reports, in one pass, documents containing
 > invisible content or hidden prompts, code pairs with suspicious structural
 > similarity, text pairs that look paraphrased or reused, and sentences that
@@ -28,10 +32,14 @@ document contain something a human can't see but a parser can?".
 [Sieve Scope](https://github.com/neguseatama/sieve-scope) answers "do these two
 source files share suspiciously similar logic, beyond coincidence?".
 [Sieve Referee](https://github.com/neguseatama/sieve-referee) answers "does
-this text say the same thing as that one, just reworded?". All three are
-zero-dependency, deterministic observation engines in the Sieve series — but
-checking a folder of submissions by hand meant running separate tools and
-cross-referencing the output yourself.
+this text say the same thing as that one, just reworded?".
+[Sieve Redact](https://github.com/neguseatama/sieve-redact) handles "hide
+exactly the regions you chose, and prove nothing else changed".
+[Sieve Crowd](https://github.com/neguseatama/sieve-crowd) handles "share this
+table without exposing the individuals in it". All five are zero-dependency,
+deterministic engines in the Sieve series — but checking a folder of
+submissions by hand meant running separate tools and cross-referencing the
+output yourself.
 
 **Sieve Tray** removes that step. Point it at a directory containing one
 subfolder per submission, and it automatically routes each file to the right
@@ -41,7 +49,9 @@ Referee's pairwise paraphrase comparison **and** Sieve Referee's quantifier
 audit lane (new in v0.8.0, powered by Sieve Referee >=1.3.0). Results land in
 a single window, with local history so nothing has to be re-run, and a detail
 view showing exactly which observation axis fired and why — never a bare
-verdict, only what the underlying engines actually observed.
+verdict, only what the underlying engines actually observed. The **Anonymize**
+tab additionally puts Sieve Crowd one click away for table files, and the
+Sanitize actions put Sieve Redact behind the text and image editors.
 
 > Like the rest of the Sieve series, this is an **observation tool, not a
 > judgment tool**. A flagged item means "this deserves a human look", not
@@ -53,17 +63,19 @@ verdict, only what the underlying engines actually observed.
 
 Sieve is a family of deterministic, zero-dependency engines that share
 the same design principles (deterministic output, no telemetry, fully
-local) — each engine observes or masks one specific risk, and they
+local) — each engine observes or treats one specific risk, and they
 compose:
 
 | Package | Role | Connects to |
 |---------|------|-------------|
-| [sieve-core-engine](https://github.com/neguseatama/sieve-core) | Base logic / plugin host for the ecosystem | — |
-| [sieve-lens](https://github.com/neguseatama/sieve-lens) | Observes invisible content & hidden prompts in documents | → redact via `--from-lens` |
-| [sieve-scope](https://github.com/neguseatama/sieve-scope) | Detects structurally similar code pairs | — |
-| [sieve-referee](https://github.com/neguseatama/sieve-referee) | Detects paraphrased / reused text pairs | — |
-| [sieve-redact](https://github.com/neguseatama/sieve-redact) | Masks sensitive regions (text & PNG) with receipts | ← lens, → tray |
-| [sieve-tray](https://github.com/neguseatama/sieve-tray) | Desktop front-end that routes files to the right engine | ← all engines |
+| [sieve-core-engine](https://github.com/neguseatama/sieve-core) | Deterministic structure aggregation & confidence scoring — the base engine of the ecosystem | — |
+| [sieve-lens](https://github.com/neguseatama/sieve-lens) | Observes invisible content & hidden prompts in documents | → redact via `--from-lens`, → tray |
+| [sieve-scope](https://github.com/neguseatama/sieve-scope) | Observes structural similarity between source files | → tray |
+| [sieve-referee](https://github.com/neguseatama/sieve-referee) | Screens text structure, reuse, and paraphrase | → tray |
+| [sieve-redact](https://github.com/neguseatama/sieve-redact) | Deterministic masking of chosen regions with change records & completeness verification | ← lens, → tray |
+| [sieve-order](https://github.com/neguseatama/sieve-order) | Observes prompt surface structure in a 6-bit observation space and issues receipts | — |
+| [sieve-crowd](https://github.com/neguseatama/sieve-crowd) | Anonymizes table data with deterministic math transforms | → tray |
+| [sieve-tray](https://github.com/neguseatama/sieve-tray) | Local front-end that unifies the engines | ← all engines |
 
 Observation → masking in one pass: Lens finds what a human can't see,
 Redact removes it with a receipt that proves nothing else changed.
@@ -100,7 +112,8 @@ Redact removes it with a receipt that proves nothing else changed.
   certainty markers (e.g. 「明白に」「例外なく」) co-occurring in the sentence.
   The lane ships with a bundled default modifier-vocab file; users can
   override the path from Settings to swap in a custom vocabulary.
-- **Local history** — every scan is saved to a local SQLite database
+- **Local history** — every scan and anonymization run is saved to a
+  local SQLite database
   (`~/.sieve_tray/history.db`); revisit a past run without re-scanning.
 - **Configurable** — default export folder, history retention, UI language,
   and the audit lane's modifier-vocab file (empty = bundled default) are all
@@ -133,6 +146,16 @@ Redact removes it with a receipt that proves nothing else changed.
   `.txt`/`.md`, and files that don't match are reported as excluded
   (never as failures). A config mixing both kinds is rejected up front
   with nothing processed. Every output gets a machine-readable receipt.
+- **Anonymize tables (new in v0.10.0)** — the **Anonymize** tab sends a
+  table file (`.csv`/`.json`/`.xml`) to the bundled Sieve Crowd engine:
+  inspect columns (distinct counts, unique ratios, suggested roles), dry-run
+  the transform to compare before/after alone-row counts, generate a
+  pseudonym key, and run deterministic anonymization with a
+  machine-readable receipt (records in/out, suppressed count, k achieved,
+  status). Protection is k-anonymity against an outsider who knows the
+  declared quasi-identifiers; if the requested k is not achievable, the
+  engine refuses without writing an output file. Every run is saved to the
+  local history database and included in exported reports.
 - **Sanitize history tab** — every sanitize run (folder and single
   image) is listed in its own tab with timestamp, folder, config,
   output location, files and ok count, masked items, and integrity
@@ -264,7 +287,7 @@ pip install -e . pytest
 pytest -v
 ```
 
-129 tests cover the core scan/render pipeline (including regression tests for
+130 tests cover the core scan/render pipeline (including regression tests for
 a CSS rendering bug and for Sieve Referee's paraphrase detection), the
 history/settings storage layer (save / load / delete / retention pruning,
 including migration from pre-Referee databases), and the i18n string tables
@@ -273,9 +296,11 @@ integration (byte-pin sync and exit-code mapping), and the image
 sanitize path (region helpers, receipt handling, and editor widgets
 under an offscreen Qt platform), and the folder-uniform image
 sanitize flow (config-kind routing, excluded-file reporting, and
-tree-level config errors).
+tree-level config errors), and the bundled Sieve Crowd integration
+(core wrapper, storage, UI widgets, report section, vendor pin sync,
+and the About engine list).
 
-CI runs this suite on every push (Python 3.10 and 3.12, on Ubuntu), and
+CI runs this suite on every push (Python 3.12, on Ubuntu), and
 builds Windows/macOS desktop apps on every version tag.
 
 ---
@@ -317,17 +342,32 @@ builds Windows/macOS desktop apps on every version tag.
    (`theorem` / `enumerated` / `sample` / `unbacked`); audit_text() does not
    populate the tagfile automatically. A human must confirm whether a
    flagged sentence is actually unbacked or merely un-tagged.
+9. **Anonymization protects against the declared quasi-identifiers only**
+   (new in v0.10.0). Sieve Crowd's k-anonymity guarantee holds against an
+   outsider who knows exactly the columns declared as `qi`; columns you
+   forget to declare are not protected. The declared qi, the achieved k,
+   and the before/after alone-row counts are always surfaced, so the
+   protection scope stays visible — and the engine refuses to write an
+   output file when the requested k is not achievable.
 
 ---
 
 ## 📚 Related Projects
 
+- [Sieve Core](https://github.com/neguseatama/sieve-core) — deterministic
+  structure aggregation & confidence scoring base engine
 - [Sieve Lens](https://github.com/neguseatama/sieve-lens) — invisible-content
   observation engine (documents)
 - [Sieve Scope](https://github.com/neguseatama/sieve-scope) — code
   similarity detection engine
 - [Sieve Referee](https://github.com/neguseatama/sieve-referee) — text
   paraphrase / plagiarism detection engine
+- [Sieve Redact](https://github.com/neguseatama/sieve-redact) — deterministic
+  masking with change records (text & PNG)
+- [Sieve Order](https://github.com/neguseatama/sieve-order) — prompt surface
+  structure observation engine (6-bit observation space)
+- [Sieve Crowd](https://github.com/neguseatama/sieve-crowd) — table
+  anonymization / privacy protection engine
 
 ---
 

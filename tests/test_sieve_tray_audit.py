@@ -241,12 +241,12 @@ class TestDefaultModifierVocabPath(unittest.TestCase):
 
 
 class TestVersionBump(unittest.TestCase):
-    """v0.10.0 marker - guards against accidental version revert."""
+    """v0.10.1 marker - guards against accidental version revert."""
 
-    def test_version_is_0_10_0(self):
-        # v0.10.0: bumped for the sieve-crowd integration
-        # (crowd tab / anonymize engine 0.2.0 / storage / i18n / reports).
-        self.assertEqual(sieve_tray.__version__, "0.10.0")
+    def test_version_is_0_10_1(self):
+        # v0.10.1: bumped for the engine-surface refresh
+        # (README series table / About five engines / Anonymize tab label).
+        self.assertEqual(sieve_tray.__version__, "0.10.1")
 
 
 class TestRunScanGroupsArgument(unittest.TestCase):

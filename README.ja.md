@@ -1,6 +1,6 @@
 [English](README.md) | **日本語**
 
-# Sieve Tray v0.10.0
+# Sieve Tray v0.10.1
 
 **汎用観測ツール — Sieveシリーズのデスクトップフロントエンド**
 
@@ -8,7 +8,11 @@
 > [Sieve Scope](https://github.com/neguseatama/sieve-scope)のコード類似度検知、
 > [Sieve Referee](https://github.com/neguseatama/sieve-referee)のテキストパラフレーズ検知 —
 > そしてv0.8.0で新たに追加されたSieve Refereeの量化子監査レーン — を、
-> 1つのデスクトップアプリに統合しました。提出物のフォルダを指定するだけで、
+> 1つのデスクトップアプリに統合しました。さらに、テキスト・画像のサニタイズ操作の
+> 背後にある[Sieve Redact](https://github.com/neguseatama/sieve-redact)マスキング
+> エンジンと、v0.10.0で追加された「匿名化」タブの背後にある
+> [Sieve Crowd](https://github.com/neguseatama/sieve-crowd)テーブル匿名化エンジンを
+> 同梱しています。提出物のフォルダを指定するだけで、
 > 不可視のコンテンツや隠されたプロンプトを含む文書、構造的に疑わしく似ているコードペア、
 > 言い換え・流用の疑いがあるテキストペア、根拠のない全称主張（ハルシネーション候補）を
 > 含む文を、一度にまとめて検出、報告します。
@@ -27,8 +31,12 @@
 [Sieve Scope](https://github.com/neguseatama/sieve-scope)は「この2つのソースコードは、
 偶然とは思えないほどロジックが似ていないか」を、
 [Sieve Referee](https://github.com/neguseatama/sieve-referee)は「このテキストは、
-あちらのテキストを言い換えただけではないか」を、それぞれ観測します。いずれも
-Sieveシリーズらしい、外部依存ゼロ・決定論的な観測エンジンですが、提出物フォルダを
+あちらのテキストを言い換えただけではないか」を、それぞれ観測します。
+[Sieve Redact](https://github.com/neguseatama/sieve-redact)は「選んだ領域だけを
+確実に隠し、他は何も変わっていないことを証明する」を、
+[Sieve Crowd](https://github.com/neguseatama/sieve-crowd)は「このテーブルを、
+中の個人を晒さずに共有する」を、それぞれ担います。いずれも
+Sieveシリーズらしい、外部依存ゼロ・決定論的なエンジンですが、提出物フォルダを
 実際にチェックするには、これらを別々に走らせ、結果を自分で突き合わせる必要が
 ありました。
 
@@ -39,7 +47,9 @@ Sieveシリーズらしい、外部依存ゼロ・決定論的な観測エンジ
 （v0.8.0で追加・Sieve Referee >=1.3.0 が必要）。結果は1つのウィンドウに
 まとまり、履歴が残るので再スキャンは不要、さらにどの観測軸が反応し、その根拠が
 何だったかまで詳細表示で確認できます。単なる「白黒の判定」ではなく、エンジンが
-実際に観測した事実だけを提示します。
+実際に観測した事実だけを提示します。**匿名化**タブはテーブルファイルをSieve
+Crowdへ、サニタイズ操作はテキスト・画像エディタを通じてSieve Redactへ、
+それぞれワンクリックでつなぎます。
 
 > 他のSieveシリーズ同様、これは**観測ツールであって、判定ツールではありません**。
 > フラグが立つことは「人間が確認すべき」という意味であり、「不正が確定した」という
@@ -50,17 +60,19 @@ Sieveシリーズらしい、外部依存ゼロ・決定論的な観測エンジ
 ## 🧩 Sieve シリーズ
 
 Sieve は、決定的・ゼロ依存・完全ローカルという共通の設計原則を共有する
-エンジン群です。各エンジンが 1 つのリスクの観測または排除を担い、
+エンジン群です。各エンジンが 1 つのリスクの観測または処置を担い、
 相互に接続します:
 
 | パッケージ | 役割 | 接続 |
 |---------|------|-------------|
-| [sieve-core-engine](https://github.com/neguseatama/sieve-core) | エコシステムの基盤ロジック / プラグインホスト | — |
-| [sieve-lens](https://github.com/neguseatama/sieve-lens) | 文書内の不可視コンテンツ・隠しプロンプトを観測 | → `--from-lens` 経由で redact へ |
-| [sieve-scope](https://github.com/neguseatama/sieve-scope) | 構造的に類似したコードペアを検出 | — |
-| [sieve-referee](https://github.com/neguseatama/sieve-referee) | 言い換え・流用されたテキストペアを検出 | — |
-| [sieve-redact](https://github.com/neguseatama/sieve-redact) | 機密領域をレシートつきでマスキング (テキスト & PNG) | ← lens、→ tray |
-| [sieve-tray](https://github.com/neguseatama/sieve-tray) | ファイルを適切なエンジンへ振り分けるデスクトップフロントエンド | ← 全エンジン |
+| [sieve-core-engine](https://github.com/neguseatama/sieve-core) | 決定論的な構造集約・確信度評価の基盤エンジン | — |
+| [sieve-lens](https://github.com/neguseatama/sieve-lens) | 文書内の不可視コンテンツ・隠しプロンプトを観測 | → `--from-lens` 経由で redact へ、→ tray へ |
+| [sieve-scope](https://github.com/neguseatama/sieve-scope) | ソースコードの構造的類似性を観測 | → tray へ |
+| [sieve-referee](https://github.com/neguseatama/sieve-referee) | テキストの構造・流用・言い換えを観測 | → tray へ |
+| [sieve-redact](https://github.com/neguseatama/sieve-redact) | 指定領域の決定論的マスキングと完全性検証 | ← lens、→ tray |
+| [sieve-order](https://github.com/neguseatama/sieve-order) | プロンプトの表層構造を6-bit観測空間で観測しレシートを発行 | — |
+| [sieve-crowd](https://github.com/neguseatama/sieve-crowd) | テーブルデータを数理的変換で匿名化 | → tray へ |
+| [sieve-tray](https://github.com/neguseatama/sieve-tray) | 各エンジンを統合するローカルフロントエンド | ← 全エンジン |
 
 観測から排除まで 1 パスで: Lens が人間に見えないものを見つけ、
 Redact が「他は何も変わっていない」ことを証明するレシートとともに
@@ -92,7 +104,7 @@ Redact が「他は何も変わっていない」ことを証明するレシー�
   **確信度マーカー**セクションが別途用意され、文中に共起した認識的確信度マーカー
   （例：「明白に」「例外なく」）を表示します。レーンは同梱のデフォルト語彙
   ファイルで初期状態から動作し、設定画面から語彙ファイルを上書き可能です
-- **ローカル履歴** — スキャンのたびにローカルのSQLiteデータベース
+- **ローカル履歴** — スキャン・匿名化のたびにローカルのSQLiteデータベース
   （`~/.sieve_tray/history.db`）に自動保存。再スキャンせずに過去の結果を見返せる
 - **設定可能** — レポートの保存先フォルダ、履歴の保持件数、UI言語、
   そして監査レーンの確信度マーカー語彙ファイル（空 = 同梱デフォルト）を、
@@ -114,6 +126,14 @@ Redact が「他は何も変わっていない」ことを証明するレシー�
   のみの設定はPNG、rule・builtin 行のみの設定は`.txt`/`.md`）。合わない
   ファイルは「失敗」ではなく「対象外」として報告され、両方が混在する設定は
   何も処理せずにエラーを報告します。出力ごとに機械可読なレシートが生成されます
+- **テーブルの匿名化（v0.10.0新機能）** — 「匿名化」タブでテーブルファイル
+  （`.csv`/`.json`/`.xml`）を同梱のSieve Crowdエンジンへ渡します。列の調査
+  （異なり数・一意率・提案役割）、測定実行による処理前後の単独レコード数比較、
+  仮名鍵の生成、そして決定論的な匿名化（入力・出力レコード数・除外件数・
+  達成 k 値・状態を含む機械可読なレシートつき）。保護は、qi として宣言した
+  列を知る相手への k-匿名性で、要求した k が達成できない場合エンジンは
+  出力ファイルを書かずに拒否します。実行はすべてローカル履歴に保存され、
+  書き出したレポートにも含まれます
 - **サニタイズ履歴タブ** — これまでのサニタイズ実行(フォルダ・単体画像
   ともに)を専用タブに一覧表示します(日時・フォルダ・設定・出力先・
   ファイル数と成功数・マスク件数・完全性失敗)。実行が完了すると
@@ -245,10 +265,10 @@ pytest -v
 コアのスキャン/レンダリング処理（CSSレンダリングバグやSieve Refereeのパラフレーズ
 検知の回帰テストを含む）、履歴・設定のストレージ層（保存・読み込み・削除・保持件数
 による自動整理、Referee導入前のDBからの移行を含む）、i18n文字列テーブル（英語・
-日本語のキー整合性）を合わせて129件のテストでカバーしています。加えて、同梱Sieve Redact統合（バイトpin同期と終了コードマッピング）、画像サニタイズ経路
-（リージョンヘルパー・レシート処理・offscreen Qt上のエディタウィジェット）、フォルダ均一画像サニタイズ（設定種別によるルーティング・対象外ファイルの報告・設定レベルのエラー報告）も対象です。
+日本語のキー整合性）を合わせて130件のテストでカバーしています。加えて、同梱Sieve Redact統合（バイトpin同期と終了コードマッピング）、画像サニタイズ経路
+（リージョンヘルパー・レシート処理・offscreen Qt上のエディタウィジェット）、フォルダ均一画像サニタイズ（設定種別によるルーティング・対象外ファイルの報告・設定レベルのエラー報告）、同梱Sieve Crowd統合（コアラッパー・ストレージ・UIウィジェット・レポート節・vendor pin同期・Aboutのエンジン一覧）も対象です。
 
-CIはpushのたびにこのテストスイートを実行し（Ubuntu上でPython 3.10・3.12）、
+CIはpushのたびにこのテストスイートを実行し（Ubuntu上でPython 3.12）、
 バージョンタグをpushするたびにWindows/macOS向けデスクトップアプリをビルドします。
 
 ---
@@ -284,17 +304,30 @@ CIはpushのたびにこのテストスイートを実行し（Ubuntu上でPytho
    （`theorem` / `enumerated` / `sample` / `unbacked`）の真の情報源であり、
    audit_text()はtagfileを自動で埋めません。フラグされた文が本当に裏付け不足
    なのか、単にtagfile未登録なのかは人間が確認する必要があります
+9. **匿名化は宣言した準識別子のみを保護**（v0.10.0新機能）。Sieve Crowdの
+   k-匿名性の保証は、qi として宣言した列を知る相手に対してのみ成立します。
+   宣言し忘れた列は保護されません。宣言した qi・達成された k・処理前後の
+   単独レコード数は常に表示されるため保護範囲は透明で、要求した k が
+   達成できない場合エンジンは出力ファイルを書かずに拒否します
 
 ---
 
 ## 📚 関連プロジェクト
 
+- [Sieve Core](https://github.com/neguseatama/sieve-core) — 決定論的な構造集約・
+  確信度評価の基盤エンジン
 - [Sieve Lens](https://github.com/neguseatama/sieve-lens) — 不可視コンテンツ観測
   エンジン（文書向け）
 - [Sieve Scope](https://github.com/neguseatama/sieve-scope) — コード類似度検知
   エンジン
 - [Sieve Referee](https://github.com/neguseatama/sieve-referee) — テキスト
   パラフレーズ・盗用検知エンジン
+- [Sieve Redact](https://github.com/neguseatama/sieve-redact) — 指定領域の
+  決定論的マスキング・完全性検証エンジン（テキスト & PNG）
+- [Sieve Order](https://github.com/neguseatama/sieve-order) — プロンプト表層
+  構造観測エンジン（6-bit観測空間）
+- [Sieve Crowd](https://github.com/neguseatama/sieve-crowd) — テーブルデータ
+  匿名化・プライバシー保護エンジン
 
 ---
 
