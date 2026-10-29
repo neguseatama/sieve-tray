@@ -146,7 +146,6 @@ class SanitizeWorker(QObject):
         except Exception as e:
             self.failed.emit(f"{type(e).__name__}: {e}")
 
-CROWD_FILE_FILTER = "Table Files (*.csv *.json *.xml);;All Files (*)"
 CROWD_OK_BG = QColor("#e2f6e2")
 CROWD_OK_FG = QColor("#1a6b1a")
 
@@ -1653,7 +1652,7 @@ class MainWindow(QMainWindow):
 
     def crowd_choose_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, self._("crowd_file_select"), "", CROWD_FILE_FILTER)
+            self, self._("crowd_file_select"), "", self._("crowd_file_filter"))
         if path:
             self.crowd_load_file(Path(path))
 
@@ -1737,7 +1736,7 @@ class MainWindow(QMainWindow):
     def crowd_save_config(self):
         path, _ = QFileDialog.getSaveFileName(
             self, self._("crowd_config_save"), "",
-            "JSON Files (*.json);;All Files (*)")
+            self._("crowd_filter_json"))
         if not path:
             return
         Path(path).write_text(self.crowd_config_edit.toPlainText(),
@@ -1746,7 +1745,7 @@ class MainWindow(QMainWindow):
     def crowd_load_config(self):
         path, _ = QFileDialog.getOpenFileName(
             self, self._("crowd_config_load"), "",
-            "JSON Files (*.json);;All Files (*)")
+            self._("crowd_filter_json"))
         if not path:
             return
         try:
@@ -1762,7 +1761,7 @@ class MainWindow(QMainWindow):
     def crowd_keygen(self):
         path, _ = QFileDialog.getSaveFileName(
             self, self._("crowd_keygen_button"), "",
-            "Text Files (*.txt);;All Files (*)")
+            self._("crowd_filter_text"))
         if path:
             self.crowd_keygen_to(Path(path))
 
@@ -1775,7 +1774,7 @@ class MainWindow(QMainWindow):
         if target.exists():
             answer = QMessageBox.question(
                 self, self._("crowd_keygen_button"),
-                "The key file exists. Replace it?",
+                self._("crowd_confirm_key_replace"),
                 QMessageBox.Yes | QMessageBox.No)
             if answer != QMessageBox.Yes:
                 return
@@ -1798,7 +1797,7 @@ class MainWindow(QMainWindow):
 
     def crowd_choose_output(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, self._("crowd_output_browse"), "", CROWD_FILE_FILTER)
+            self, self._("crowd_output_browse"), "", self._("crowd_file_filter"))
         if path:
             self.crowd_output_edit.setText(path)
 
@@ -1888,12 +1887,12 @@ class MainWindow(QMainWindow):
                 same = False
             if same:
                 QMessageBox.critical(self, self._("error_title"),
-                                     "The output must not be the input file.")
+                                     self._("crowd_error_output_is_input"))
                 return
         if output_path.exists():
             answer = QMessageBox.question(
                 self, self._("crowd_output_label"),
-                "The output file exists. Replace it?",
+                self._("crowd_confirm_output_replace"),
                 QMessageBox.Yes | QMessageBox.No)
             if answer != QMessageBox.Yes:
                 return
