@@ -1410,6 +1410,10 @@ class MainWindow(QMainWindow):
         # extension-based detection if the platform returned no filter.
         fmt = "md" if (".md" in (selected_filter or "") or path.endswith(".md")) \
             else "html"
+        # v1.0.0: attach the crowd run history (newest first) so
+        # the exported report carries the crowd results section.
+        # Inert for the on-screen tables; reloaded every export.
+        self._last_result.crowd_runs = self.storage.load_crowd_runs()
         if fmt == "md":
             content = render_text(self._last_result)
         else:

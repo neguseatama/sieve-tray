@@ -85,6 +85,12 @@ class ScanResult:
     # See audit_text() for the entry shape.
     audit_results: List[dict] = field(default_factory=list)
 
+    # v1.0.0: crowd run records (newest first) attached at export
+    # time for the report's crowd section. Not serialized by
+    # to_dict(); the CLI path leaves it None and the section is
+    # skipped entirely.
+    crowd_runs: Optional[list] = None
+
     def to_dict(self) -> dict:
         """JSON-serializable form, used by sieve_tray_storage for history."""
         return {
@@ -805,6 +811,23 @@ code { font-family: Menlo, monospace; font-size: .85em; }
 """
 
 
+def _crowd_cell(value, *, md=False, quoted=False) -> str:
+    """Format one crowd-run value for the report tables.
+
+    None renders as the bare em dash the report already uses
+    for empty values (never quoted). HTML cells are escaped;
+    Markdown cells (md=True) escape pipes instead and may be
+    wrapped in backticks (quoted=True) the way the other
+    Markdown tables quote file paths.
+    """
+    if value is None:
+        return "—"
+    text = str(value)
+    if md:
+        text = text.replace("|", "\\|")
+    return f"`{text}`" if quoted else html.escape(text)
+
+
 def render(result: ScanResult) -> str:
     groups = result.groups
     doc_results, code_pairs, text_pairs = (
@@ -892,6 +915,30 @@ def render(result: ScanResult) -> str:
             )
         parts.append("</table>")
 
+    if result.crowd_runs:
+        from sieve_tray_i18n import tr
+        parts.append("<h2>Crowd</h2>")
+        parts.append(
+            f"<p>{html.escape(tr('en', 'crowd_result_premise'))}</p>")
+        parts.append(
+            "<table><tr><th>Input</th><th>Output</th>"
+            "<th>Records In</th><th>Records Out</th><th>Suppressed</th>"
+            "<th>k Achieved</th><th>Max Risk</th><th>Avg Risk</th>"
+            "<th>Status</th><th>Reason</th></tr>")
+        for run in result.crowd_runs:
+            parts.append(
+                f"<tr><td>{_crowd_cell(run.get('input_path'))}</td>"
+                f"<td>{_crowd_cell(run.get('output_path'))}</td>"
+                f"<td>{_crowd_cell(run.get('records_in'))}</td>"
+                f"<td>{_crowd_cell(run.get('records_out'))}</td>"
+                f"<td>{_crowd_cell(run.get('suppressed'))}</td>"
+                f"<td>{_crowd_cell(run.get('k_achieved'))}</td>"
+                f"<td>{_crowd_cell(run.get('max_risk'))}</td>"
+                f"<td>{_crowd_cell(run.get('avg_risk'))}</td>"
+                f"<td>{_crowd_cell(run.get('status'))}</td>"
+                f"<td>{_crowd_cell(run.get('reason'))}</td></tr>")
+        parts.append("</table>")
+
     parts.append("<p style='margin-top:2rem;color:#666;font-size:.85rem;'>"
                  "This is an observation report, not a judgment. "
                  "Human review is required.</p>")
@@ -965,6 +1012,31 @@ def render_text(result: ScanResult) -> str:
                 f"| {a['pattern_name']} | {a['backing']} | {a['scope']} "
                 f"| {certainty} |")
     lines.append("")
+
+    if result.crowd_runs:
+        from sieve_tray_i18n import tr
+        lines.append("## Crowd")
+        lines.append("")
+        lines.append(tr("en", "crowd_result_premise"))
+        lines.append("")
+        lines.append(
+            "| Input | Output | Records In | Records Out | Suppressed"
+            " | k Achieved | Max Risk | Avg Risk | Status | Reason |")
+        lines.append(
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        for run in result.crowd_runs:
+            lines.append(
+                f"| {_crowd_cell(run.get('input_path'), md=True, quoted=True)} "
+                f"| {_crowd_cell(run.get('output_path'), md=True, quoted=True)} "
+                f"| {_crowd_cell(run.get('records_in'), md=True)} "
+                f"| {_crowd_cell(run.get('records_out'), md=True)} "
+                f"| {_crowd_cell(run.get('suppressed'), md=True)} "
+                f"| {_crowd_cell(run.get('k_achieved'), md=True)} "
+                f"| {_crowd_cell(run.get('max_risk'), md=True)} "
+                f"| {_crowd_cell(run.get('avg_risk'), md=True)} "
+                f"| {_crowd_cell(run.get('status'), md=True)} "
+                f"| {_crowd_cell(run.get('reason'), md=True)} |")
+        lines.append("")
 
     lines.append("_This is an observation report, not a judgment. "
                  "Human review is required._")
