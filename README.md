@@ -270,13 +270,13 @@ Path("report.html").write_text(render(result))
 
 ## 🖼️ Screenshots
 
-| English UI | Japanese UI |
+| Main window | Anonymize tab |
 |---|---|
-| ![Main window (English)](docs/screenshots/main-window-en.png) | ![Main window (Japanese)](docs/screenshots/main-window-ja.png) |
+| ![Main window](docs/screenshots/main-window-ja.png) | ![Anonymize tab](docs/screenshots/anonymize-tab-ja.png) |
 
-| Code Pairs | Text Similarity |
+| About dialog | Settings dialog |
 |---|---|
-| ![Code pairs tab](docs/screenshots/code-pairs-ja.png) | ![Text similarity tab](docs/screenshots/text-similarity-ja.png) |
+| ![About dialog](docs/screenshots/about-dialog-ja.png) | ![Settings dialog](docs/screenshots/settings-dialog-ja.png) |
 
 ---
 
@@ -287,7 +287,7 @@ pip install -e . pytest
 pytest -v
 ```
 
-130 tests cover the core scan/render pipeline (including regression tests for
+132 tests cover the core scan/render pipeline (including regression tests for
 a CSS rendering bug and for Sieve Referee's paraphrase detection), the
 history/settings storage layer (save / load / delete / retention pruning,
 including migration from pre-Referee databases), and the i18n string tables

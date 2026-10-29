@@ -245,13 +245,13 @@ Path("report.html").write_text(render(result))
 
 ## 🖼️ スクリーンショット
 
-| 英語UI | 日本語UI |
+| メインウィンドウ | 匿名化タブ |
 |---|---|
-| ![メインウィンドウ（英語）](docs/screenshots/main-window-en.png) | ![メインウィンドウ（日本語）](docs/screenshots/main-window-ja.png) |
+| ![メインウィンドウ](docs/screenshots/main-window-ja.png) | ![匿名化タブ](docs/screenshots/anonymize-tab-ja.png) |
 
-| コードペアタブ | テキスト類似度タブ |
+| Aboutダイアログ | 設定ダイアログ |
 |---|---|
-| ![コードペアタブ](docs/screenshots/code-pairs-ja.png) | ![テキスト類似度タブ](docs/screenshots/text-similarity-ja.png) |
+| ![Aboutダイアログ](docs/screenshots/about-dialog-ja.png) | ![設定ダイアログ](docs/screenshots/settings-dialog-ja.png) |
 
 ---
 
@@ -265,7 +265,7 @@ pytest -v
 コアのスキャン/レンダリング処理（CSSレンダリングバグやSieve Refereeのパラフレーズ
 検知の回帰テストを含む）、履歴・設定のストレージ層（保存・読み込み・削除・保持件数
 による自動整理、Referee導入前のDBからの移行を含む）、i18n文字列テーブル（英語・
-日本語のキー整合性）を合わせて130件のテストでカバーしています。加えて、同梱Sieve Redact統合（バイトpin同期と終了コードマッピング）、画像サニタイズ経路
+日本語のキー整合性）を合わせて132件のテストでカバーしています。加えて、同梱Sieve Redact統合（バイトpin同期と終了コードマッピング）、画像サニタイズ経路
 （リージョンヘルパー・レシート処理・offscreen Qt上のエディタウィジェット）、フォルダ均一画像サニタイズ（設定種別によるルーティング・対象外ファイルの報告・設定レベルのエラー報告）、同梱Sieve Crowd統合（コアラッパー・ストレージ・UIウィジェット・レポート節・vendor pin同期・Aboutのエンジン一覧）も対象です。
 
 CIはpushのたびにこのテストスイートを実行し（Ubuntu上でPython 3.12）、
