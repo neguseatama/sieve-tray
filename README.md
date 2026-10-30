@@ -1,6 +1,6 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v0.10.1
+# Sieve Tray v1.0.0
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
@@ -155,7 +155,9 @@ Redact removes it with a receipt that proves nothing else changed.
   status). Protection is k-anonymity against an outsider who knows the
   declared quasi-identifiers; if the requested k is not achievable, the
   engine refuses without writing an output file. Every run is saved to the
-  local history database and included in exported reports.
+  local history database and included in exported reports. The tab also
+  keeps an 8-column run history view (latest 20 runs, refreshed at
+  startup and after each run; new in v1.0.0).
 - **Sanitize history tab** — every sanitize run (folder and single
   image) is listed in its own tab with timestamp, folder, config,
   output location, files and ok count, masked items, and integrity
