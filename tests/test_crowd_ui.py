@@ -285,3 +285,108 @@ def test_about_dialog_lists_five_bundled_engines(window):
     assert "Sieve Redact" in link_labels[0].text()
     assert "Sieve Crowd" in link_labels[0].text()
     dialog.close()
+
+
+def test_crowd_history_section_built_with_eight_columns(window):
+    """v1.0.0 (spec 5.4 / D140): the history view is 8 columns + title."""
+    table = window.crowd_history_table
+    assert table.columnCount() == 8
+    headers = [table.horizontalHeaderItem(i).text() for i in range(8)]
+    assert headers == [
+        tr("en", "crowd_history_header_timestamp"),
+        tr("en", "crowd_history_header_input"),
+        tr("en", "crowd_history_header_output"),
+        tr("en", "crowd_history_header_records"),
+        tr("en", "crowd_history_header_k"),
+        tr("en", "crowd_history_header_suppressed"),
+        tr("en", "crowd_history_header_status"),
+        tr("en", "crowd_history_header_reason"),
+    ]
+    assert window.crowd_history_title_label.text() == tr(
+        "en", "crowd_history_title")
+    assert table.rowCount() == 0
+
+
+def test_crowd_history_loads_newest_first_at_startup(qapp, tmp_path):
+    """v1.0.0 (D140): the history is refreshed at startup, newest first."""
+    storage = Storage(tmp_path / "history.db")
+    for status in ("refused", "anonymized"):
+        storage.save_crowd_run({
+            "status": status,
+            "reason": "infeasible" if status == "refused" else None,
+            "records_in": 3,
+            "records_out": None if status == "refused" else 2,
+            "suppressed": None if status == "refused" else 1,
+            "k_requested": 5,
+            "k_achieved": None if status == "refused" else 2,
+            "input_path": str(tmp_path / "in.csv"),
+            "output_path": None,
+        })
+    win = gui.MainWindow(storage=storage)
+    try:
+        table = win.crowd_history_table
+        assert table.rowCount() == 2
+        assert table.item(0, 6).text() == "anonymized"
+        assert table.item(1, 6).text() == "refused"
+    finally:
+        win.close()
+
+
+def test_crowd_history_refreshes_after_run(window, tmp_path):
+    """v1.0.0 (D140): a finished run lands in the history immediately."""
+    src = tmp_path / "people.csv"
+    src.write_bytes(CSV_3)
+    window.crowd_load_file(src)
+    cfg = crowd_parse_config(json.dumps(
+        {"k": 5, "l": 1, "max_suppression": 0.0,
+         "columns": dict(COLS_DROP_NAME)}))
+    worker = gui.CrowdWorker("run", window._crowd_header, window._crowd_rows,
+                             cfg, io=("csv", "csv"),
+                             output_path=Path(window.crowd_output_edit.text()),
+                             lang="en")
+    finished = []
+    worker.finished.connect(finished.append)
+    worker.run()
+    summary = finished[0]
+    assert summary["status"] == "refused"
+    window._on_crowd_run_finished(summary)
+    table = window.crowd_history_table
+    assert table.rowCount() == 1
+    assert table.item(0, 0).text()
+    assert table.item(0, 1).text() == str(src)
+    assert table.item(0, 2).text() == ""
+    assert table.item(0, 6).text() == "refused"
+    assert table.item(0, 7).text() == "infeasible"
+
+
+def test_crowd_history_cells_render_metrics(window):
+    """v1.0.0 (spec 5.4): records in->out, k, suppressed; None is blank."""
+    window.storage.save_crowd_run({
+        "status": "anonymized", "reason": None,
+        "records_in": 5, "records_out": 4, "suppressed": 1,
+        "k_requested": 2, "k_achieved": 2,
+        "input_path": "/tmp/in.csv", "output_path": "/tmp/out.csv",
+    })
+    window._refresh_crowd_history_table()
+    table = window.crowd_history_table
+    assert table.item(0, 3).text() == "5 \u2192 4"
+    assert table.item(0, 4).text() == "2"
+    assert table.item(0, 5).text() == "1"
+    assert table.item(0, 6).text() == "anonymized"
+    assert table.item(0, 7).text() == ""
+
+
+def test_crowd_history_localized_headers_ja(qapp, tmp_path):
+    """v1.0.0 (spec 5.4): the history headers follow the stored language."""
+    storage = Storage(tmp_path / "ja.db")
+    storage.set_setting("language", "ja")
+    win = gui.MainWindow(storage=storage)
+    try:
+        table = win.crowd_history_table
+        headers = [table.horizontalHeaderItem(i).text() for i in range(8)]
+        assert headers[5] == tr("ja", "crowd_history_header_suppressed")
+        assert headers[7] == tr("ja", "crowd_history_header_reason")
+        assert win.crowd_history_title_label.text() == tr(
+            "ja", "crowd_history_title")
+    finally:
+        win.close()

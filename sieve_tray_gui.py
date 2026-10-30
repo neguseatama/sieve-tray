@@ -33,7 +33,8 @@ from PySide6.QtWidgets import (
     QDialog, QFormLayout, QSpinBox, QDialogButtonBox, QCheckBox,
     QComboBox, QListWidget, QScrollArea,
 )
-from PySide6.QtGui import QColor, QIcon, QAction, QPainter, QPixmap
+from PySide6.QtGui import (QColor, QIcon, QAction, QPainter, QPixmap,
+                           QFontDatabase)
 
 from sieve_tray import (
     run_scan,
@@ -918,6 +919,10 @@ class MainWindow(QMainWindow):
 
         crowd_layout.addWidget(QLabel(self._("crowd_config_label")))
         self.crowd_config_edit = QPlainTextEdit()
+        # v1.0.0 (D139): the JSON config editor uses the platform fixed
+        # font and keeps the system palette (no color overrides).
+        self.crowd_config_edit.setFont(
+            QFontDatabase.systemFont(QFontDatabase.FixedFont))
         crowd_layout.addWidget(self.crowd_config_edit, stretch=2)
         crowd_config_row = QHBoxLayout()
         self.crowd_config_save_btn = QPushButton(self._("crowd_config_save"))
@@ -983,6 +988,23 @@ class MainWindow(QMainWindow):
         self.crowd_premise_label.setWordWrap(True)
         crowd_layout.addWidget(self.crowd_premise_label)
 
+        # v1.0.0 (spec 5.4, D138/D140): the crowd run history lives in
+        # the Crowd tab as an 8-column view (newest first) fed by
+        # load_crowd_runs; refreshed at startup and after each run.
+        self.crowd_history_title_label = QLabel(self._("crowd_history_title"))
+        crowd_layout.addWidget(self.crowd_history_title_label)
+        self.crowd_history_table = self._make_table([
+            self._("crowd_history_header_timestamp"),
+            self._("crowd_history_header_input"),
+            self._("crowd_history_header_output"),
+            self._("crowd_history_header_records"),
+            self._("crowd_history_header_k"),
+            self._("crowd_history_header_suppressed"),
+            self._("crowd_history_header_status"),
+            self._("crowd_history_header_reason"),
+        ])
+        crowd_layout.addWidget(self.crowd_history_table)
+
         self._crowd_tab_index = self.tabs.addTab(crowd_page,
                                                  self._("crowd_tab"))
 
@@ -1006,6 +1028,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(export_row)
 
         self._refresh_history_table()
+        self._refresh_crowd_history_table()
 
     def closeEvent(self, event):
         # Defensive: if a scan is still running in the background when the
@@ -1629,6 +1652,35 @@ class MainWindow(QMainWindow):
         self.history_table.setSortingEnabled(True)
         self._refresh_sanitize_history_table()
 
+    def _refresh_crowd_history_table(self):
+        """v1.0.0 (spec 5.4 / D140): fill the 8-column crowd history.
+
+        Rows come from load_crowd_runs (already newest first). None
+        metrics render as empty cells; records show "in → out" once an
+        output exists. Sorting stays off so the newest-first order from
+        the storage layer is preserved.
+        """
+        runs = self.storage.load_crowd_runs(limit=20)
+        self.crowd_history_table.setSortingEnabled(False)
+        self.crowd_history_table.setRowCount(len(runs))
+        for row, r in enumerate(runs):
+            records = str(r.get("records_in") or 0)
+            if r.get("records_out") is not None:
+                records = f"{records} \u2192 {r['records_out']}"
+            cells = [
+                r.get("timestamp") or "",
+                r.get("input_path") or "",
+                r.get("output_path") or "",
+                records,
+                "" if r.get("k_achieved") is None else str(r["k_achieved"]),
+                "" if r.get("suppressed") is None else str(r["suppressed"]),
+                r.get("status") or "",
+                r.get("reason") or "",
+            ]
+            for column, text in enumerate(cells):
+                self.crowd_history_table.setItem(
+                    row, column, QTableWidgetItem(text))
+
     def _on_history_row_activated(self, row: int, _column: int):
         item = self.history_table.item(row, 0)
         if item is None:
@@ -1996,6 +2048,7 @@ class MainWindow(QMainWindow):
             str(self._crowd_config_path)
             if self._crowd_config_path is not None else None)
         self.storage.save_crowd_run(record)
+        self._refresh_crowd_history_table()
 
     def _on_crowd_failed(self, message):
         self._crowd_set_running(False)
