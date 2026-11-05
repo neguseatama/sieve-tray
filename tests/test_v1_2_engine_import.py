@@ -276,6 +276,12 @@ class TR2_T02_ChartableShipsInPackageData(unittest.TestCase):
         for path in sorted(vendored.rglob("*")):
             if not path.is_file() or path.suffix == ".py":
                 continue
+            if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
+                # Bytecode caches appear when a local `python -m pytest`
+                # imports the repo-tree copy of sieve_crowd. TR2-T01 and
+                # test_crowd_vendor_sync skip them too; they are build
+                # artifacts, never vendored data.
+                continue
             rel = str(path.relative_to(vendored))
             if not any(fnmatch.fnmatch(rel, p) for p in patterns):
                 uncovered.append(rel)

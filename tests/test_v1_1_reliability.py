@@ -520,7 +520,10 @@ def test_t16_cli_entry_calls_freeze_support():
 
 def test_t17_package_data_covers_vendored_crowd_files():
     import fnmatch
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10: tomli arrives with pytest
+        import tomli as tomllib
     root = Path(__file__).resolve().parent.parent
     data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     pkgdata = data["tool"]["setuptools"].get("package-data", {})
