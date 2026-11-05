@@ -7,6 +7,12 @@ v0.2: 組込文字種 --builtin、語単位一致 '+' 接頭辞、
       (tests/test_v02_*.py)
 v0.3: replace 様式、--from-lens twin 生成、
       phone-jp 拡張形
+v0.7: 全角・異種ハイフンの正規化ビュー照合 (builtin matcher)・
+      '~' 接頭辞による大小無視一致・phone-jp の 08/09 4 桁
+      市外局番と短縮番号
+v0.9: --from-lens の JSON 門番 — 重複キー・NaN/Infinity・未知キー・
+      1 MiB 超を拒否し、エラーに JSON Pointer を付与
+      (Sieve Schema Contract v1 の Redact 同梱ゲート)
 
 コア不変条件:
   - 依存は stdlib のみ / 決定的 / UTF-8 のみ / オフライン / テレメトリなし
@@ -26,10 +32,11 @@ import sys
 from pathlib import Path
 from collections import namedtuple
 
-VERSION = "0.6.0"
+VERSION = "0.9.0"
 
 REGION_MODES = ("delete", "mosaic", "label", "noise", "decor", "replace")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+JPEG_SIGNATURE = b"\xff\xd8\xff"
 LABEL_PREFIX_DEFAULT = "[REDACTED]"
 
 try:
@@ -98,6 +105,45 @@ def check_png_input(data):
     return width, height
 
 
+JPEG_SOF_MARKERS = frozenset(
+    (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+     0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF))
+
+
+def check_jpeg_input(data):
+    # Validate raw bytes as a JPEG (SOI + frame header) and return
+    # (width, height) from the SOF segment without decoding pixels.
+    # This gate only decides "is this a JPEG"; Pillow remains the decoder.
+    if len(data) < 4 or data[:3] != JPEG_SIGNATURE:
+        raise ValueError("input is not a JPEG file")
+    i = 2
+    n = len(data)
+    while i + 4 <= n:
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker == 0xFF:
+            i += 1
+            continue
+        if marker == 0x01 or 0xD0 <= marker <= 0xD9:
+            i += 2
+            continue
+        seglen = int.from_bytes(data[i + 2:i + 4], "big")
+        if seglen < 2:
+            raise ValueError("invalid JPEG segment length")
+        if marker in JPEG_SOF_MARKERS:
+            if i + 2 + seglen > n or seglen < 8:
+                raise ValueError("truncated JPEG frame header")
+            height = int.from_bytes(data[i + 5:i + 7], "big")
+            width = int.from_bytes(data[i + 7:i + 9], "big")
+            if width == 0 or height == 0:
+                raise ValueError("invalid JPEG dimensions")
+            return width, height
+        i += 2 + seglen
+    raise ValueError("unsupported JPEG (frame header not found)")
+
+
 def _rects_overlap(a, b):
     return not (a["x"] + a["w"] <= b["x"] or b["x"] + b["w"] <= a["x"]
                 or a["y"] + a["h"] <= b["y"] or b["y"] + b["h"] <= a["y"])
@@ -144,7 +190,9 @@ CLASS_CHARS = {name: "".join(chr(cp) for cp in rng)
 #       chars="chars:"+正規化CP-LIST)
 # word_unit — MODE の '+' 接頭辞。境界で両端いずれかが棄却なら
 #            そのマッチ全体を棄却する
-Rule = namedtuple("Rule", "index kind name pattern seed mode arg word_unit")
+# ci — MODE の '~' 接頭辞。ASCII の大小を無視して照合する
+#      (非 ASCII はそのまま。位置対応を保つため 1:1 折りたたみのみ)
+Rule = namedtuple("Rule", "index kind name pattern seed mode arg word_unit ci")
 
 
 class UsageError(Exception):
@@ -169,22 +217,68 @@ def _all_ascii_digits(s):
     return all(_is_ascii_digit(ch) for ch in s)
 
 
+def _fold_char(ch):
+    """ASCII 大文字 → 小文字 (1:1)。それ以外はそのまま。"""
+    if "A" <= ch <= "Z":
+        return chr(ord(ch) + 32)
+    return ch
+
+
+def fold_text(text):
+    """ASCII のみの大小折りたたみビュー (1:1 なので長さは入力と同一)。"""
+    return "".join(_fold_char(ch) for ch in text)
+
+
+# 正規化ビュー (v0.7): postal-jp / phone-jp / email は正規化して照合する。
+# 対応表は 1 文字 → 1 文字に限定する (位置対応を保つため。NFKC のような
+# 非 1:1 変換は使わない)。
+#   - 全角 ASCII ブロック U+FF01..FF5E → U+0021..007E
+#     (全角数字・全角英字・全角ハイフン U+FF0D・全角アット U+FF20 を含む)
+#   - 異種ハイフン U+2010..2015 / U+2212 → U+002D ('-')
+_NORMALIZED_BUILTINS = ("postal-jp", "phone-jp", "email")
+_HYPHEN_CODEPOINTS = frozenset((0x2010, 0x2011, 0x2012, 0x2013,
+                                0x2014, 0x2015, 0x2212))
+
+
+def normalize_char(ch):
+    """1 文字の正規化 (1:1 対応)。対応表外はそのまま。"""
+    cp = ord(ch)
+    if 0xFF01 <= cp <= 0xFF5E:
+        return chr(cp - 0xFEE0)
+    if cp in _HYPHEN_CODEPOINTS:
+        return "-"
+    return ch
+
+
+def normalize_text(text):
+    """正規化ビュー (1 文字 → 1 文字のため長さは入力と同一)。"""
+    return "".join(normalize_char(ch) for ch in text)
+
+
 # --------------------------------------------------------------- ルール解析
 
 def _parse_mode(mode):
-    """MODE ('+' 語単位接頭辞つき) を解析する。戻り値: (word_unit, base_mode)。
+    """MODE ('+' / '~' 接頭辞つき) を解析する。
 
-    '+' 接頭辞は語単位一致。'+' の後には MODE が必須 (空・未知は rc2)。
+    戻り値: (word_unit, ci, base_mode)。接頭辞は任意の順で併用可
+    (例: +label / ~label / +~label / ~+label)。接頭辞の後には
+    MODE が必須 (空・未知は rc2)。
     """
-    if mode.startswith("+"):
-        word_unit, base = True, mode[1:]
-    else:
-        word_unit, base = False, mode
-    if base not in MODES:
+    word_unit = False
+    ci = False
+    rest = mode
+    while rest[:1] in ("+", "~"):
+        if rest[0] == "+":
+            word_unit = True
+        else:
+            ci = True
+        rest = rest[1:]
+    if rest not in MODES:
         raise UsageError(
             f"不明な MODE: {mode!r} (許容: {', '.join(MODES)}"
-            " — 語単位一致は '+' 接頭辞, 例 秘密:+label)")
-    return word_unit, base
+            " — 語単位一致は '+' 接頭辞, 大小無視は '~' 接頭辞"
+            " (併用可, 例 秘密:+~label))")
+    return word_unit, ci, rest
 
 
 def _normalize_mode_arg(mode, arg):
@@ -225,9 +319,10 @@ def parse_rule(spec, index):
     arg = parts[2] if len(parts) == 3 else None
     if not pattern:
         raise UsageError("PATTERN が空です (空パターンは禁止)")
-    word_unit, mode = _parse_mode(mode)
+    word_unit, ci, mode = _parse_mode(mode)
     arg = _normalize_mode_arg(mode, arg)
-    return Rule(index, "literal", "", pattern, pattern, mode, arg, word_unit)
+    return Rule(index, "literal", "", pattern, pattern, mode, arg,
+                word_unit, ci)
 
 
 def parse_chars_arg(arg):
@@ -278,20 +373,21 @@ def parse_builtin(spec, index):
                 "chars は chars:CP-LIST:MODE[:ARG] の形式で指定してください"
                 f": {spec!r}")
         cplist, mode = parts[1], parts[2]
-        word_unit, mode = _parse_mode(mode)
+        word_unit, ci, mode = _parse_mode(mode)
         arg = ":".join(parts[3:]) if len(parts) > 3 else None
         arg = _normalize_mode_arg(mode, arg)
         canon = parse_chars_arg(cplist)
         return Rule(index, "builtin", name, canon, "chars:" + canon,
-                    mode, arg, word_unit)
+                    mode, arg, word_unit, ci)
     if len(parts) < 2:
         raise UsageError(
             "--builtin は NAME:MODE[:ARG] の形式で指定してください"
             f" (MODE なし): {spec!r}")
-    word_unit, mode = _parse_mode(parts[1])
+    word_unit, ci, mode = _parse_mode(parts[1])
     arg = ":".join(parts[2:]) if len(parts) > 2 else None
     arg = _normalize_mode_arg(mode, arg)
-    return Rule(index, "builtin", name, "", name, mode, arg, word_unit)
+    return Rule(index, "builtin", name, "", name, mode, arg,
+                word_unit, ci)
 
 
 # --------------------------------------------- 設定ファイルと --from-lens
@@ -320,87 +416,170 @@ def parse_config_lines(cfg_text, path):
     return matchers
 
 
+# --------------------------------- スキーマゲート (契約 v1 同梱部)
+
+_FROM_LENS_MAX_BYTES = 1048576  # --from-lens 入力の上限 (超過は rc2)
+
+
+def _reject_constant(name):
+    """JSON 層の門番: NaN / Infinity / -Infinity を拒否する。"""
+    raise UsageError(
+        f"--from-lens: JSON 仕様外の定数は許可されません: {name}")
+
+
+def _pairs_without_duplicates(pairs):
+    """JSON 層の門番: 同一オブジェクト内の重複キーを拒否する。"""
+    obj = {}
+    for key, val in pairs:
+        if key in obj:
+            raise UsageError(
+                f"--from-lens: JSON オブジェクトでキーが重複しています: "
+                f"{key!r}")
+        obj[key] = val
+    return obj
+
+
+def _strict_json_loads(text):
+    """重複キーと NaN/Infinity を拒否する json.loads (stdlib のみ)。"""
+    return json.loads(text, parse_constant=_reject_constant,
+                      object_pairs_hook=_pairs_without_duplicates)
+
+
+def _pointer(base, token):
+    """JSON Pointer (RFC 6901) のトークンを 1 段追加する。"""
+    return base + "/" + token.replace("~", "~0").replace("/", "~1")
+
+
+def _type_ok(val, expected):
+    """期待型の判定。bool は int の亜種として厳格に排除する。"""
+    if expected is int:
+        return isinstance(val, int) and not isinstance(val, bool)
+    return isinstance(val, expected)
+
+
+def _validate_schema(data, spec, ptr):
+    """宣言スキーマによる構造検証 (Schema Contract v1 の Redact 同梱部)。
+
+    語彙: type / required / enum / item_type / item_schema — Contract v1
+    全語彙のうち catalog v1 が使うサブセットのみを同梱する。
+    規則: 未知キーは無視せず拒否 / 型変換 (coercion) は一切しない /
+    fail-fast / エラーは JSON Pointer 付き UsageError (rc2)。
+    再帰深さはスキーマ深さで有界 (入力データの深さに依存しない)。
+    """
+    if not isinstance(data, dict):
+        raise UsageError(
+            f"--from-lens: {ptr or '(root)'}: オブジェクトである必要があります: "
+            f"{type(data).__name__}")
+    extra = sorted(set(data) - set(spec))
+    if extra:
+        raise UsageError(
+            f"--from-lens: {ptr or '(root)'}: 許可されていないキー: "
+            f"{', '.join(extra)} (許可: {', '.join(sorted(spec))})")
+    for key, rule in spec.items():
+        if key not in data:
+            if rule.get("required", True):
+                raise UsageError(
+                    f"--from-lens: {_pointer(ptr, key)}: "
+                    "必須フィールドが欠損しています")
+            continue
+        val = data[key]
+        field = _pointer(ptr, key)
+        expected = rule.get("type")
+        if expected is not None and not _type_ok(val, expected):
+            raise UsageError(
+                f"--from-lens: {field}: 型が不正です "
+                f"(期待: {expected.__name__}, 実際: {type(val).__name__})")
+        allowed_values = rule.get("enum")
+        if allowed_values is not None and val not in allowed_values:
+            raise UsageError(
+                f"--from-lens: {field}: 許可された値ではありません: {val!r} "
+                f"(許可: {', '.join(repr(v) for v in allowed_values)})")
+        item_type = rule.get("item_type")
+        if item_type is not None:
+            for idx, item in enumerate(val):
+                if not _type_ok(item, item_type):
+                    raise UsageError(
+                        f"--from-lens: {field}/{idx}: 型が不正です "
+                        f"(期待: {item_type.__name__}, "
+                        f"実際: {type(item).__name__})")
+        item_schema = rule.get("item_schema")
+        if item_schema is not None:
+            for idx, item in enumerate(val):
+                _validate_schema(item, item_schema, f"{field}/{idx}")
+
+
+# 契約 v1 (Redact Bridge catalog) の宣言スキーマ。実装からの抽出であり、
+# lens / kind は契約上のキーだが Redact は使用しない (検証のみ)。
+# count / positions は省略可。値域の追加制約 (例: count >= 0) は現行の
+# 受容範囲を変えるため導入しない。
+_FROM_LENS_SCHEMA = {
+    "lens": {"required": False, "type": str},
+    "version": {"required": True, "type": int, "enum": (1,)},
+    "observations": {"required": True, "type": list, "item_schema": {
+        "kind": {"required": False, "type": str},
+        "codepoint": {"required": True, "type": str},
+        "count": {"required": False, "type": int},
+        "positions": {"required": False, "type": list, "item_type": int},
+        "twin": {"required": False, "type": str},
+    }},
+}
+
+
 def load_lens_codepoints(path):
     """--from-lens の観測 JSON (契約 v1 + twin) を読む。
 
-    戻り値: [(正規化CP, twin正規化CP or None)] — 初出順・重複排除
-    (同一 codepoint は初出エントリの twin 属性を採用)。
-    twin (省略可) は単一コードポイント表記のみ。twin ありのエントリは
-    chars:<CP>:replace:<twin の文字>、なしは chars:<CP>:delete に
-    なる (呼び出し側で生成)。
-    kind は生成に使わない。count / positions は省略可 (整数検証)。
-    version ≠ 1・JSON 壊れ・観測書式不正は UsageError (rc2)。
-    読み込み失敗 (OSError) は呼び出し側で rc1 にする。
+    二層検証 (Schema Contract v1 の Redact 同梱ゲート):
+      1. JSON 層: UTF-8 厳格・重複キー拒否・NaN/Infinity 拒否・
+         _FROM_LENS_MAX_BYTES 上限。
+      2. スキーマ層: _FROM_LENS_SCHEMA による構造・型・enum 検証。
+         未知キーは無視せず拒否し、型変換は一切行わない。
+    意味層: codepoint / twin を parse_chars_arg で解釈し、単一コード
+    ポイントに制限する。戻り値: [(正規化CP, twin正規化CP or None)] —
+    初出順・重複排除 (同一 codepoint は初出エントリの twin 属性を採用)。
+    twin ありのエントリは chars:<CP>:replace:<twin の文字>、なしは
+    chars:<CP>:delete になる (呼び出し側で生成)。
+    全ての入力拒否は UsageError (rc2)。読み込み失敗 (OSError) は
+    呼び出し側で rc1 にする。
     """
     with open(path, "rb") as fh:
+        fh.seek(0, 2)
+        if fh.tell() > _FROM_LENS_MAX_BYTES:
+            raise UsageError(
+                f"--from-lens: ファイルが大きすぎます "
+                f"(上限: {_FROM_LENS_MAX_BYTES} バイト): {path!r}")
+        fh.seek(0)
         raw = fh.read()
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise UsageError(f"--from-lens を UTF-8 として解釈できません: {exc}")
     try:
-        doc = json.loads(text)
+        doc = _strict_json_loads(text)
     except json.JSONDecodeError as exc:
         raise UsageError(f"--from-lens の JSON を解釈できません: {exc}")
-    if not isinstance(doc, dict):
-        raise UsageError(
-            f"--from-lens: JSON はオブジェクトである必要があります: {path!r}")
-    version = doc.get("version")
-    if isinstance(version, bool) or version != 1:
-        raise UsageError(
-            f"--from-lens: 対応する version は 1 のみ: {version!r}")
-    obs = doc.get("observations")
-    if not isinstance(obs, list):
-        raise UsageError(
-            f"--from-lens: observations は配列である必要があります: {path!r}")
+    _validate_schema(doc, _FROM_LENS_SCHEMA, "")
     order = []  # [(canon, twin_canon or None)] — 初出順
     seen = {}   # canon -> twin (初出の属性を採用)
-    for i, item in enumerate(obs, 1):
-        if not isinstance(item, dict):
-            raise UsageError(
-                f"--from-lens: observation #{i} はオブジェクトである必要があります")
-        cp = item.get("codepoint")
-        if not isinstance(cp, str):
-            raise UsageError(
-                f"--from-lens: observation #{i} に codepoint (文字列) が必要です")
+    for i, item in enumerate(doc["observations"]):
+        base = f"/observations/{i}"
         try:
-            canon = parse_chars_arg(cp)
+            canon = parse_chars_arg(item["codepoint"])
         except UsageError as exc:
-            raise UsageError(f"--from-lens: observation #{i}: {exc}")
+            raise UsageError(f"--from-lens: {base}/codepoint: {exc}")
         if "," in canon:
             raise UsageError(
-                f"--from-lens: observation #{i} の codepoint は 1 個のみ: {cp!r}")
-        twin_raw = item.get("twin")
-        if twin_raw is None:
-            twin = None
-        else:
-            if not isinstance(twin_raw, str):
-                raise UsageError(
-                    f"--from-lens: observation #{i} の twin は"
-                    " 文字列である必要があります")
+                f"--from-lens: {base}/codepoint: 複数のコードポイントは"
+                f" 許可されません: {item['codepoint']!r}")
+        twin = None
+        if "twin" in item:
             try:
-                twin = parse_chars_arg(twin_raw)
+                twin = parse_chars_arg(item["twin"])
             except UsageError as exc:
-                raise UsageError(
-                    f"--from-lens: observation #{i} の twin: {exc}")
+                raise UsageError(f"--from-lens: {base}/twin: {exc}")
             if "," in twin:
                 raise UsageError(
-                    f"--from-lens: observation #{i} の twin は"
-                    f" 単一コードポイントである必要があります: {twin_raw!r}")
-        if "count" in item:
-            c = item["count"]
-            if not isinstance(c, int) or isinstance(c, bool):
-                raise UsageError(
-                    f"--from-lens: observation #{i} の count は"
-                    " 整数である必要があります")
-        if "positions" in item:
-            pos = item["positions"]
-            if (not isinstance(pos, list)
-                    or any(not isinstance(p, int) or isinstance(p, bool)
-                           for p in pos)):
-                raise UsageError(
-                    f"--from-lens: observation #{i} の positions は"
-                    " 整数の配列である必要があります")
+                    f"--from-lens: {base}/twin: 単一コードポイントのみ"
+                    f" 許可されます: {item['twin']!r}")
         if canon not in seen:
             seen[canon] = twin
             order.append((canon, twin))
@@ -481,7 +660,8 @@ def match_postal_jp(text):
 # 各要素: (市外局番長, 市内局番長, 加入者番号長, 接頭辞制約)
 #   None  : 0 開始のみで追加制約なし
 #   "433" : 接頭辞が {0120, 0570, 0800} のみ
-#   "424" : 接頭辞が 0[1-6]XX かつ "433" 接頭辞集合に非所属
+#   "424" : 接頭辞が 0[1-9]XX かつ "433" 接頭辞集合に非所属
+#           (08xx / 09xx の地理 4 桁市外局番を含む — v0.7)
 _PHONE_SHAPES = (
     (3, 4, 4, None),
     (4, 3, 3, "433"),
@@ -492,6 +672,10 @@ _PHONE_SHAPES = (
 
 _PHONE_433_PREFIXES = ("0120", "0570", "0800")
 
+# 短縮番号 (3 桁・ハイフンなし)。v0.7 から phone-jp に含める。
+_PHONE_SHORT_NUMBERS = frozenset(
+    ("104", "106", "110", "117", "118", "119", "171"))
+
 
 def _phone_prefix_ok(constraint, area):
     """形状ごとの接頭辞制約。area は検証済みの数字列 (先頭 '0')。"""
@@ -499,15 +683,15 @@ def _phone_prefix_ok(constraint, area):
         return True
     if constraint == "433":
         return area in _PHONE_433_PREFIXES
-    # "424": 0[1-7]XX かつ 433 接頭辞に非所属
-    return area[1] in "1234567" and area not in _PHONE_433_PREFIXES
+    # "424": 0[1-9]XX かつ 433 接頭辞に非所属 (08xx/09xx を含む)
+    return area[1] in "123456789" and area not in _PHONE_433_PREFIXES
 
 
 def match_phone_jp(text):
-    """0 開始の電話番号。両側 ASCII digit 境界。
+    """0 開始の電話番号と短縮番号。両側 ASCII digit 境界。
 
-    試行順: (3,4,4) → (4,3,3) → (3,3,4) → (4,2,4) → (2,4,4)
-    (総長降順・同長は固定順)。
+    試行順: (3,4,4) → (4,3,3) → (3,3,4) → (4,2,4) → (2,4,4)、
+    短縮番号 (104/106/110/117/118/119/171 — ハイフンなし 3 桁)。
     """
     matches = []
     n = len(text)
@@ -539,6 +723,17 @@ def match_phone_jp(text):
                     break
             else:
                 pos += 1
+        elif text[pos] == "1":
+            # 短縮番号 (3 桁・ハイフンなし)。両側 ASCII digit 境界。
+            end = pos + 3
+            if text[pos:end] in _PHONE_SHORT_NUMBERS:
+                before_ok = pos == 0 or not _is_ascii_digit(text[pos - 1])
+                after_ok = end >= n or not _is_ascii_digit(text[end])
+                if before_ok and after_ok:
+                    matches.append((pos, 3))
+                    pos = end
+                    continue
+            pos += 1
         else:
             pos += 1
     return matches
@@ -615,30 +810,52 @@ def match_email(text):
     return matches
 
 
-def match_chars(text, canon):
-    """正規化 CP-LIST の各コードポイントの全出現 (単独・位置昇順)。"""
+def match_chars(text, canon, ci=False):
+    """正規化 CP-LIST の各コードポイントの全出現 (単独・位置昇順)。
+
+    ci=True の場合は ASCII 英字の大小両方を対象にする
+    (U+0041 は 'A' と 'a' の両方に一致)。
+    """
     matches = []
     for token in canon.split(","):
         ch = chr(int(token[2:], 16))
-        start = text.find(ch)
-        while start >= 0:
-            matches.append((start, 1))
-            start = text.find(ch, start + 1)
+        if ci:
+            # 大小両方の ASCII 変種を対象にする (U+0041 ↔ U+0061)
+            targets = {ch, _fold_char(ch)}
+            if "a" <= ch <= "z":
+                targets.add(chr(ord(ch) - 32))
+        else:
+            targets = (ch,)
+        for target in targets:
+            start = text.find(target)
+            while start >= 0:
+                matches.append((start, 1))
+                start = text.find(target, start + 1)
     matches.sort()
     return matches
 
 
-def enumerate_matches(text, rule):
-    """1 matcher の全一致を左端優先・非重複で列挙する。"""
+def enumerate_matches(text, rule, norm_text=None):
+    """1 matcher の全一致を左端優先・非重複で列挙する。
+
+    postal-jp / phone-jp / email は正規化ビューで照合する。正規化は
+    1:1 なので戻り値の位置は元の text と同一。norm_text は呼び出し
+    側で再利用する場合に渡す (省略時は内部で計算)。literal と
+    chars は常に元の text で照合する (正規化の対象外)。
+    """
     if rule.kind == "literal":
+        if rule.ci:
+            return find_matches(fold_text(text), fold_text(rule.pattern))
         return find_matches(text, rule.pattern)
-    if rule.name == "postal-jp":
-        return match_postal_jp(text)
-    if rule.name == "phone-jp":
-        return match_phone_jp(text)
-    if rule.name == "email":
-        return match_email(text)
-    return match_chars(text, rule.pattern)  # chars
+    if rule.name in _NORMALIZED_BUILTINS:
+        if norm_text is None:
+            norm_text = normalize_text(text)
+        if rule.name == "postal-jp":
+            return match_postal_jp(norm_text)
+        if rule.name == "phone-jp":
+            return match_phone_jp(norm_text)
+        return match_email(norm_text)
+    return match_chars(text, rule.pattern, rule.ci)  # chars
 
 
 # ----------------------------------------------------- 語単位一致
@@ -675,11 +892,14 @@ def apply_redactions(text, rules):
       - redactions の start/end/length は入力バイトオフセット
       - label の連番は適用順 (= 位置昇順) で全ルール通し
       - 語単位のマッチは列挙時に境界棄却される
+      - postal-jp / phone-jp / email は正規化ビューで照合し、マスクは
+        元テキストの区間に適用する (レシートの位置も元テキスト基準)
     """
+    norm_text = normalize_text(text)
     # ルールは宣言順に試行し、既確定区間と重なる後発マッチは捨てる
     confirmed = []  # (開始文字位置, 長さ, Rule)
     for rule in rules:
-        for start, length in enumerate_matches(text, rule):
+        for start, length in enumerate_matches(text, rule, norm_text):
             if rule.word_unit and not word_unit_ok(text, start, length):
                 continue
             end = start + length
@@ -717,6 +937,11 @@ def apply_redactions(text, rules):
             pieces = []
             for k, ch in enumerate(seg):
                 pool_name = rule.arg if rule.arg is not None else classify(ch)
+                if (pool_name is None and rule.kind == "builtin"
+                        and rule.name in _NORMALIZED_BUILTINS):
+                    # 正規化ビューで照合したクラス外文字 (全角数字など)
+                    # は正規化後のクラスで same-class 置換する
+                    pool_name = classify(norm_text[start + k])
                 if pool_name is None:
                     pieces.append(ch)  # クラス外は same-class では据え置き
                 else:
@@ -739,6 +964,11 @@ def apply_redactions(text, rules):
         }
         if rule.word_unit:
             entry["word_unit"] = True  # additive (語単位のみ出現)
+        if (rule.kind == "builtin" and rule.name in _NORMALIZED_BUILTINS
+                and seg != norm_text[start:start + length]):
+            entry["normalized"] = True  # additive (正規化ビューで照合)
+        if rule.ci:
+            entry["case_insensitive"] = True  # additive ('~' ルール)
         redactions.append(entry)
         pos = start + length
     out_parts.append(text[pos:])
@@ -771,10 +1001,18 @@ def measure_pattern_appearance(out_text, rules):
     """「パターンが出力に残っていない」ことの測定 (約束ではなく測定)。
 
     literal の生パターンのみを測定対象とする (組込 matcher は
-    可変長なので「パターン文字列」が定義されない)。
+    可変長なので「パターン文字列」が定義されない)。'~' ルールは
+    ASCII 折りたたみ同士で比較する (大小無視の残留も検出する)。
     """
-    return "found" if any(rule.kind == "literal" and rule.pattern in out_text
-                          for rule in rules) else "none"
+    for rule in rules:
+        if rule.kind != "literal":
+            continue
+        if rule.ci:
+            if fold_text(rule.pattern) in fold_text(out_text):
+                return "found"
+        elif rule.pattern in out_text:
+            return "found"
+    return "none"
 
 
 def build_machine_receipt(input_byte_len, out_bytes, redactions,
@@ -812,12 +1050,17 @@ def human_receipt(lang, input_byte_len, out_bytes, redactions,
                  else "他バイト完全性: 検証失敗")
         appear = f"出力内パターン残留: {appearance}"
     for n, r in enumerate(redactions, 1):
+        extra = ""
+        if r.get("normalized"):
+            extra += " normalized"
+        if r.get("case_insensitive"):
+            extra += " ci"
         lines.append(
             f"  #{n} rule={r['rule_index']} matcher={r['matcher']}"
             f" mode={r['mode']}"
             f" pos={r['start']}..{r['end']} len={r['length']}B"
             f" -> {r['replacement_length']}B"
-            f" sha256={r['content_sha256'][:12]}...")
+            f" sha256={r['content_sha256'][:12]}...{extra}")
     lines.append(integ)
     lines.append(appear)
     return "\n".join(lines)
@@ -856,7 +1099,8 @@ def build_argparser():
                         metavar="PATTERN:MODE[:ARG]",
                         help="ルール。複数回指定可・宣言順に試行。"
                              "MODE: delete|mosaic|label|noise|decor|replace"
-                             " (語単位一致は '+' 接頭辞, 例 秘密:+label。"
+                             " (語単位一致は '+' 接頭辞, 大小無視は '~' 接頭辞"
+                             " — 併用可, 例 秘密:+~label。"
                              "PATTERN に ':' は使用不可)")
     parser.add_argument("--builtin", action=_MatcherAction, dest="matchers",
                         metavar="NAME:MODE[:ARG]",
@@ -881,7 +1125,7 @@ def build_argparser():
     parser.add_argument(
         "--region", action="append", default=None,
         metavar="x,y,w,h:MODE[:ARG]",
-        help="image region masking (PNG only): x,y,w,h then MODE and optional ARG; repeatable; overlapping regions discarded")
+        help="image region masking (PNG/JPEG input; output is always PNG): x,y,w,h then MODE and optional ARG; repeatable; overlapping regions discarded")
     return parser
 
 
@@ -946,9 +1190,15 @@ def main_image(args):
         return 1
     try:
         width, height = check_png_input(data)
-    except ValueError as exc:
-        print("sieve-redact: error: %s" % exc, file=sys.stderr)
-        return 2
+        input_format = "PNG"
+    except ValueError as png_exc:
+        try:
+            width, height = check_jpeg_input(data)
+            input_format = "JPEG"
+        except ValueError as jpeg_exc:
+            detail = jpeg_exc if data[:3] == JPEG_SIGNATURE else png_exc
+            print("sieve-redact: error: %s" % detail, file=sys.stderr)
+            return 2
     for r in regions:
         if r["x"] + r["w"] > width or r["y"] + r["h"] > height:
             print("sieve-redact: error: region %d,%d,%d,%d exceeds image "
@@ -956,10 +1206,22 @@ def main_image(args):
                                     width, height), file=sys.stderr)
             return 2
     import io
-    img = Image.open(io.BytesIO(data))
-    img.load()
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.load()
+    except Exception as exc:
+        # JPEG payloads are not byte-prevalidated; decode failures must
+        # surface as a clean usage error, never a traceback.
+        print("sieve-redact: error: cannot decode image: %s" % exc,
+              file=sys.stderr)
+        return 2
     if getattr(img, "is_animated", False) or getattr(img, "n_frames", 1) > 1:
-        print("sieve-redact: error: animated PNG is not supported",
+        print("sieve-redact: error: animated image is not supported",
+              file=sys.stderr)
+        return 2
+    if img.mode not in ("RGB", "RGBA"):
+        print("sieve-redact: error: unsupported image color mode: %s "
+              "(RGB/RGBA PNG or RGB JPEG only)" % img.mode,
               file=sys.stderr)
         return 2
 
@@ -1043,7 +1305,7 @@ def main_image(args):
     receipt = {
         "input_bytes": len(data),
         "output_bytes": out_bytes,
-        "input_format": "PNG",
+        "input_format": input_format,
         "input_mode": img.mode,
         "redactions": [],
         "rects": rect_rows,
@@ -1061,9 +1323,9 @@ def main_image(args):
             print("sieve-redact: error: cannot write receipt: %s" % exc,
                   file=sys.stderr)
             return 1
-    print("Sieve Redact v0.5 — レシート")
-    print("入力: PNG %dx%d (%s) -> 出力: PNG %dx%d"
-          % (width, height, img.mode, width, height))
+    print("Sieve Redact v%s — レシート" % VERSION)
+    print("入力: %s %dx%d (%s) -> 出力: PNG %dx%d"
+          % (input_format, width, height, img.mode, width, height))
     print("redact regions: %d (discarded overlaps: %d)"
           % (len(accepted), len(regions) - len(accepted)))
     print("完全性: %s(画素)"

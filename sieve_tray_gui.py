@@ -55,6 +55,7 @@ from sieve_tray_storage import Storage, RunSummary
 from sieve_tray_i18n import (
     tr, normalize_language, SUPPORTED_LANGUAGES, LANGUAGE_NAMES,
     DOC_AXIS_LABELS, CODE_AXIS_LABELS, TEXT_AXIS_LABELS,
+    neutral_unobserved_text,
 )
 
 from sieve_tray import (
@@ -616,7 +617,13 @@ class DetailDialog(QDialog):
                 if items:
                     lines.append(f"[{key}] {labels[key]}")
                     for it in items:
-                        lines.append(f"  - {it}")
+                        # v1.2.0 (design doc §3.5-1): a Lens null observation
+                        # ("Unsupported format: <suffix>") cannot distinguish a
+                        # missing optional extractor from a truly unknown suffix,
+                        # so the display wording is neutral (i18n, en/ja
+                        # symmetric). The classification is unchanged.
+                        lines.append(
+                            f"  - {neutral_unobserved_text(it, lang)}")
         if reason:
             lines.append(self._("detail_reason_label"))
             lines.append(f"  {reason}")

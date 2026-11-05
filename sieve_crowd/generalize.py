@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import math
 import re
+from bisect import bisect_right
 from typing import Any, Mapping, Sequence
 
 from .model import ConfigError
@@ -83,6 +84,66 @@ class NumericGen(Generalizer):
             return "suppressed" if lang == "en" else "全体を隠す"
         w = self.widths[level - 1]
         return f"ranges of {w}" if lang == "en" else f"{w}刻みの範囲"
+
+
+class BinsGen(Generalizer):
+    """Numbers into custom, non-uniform bins: `edges` are strictly increasing interior boundaries,
+    so the first and the last bin are open-ended (ages 0-19 / 20-39 / 40-64 / 65+ are edges [0, 20, 40, 65]).
+    Levels: 0 the value itself · 1 the bins · 2 "*".  Labels use the edge values as given;
+    integer columns use "<0", "0-19", "65+", decimal columns use "<0.5", "[0.5,20)", ">=65".
+    """
+
+    def __init__(self, edges: Sequence[Any]) -> None:
+        if not edges:
+            raise ConfigError("numeric: 'bins' must not be empty")
+        vals = []
+        for e in edges:
+            if isinstance(e, bool) or not isinstance(e, (int, float)) or not math.isfinite(e):
+                raise ConfigError("numeric: 'bins' must be finite numbers")
+            vals.append(e)
+        if any(b <= a for a, b in zip(vals, vals[1:])):
+            raise ConfigError("numeric: 'bins' must be strictly increasing")
+        self.edges = tuple(vals)
+        self.levels = 2
+        self._int_mode = True
+
+    def prepare(self, distinct_values: Sequence[str]) -> None:
+        self._int_mode = all(v == "" or _INT.match(v) for v in distinct_values)
+        if self._int_mode and any(not float(e).is_integer() for e in self.edges):
+            raise ConfigError("numeric: 'bins' edges must be integers when the column holds integers")
+
+    def _fmt(self, e: Any) -> str:
+        return str(int(e)) if self._int_mode else str(e)
+
+    def label(self, value: str, level: int) -> str:
+        self._check(level)
+        if level == 0:
+            return value
+        if level == self.levels or value == "":
+            return STAR
+        try:
+            x = int(value) if self._int_mode else float(value)
+        except ValueError:
+            return STAR
+        if not math.isfinite(x):
+            return STAR
+        i = bisect_right(self.edges, x)
+        if i == 0:
+            return "<" + self._fmt(self.edges[0])
+        if i == len(self.edges):
+            return self._fmt(self.edges[-1]) + "+" if self._int_mode else ">=" + self._fmt(self.edges[-1])
+        lo, hi = self.edges[i - 1], self.edges[i]
+        if self._int_mode:
+            return f"{self._fmt(lo)}-{int(hi) - 1}"
+        return f"[{self._fmt(lo)},{self._fmt(hi)})"
+
+    def describe(self, level: int, lang: str) -> str:
+        if level == 0:
+            return "exact" if lang == "en" else "そのまま"
+        if level == self.levels:
+            return "suppressed" if lang == "en" else "全体を隠す"
+        edge_text = ", ".join(self._fmt(e) for e in self.edges)
+        return f"custom bins at {edge_text}" if lang == "en" else f"カスタム区間（境界 {edge_text}）"
 
 
 class DateGen(Generalizer):
@@ -195,6 +256,10 @@ class CategoryGen(Generalizer):
 def make_generalizer(settings: Mapping[str, Any]) -> Generalizer:
     kind = settings.get("type")
     if kind == "numeric":
+        if "bins" in settings:
+            if "widths" in settings:
+                raise ConfigError("numeric: use 'widths' or 'bins', not both")
+            return BinsGen(settings["bins"])
         return NumericGen(settings.get("widths", [5, 10, 20, 50, 100]))
     if kind == "date":
         return DateGen()

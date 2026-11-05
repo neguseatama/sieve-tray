@@ -8,8 +8,9 @@ from typing import Any, Mapping, Optional
 from .generalize import make_generalizer
 from .model import ConfigError, Role
 
-_TOP_KEYS = {"k", "l", "max_suppression", "columns"}
-_COL_KEYS = {"role", "action", "type", "widths", "length", "hierarchy"}
+_TOP_KEYS = {"k", "l", "max_suppression", "missing_value_policy", "columns"}
+_MISSING_POLICIES = ("star", "suppress")
+_COL_KEYS = {"role", "action", "type", "widths", "length", "hierarchy", "bins"}
 _HEX = re.compile(r"^[0-9a-fA-F]{32,}$")
 
 
@@ -27,6 +28,8 @@ class Config:
     k: int = 5
     l: int = 1
     max_suppression: float = 0.05
+    missing_value_policy: str = "star"  # "star": missing QI values generalize to "*"
+                                        # "suppress": such records are dropped before the search
     shuffle: bool = True            # keep-order is a relaxation, recorded in the report
     shuffle_seed: int = 0
     lang: str = "en"
@@ -94,9 +97,15 @@ def parse_config(obj: Mapping[str, Any], **overrides: Any) -> Config:
         raise ConfigError("l must be an integer >= 1")
     if not isinstance(ms, (int, float)) or isinstance(ms, bool) or not 0 <= ms < 1:
         raise ConfigError("max_suppression must be a number in [0, 1)")
+    mvp = pick("missing_value_policy", "star")
+    if mvp not in _MISSING_POLICIES:
+        raise ConfigError("missing_value_policy must be 'star' or 'suppress' (a placeholder is "
+                          "deliberately not offered: filled-in values would make the missing "
+                          "pattern itself a quasi-identifier)")
 
     cfg = Config(
         columns=columns, k=k, l=l, max_suppression=float(ms),
+        missing_value_policy=mvp,
         shuffle=overrides.get("shuffle", True),
         shuffle_seed=overrides.get("shuffle_seed", 0),
         lang=overrides.get("lang", "en"),

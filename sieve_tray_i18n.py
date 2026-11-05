@@ -80,6 +80,12 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "reason_engine_unavailable": "engine unavailable",
         "reason_not_applicable": "not applicable",
         "reason_empty_input": "empty input",
+        # v1.2.0 (design doc §3.5-1): Lens returns the same null observation
+        # for a missing optional extractor and for a truly unknown suffix,
+        # so neither Tray nor the engine can tell them apart. The display
+        # wording is therefore neutral; the classification stays
+        # engine_unavailable and the closed vocabulary keeps its 8 items.
+        "unobserved_format_neutral": "This format was not observed.",
         "scanning": "Scanning...",
         "summary_done": (
             "Done: {groups} groups / Documents {docs} ({flagged} flagged, "
@@ -287,6 +293,10 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "reason_engine_unavailable": "エンジン利用不可",
         "reason_not_applicable": "対象外",
         "reason_empty_input": "空入力",
+        # v1.2.0（設計書 §3.5-1）: 抽出器の欠落と未知の拡張子を Lens は
+        # 区別しないため、表示は中立的な文言にする。分類は
+        # engine_unavailable のまま、語彙は 8 種のまま。
+        "unobserved_format_neutral": "この形式は観測できませんでした。",
         "scanning": "スキャン中...",
         "summary_done": (
             "完了: {groups}グループ / 文書 {docs}件（うちフラグ {flagged}件、"
@@ -511,3 +521,21 @@ def tr(lang: str, key: str, **kwargs) -> str:
     lang = normalize_language(lang)
     template = STRINGS[lang].get(key) or STRINGS[DEFAULT_LANGUAGE].get(key, key)
     return template.format(**kwargs) if kwargs else template
+
+
+def neutral_unobserved_text(text: str, lang: str) -> str:
+    """v1.2.0 (design doc §3.5-1): the user-facing form of a Lens null
+    observation.
+
+    Lens reports both a missing optional extractor and a truly unknown
+    suffix as the same null observation ("Unsupported format: <suffix>",
+    measured on Lens 0.21.1 - there is no distinguishing signal), so the
+    raw engine text would read as if the format itself were broken.
+    The display wording is neutral instead: "This format was not
+    observed." / 「この形式は観測できませんでした。」 The classification
+    (engine_unavailable) and the closed 8-item vocabulary are unchanged.
+    Any other text passes through unchanged.
+    """
+    if isinstance(text, str) and text.startswith("Unsupported format:"):
+        return tr(lang, "unobserved_format_neutral")
+    return text

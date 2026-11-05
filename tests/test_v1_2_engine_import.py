@@ -385,23 +385,41 @@ class TR2_T06_Crowd082ItemsTrayReads(unittest.TestCase):
         self.assertEqual(sieve_crowd.__version__, CROWD_UPSTREAM_VERSION)
 
     def test_summary_keys_survive_082(self):
-        summary = crowd_anonymize(self.HEADER, self.ROWS, self.CFG, lang="en")
+        # The real caller parses config text through crowd_parse_config
+        # (0.8.2 requires a Config object - a raw dict no longer works).
+        cfg = sieve_tray.crowd_parse_config(json.dumps(self.CFG))
+        # io is the (input_format, output_format) pair the GUI passes for
+        # the receipt; it is recorded only when given (measured on both
+        # 0.2.0 and 0.8.2).
+        summary = crowd_anonymize(self.HEADER, self.ROWS, cfg, lang="en",
+                                  io=("csv", "csv"))
         self.assertTrue(summary["ok"])
         self.assertEqual(summary["status"], "anonymized")
         self.assertEqual(summary["records_in"], 6)
-        self.assertIsNotNone(summary["records_out"])
-        self.assertIsNotNone(summary["suppressed"])
+        self.assertGreaterEqual(summary["records_out"], 1)
+        self.assertLessEqual(summary["suppressed"], summary["records_in"])
         self.assertEqual(summary["k_requested"], 2)
-        self.assertEqual(summary["k_achieved"], 2)
-        self.assertIsNotNone(summary["max_risk"])
-        self.assertIsNotNone(summary["avg_risk"])
-        self.assertIsNotNone(summary["before_alone"])
-        self.assertIsNotNone(summary["after_alone"])
+        # 0.8.2's lattice search may reach a stronger crowd than the
+        # requested k (measured: 6 on this fixture, 0.2.0 found 2) - the
+        # contract is k_achieved >= k_requested, not a fixed number.
+        self.assertGreaterEqual(summary["k_achieved"],
+                                summary["k_requested"])
+        self.assertIsInstance(summary["max_risk"], float)
+        self.assertIsInstance(summary["avg_risk"], float)
+        self.assertIsInstance(summary["before_alone"], int)
+        self.assertIsInstance(summary["after_alone"], int)
+        self.assertLessEqual(summary["after_alone"], summary["before_alone"])
         self.assertIsNotNone(summary["report_text"])
         self.assertIsNotNone(summary["report_json"])
         self.assertIsNotNone(summary["io"])
-        self.assertEqual(summary["header"], self.HEADER)
-        self.assertEqual(summary["rows"], self.ROWS)
+        # header/rows are the ANONYMIZED OUTPUT table, not the input
+        # echo: the id column is dropped and qi values are generalized
+        # (measured identical in shape on 0.2.0 and 0.8.2).
+        self.assertIsInstance(summary["header"], list)
+        self.assertIsInstance(summary["rows"], list)
+        self.assertTrue(summary["rows"])
+        self.assertEqual(len(summary["rows"][0]), len(summary["header"]))
+        self.assertTrue(set(summary["header"]) <= set(self.HEADER))
 
     def test_inspect_keys_survive_082(self):
         columns = crowd_inspect(self.HEADER, self.ROWS)
@@ -485,6 +503,14 @@ class TR2_T08_Referee17VocabFlows(unittest.TestCase):
             import sieve_referee  # noqa: F401
         except ImportError:
             self.skipTest("sieve-referee not installed")
+        # The 7 words below exist only from referee 1.5.0 (measured:
+        # 1.3.0 embeds the first 10). On an older referee the words
+        # themselves are absent upstream, so there is nothing to flow.
+        from sieve_referee.quantifier_audit import DEFAULT_MODIFIER_VOCAB
+        if len(DEFAULT_MODIFIER_VOCAB) < 17:
+            self.skipTest(
+                "referee vocab has no 1.5.0 additions ("
+                f"{len(DEFAULT_MODIFIER_VOCAB)} items)")
 
     def _rows(self):
         docs = {}
@@ -570,7 +596,8 @@ class TR2_T10_NeutralUnsupportedFormatWording(unittest.TestCase):
 
     def test_detail_dialog_shows_neutral_text(self):
         try:
-            from PySide6.QtWidgets import QApplication, QMainWindow
+            from PySide6.QtWidgets import (QApplication, QMainWindow,
+                                           QPlainTextEdit)
         except ImportError:
             self.skipTest("PySide6 not installed")
         from sieve_tray_gui import DOC_AXIS_LABELS, DetailDialog
@@ -581,7 +608,9 @@ class TR2_T10_NeutralUnsupportedFormatWording(unittest.TestCase):
             dialog = DetailDialog(
                 "t", {"H1": 0}, DOC_AXIS_LABELS[lang], lang,
                 evidence={"H1": [self.RAW]}, parent=parent)
-            text = dialog.detail_view.toPlainText()
+            view = dialog.findChild(QPlainTextEdit)
+            self.assertIsNotNone(view)
+            text = view.toPlainText()
             self.assertNotIn("Unsupported format:", text)
             self.assertIn(tr(lang, "unobserved_format_neutral"), text)
         parent.close()

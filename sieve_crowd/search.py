@@ -7,7 +7,6 @@ so the minimal total height is found by binary search over heights.
 """
 from __future__ import annotations
 
-import itertools
 import math
 from collections import Counter
 from dataclasses import dataclass
@@ -23,7 +22,8 @@ class SearchLimitExceeded(Exception):
     """More node evaluations than allowed."""
 
 
-REFINE_MAX_NODES = 200_000   # refinement enumerates the lattice; skipped above this size
+REFINE_MAX_NODES = 200_000   # refinement walks the lattice; skipped above this size
+REFINE_BLOCKERS = 64         # kept "rejected frontier" nodes for down-set pruning (deterministic cut)
 
 
 @dataclass(frozen=True)
@@ -105,8 +105,10 @@ class Searcher:
         records, then the smallest level vector.
 
         Phase 1 finds the least total height h* by binary search (nothing below h* is acceptable)
-        and its best node.  Phase 2 looks at every other node of height >= h* whose loss does not
-        exceed that node's loss, so the result is the optimum unless the evaluation limit is hit.
+        and its best node.  Phase 2 walks the region height >= h*, weight <= that node's weight,
+        depth-first and most-general-first, skipping every node at or below a rejected node
+        (suppressing less never helps) and everything heavier than the incumbent, so the result is
+        the optimum unless the evaluation limit is hit.
         """
         self._lcm = math.lcm(*self.tops)
         top_height = sum(self.tops)
@@ -124,22 +126,78 @@ class Searcher:
         truncated = False
         lattice = math.prod(t + 1 for t in self.tops)
         if lattice <= REFINE_MAX_NODES:
-            w_best = self.weight(best)
-            region = sorted(
-                (v for v in itertools.product(*[range(t + 1) for t in self.tops])
-                 if sum(v) >= lo and self.weight(v) <= w_best),
-                key=lambda v: (self.weight(v), v),
-            )
-            try:
-                for v in region:
-                    if self.weight(v) > self.weight(best):
-                        break
-                    if self.acceptable(v) and (self.weight(v), self.suppressed_count(v), v) < (
-                            self.weight(best), self.suppressed_count(best), best):
-                        best = v
-            except SearchLimitExceeded:
-                truncated = True
+            best, truncated = self._refine(lo, best)
         keys = self.keys(best)
         _sizes, bad = self._bad_classes(keys)
         dropped = tuple(i for i, key in enumerate(keys) if key in bad)
         return SearchResult(best, dropped, self.evals, truncated)
+
+    def _refine(self, lo: int, best: tuple[int, ...]) -> tuple[tuple[int, ...], bool]:
+        """Phase 2 as a pruned depth-first walk over the region
+        {height >= lo, weight <= weight(best)}.
+
+        Components are tried from their top level down, so nodes are visited most-general-first
+        and every node of a rejected node's down-set is still ahead of it.  Three prunes skip
+        nodes that provably cannot beat the incumbent:
+        - a subtree that can no longer reach height `lo` (phase 1 proved such nodes unacceptable);
+        - a subtree whose weight already exceeds the incumbent's (weights only grow along a path);
+        - any node at or below a *rejected* node: acceptability is monotone, so suppressing less
+          can never fix a crowd.  Rejected nodes are kept as blockers, heaviest first and capped.
+        The incumbent is only ever replaced by a strictly better (weight, suppressed, node) key.
+        """
+        m = len(self.tops)
+        mult = [self._lcm // t for t in self.tops]
+        htail = [0] * (m + 1)                     # htail[i]: the height still reachable from i
+        for i in range(m - 1, -1, -1):
+            htail[i] = htail[i + 1] + self.tops[i]
+        vec = [0] * m
+        incumbent = best
+        w_inc = self.weight(incumbent)
+        s_inc = self.suppressed_count(incumbent)  # cache hit: phase 1 evaluated it
+        blockers: list[tuple[int, tuple[int, ...]]] = []   # (weight, node), heaviest first
+
+        def blocked(w: int, v: tuple[int, ...]) -> bool:
+            for bw, bv in blockers:               # a lighter blocker can never cover v
+                if bw < w:
+                    break
+                if all(a <= b for a, b in zip(v, bv)):
+                    return True
+            return False
+
+        def reject(w: int, v: tuple[int, ...]) -> None:
+            if any(bw >= w and all(a <= b for a, b in zip(v, bv)) for bw, bv in blockers):
+                return                            # already covered by a kept blocker
+            blockers[:] = [e for e in blockers    # drop blockers this node dominates
+                           if not all(a <= b for a, b in zip(e[1], v))]
+            blockers.append((w, v))
+            blockers.sort(key=lambda e: -e[0])
+            del blockers[REFINE_BLOCKERS:]        # keep the heaviest: they cover the most
+
+        def walk(i: int, w: int, h: int) -> None:
+            nonlocal incumbent, w_inc, s_inc
+            if h + htail[i] < lo or w > w_inc:
+                return
+            if i == m:
+                v = tuple(vec)
+                if blocked(w, v):
+                    return
+                s = self.suppressed_count(v)      # counts an evaluation; may raise SearchLimitExceeded
+                if s <= self.budget:
+                    if (w, s, v) < (w_inc, s_inc, incumbent):
+                        incumbent, w_inc, s_inc = v, w, s
+                else:
+                    reject(w, v)
+                return
+            for val in range(self.tops[i], -1, -1):
+                w2 = w + val * mult[i]
+                if w2 > w_inc:
+                    continue
+                vec[i] = val
+                walk(i + 1, w2, h + val)
+
+        truncated = False
+        try:
+            walk(0, 0, 0)
+        except SearchLimitExceeded:
+            truncated = True
+        return incumbent, truncated
