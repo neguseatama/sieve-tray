@@ -11,7 +11,14 @@ QApplication is ever created and none is destroyed. Test modules stay
 unchanged.
 """
 
+import sys
+
 import pytest
+
+# Acceptance runs use `python -m pytest`, which puts the repo root on
+# sys.path; importing sieve_crowd from the tree then writes __pycache__
+# into the working copy. Stop test runs from leaving bytecode caches.
+sys.dont_write_bytecode = True
 
 try:
     from PySide6.QtWidgets import QApplication
