@@ -1,0 +1,13 @@
+{
+  "k": 5,
+  "l": 2,
+  "max_suppression": 0.05,
+  "columns": {
+    "name":       { "role": "id", "action": "drop" },
+    "birth_date": { "role": "drop" },
+    "age":        { "role": "qi", "type": "numeric", "widths": [5, 10, 20] },
+    "zip":        { "role": "qi", "type": "prefix", "length": 4 },
+    "sex":        { "role": "qi", "type": "exact" },
+    "diagnosis":  { "role": "sensitive" }
+  }
+}
