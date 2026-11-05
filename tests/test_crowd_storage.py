@@ -38,6 +38,8 @@ def make_summary(**top):
         "before_alone": 1,
         "after_alone": 0,
         "io": {"input_format": "csv", "output_format": "csv"},
+        "input_path": "/tmp/in.csv",
+        "output_path": "/tmp/out.csv",
     }
     summary.update(top)
     return summary
@@ -62,6 +64,8 @@ def make_refused_summary(**top):
         "before_alone": 0,
         "after_alone": None,
         "io": {"input_format": "csv", "output_format": None},
+        "input_path": "/tmp/in.csv",
+        "output_path": None,
     }
     summary.update(top)
     return summary
@@ -81,10 +85,17 @@ def test_crowd_save_and_load_roundtrip_preserves_summary(tmp_path):
     assert newest["id"] == refused_id and older["id"] == ok_id
     assert newest["timestamp"].endswith("+00:00")
     assert older["timestamp"].endswith("+00:00")
-    for key, value in refused.items():
-        assert newest[key] == value
-    for key, value in summary.items():
-        assert older[key] == value
+    # v1.1.0 (TR-T14, design doc §3.7): the payload is an allowlist - the
+    # display/report fields survive, the non-display keys (header/rows and
+    # the rest) are no longer stored. Changed from the v1.0.0 full-dict
+    # roundtrip because keeping table data out of history.db is the
+    # purpose of item B.
+    from sieve_tray_storage import CROWD_PAYLOAD_ALLOWLIST
+    for key in CROWD_PAYLOAD_ALLOWLIST:
+        assert newest[key] == refused.get(key)
+        assert older[key] == summary.get(key)
+    assert "header" not in newest and "rows" not in newest
+    assert "header" not in older and "rows" not in older
 
     conn = sqlite3.connect(tmp_path / "history.db")
     try:
@@ -131,4 +142,6 @@ def test_crowd_fresh_storage_starts_empty_and_holds_refused_only_row(tmp_path):
     assert len(runs) == 1
     assert runs[0]["status"] == "refused"
     assert runs[0]["records_out"] is None
-    assert runs[0]["after_alone"] is None
+    # v1.1.0 (TR-T14): after_alone is not a display/report field and is no
+    # longer part of the stored payload.
+    assert "after_alone" not in runs[0]

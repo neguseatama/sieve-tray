@@ -43,6 +43,7 @@ from sieve_tray import (
     sanitize_file,
     sanitize_tree,
     ScanResult,
+    classify_observation,
     TEXT_EXTS,
     __version__,
     make_region_spec,
@@ -79,6 +80,10 @@ def resource_path(relative: str) -> Path:
 
 
 FLAGGED_BG = QColor("#fff5f5")
+# v1.1.0: neutral third-state color - neither the green of clean nor the
+# emphasis of flagged (design doc §2-3). The exact look is the user's decision;
+# this gray is the minimal default, alternatives go into the report.
+UNOBSERVED_BG = QColor("#f0f0f0")
 SIGNAL_BG = {
     "RED": QColor("#ffe0e0"),
     "YELLOW": QColor("#fff4cc"),
@@ -1316,9 +1321,13 @@ class MainWindow(QMainWindow):
         self._last_result = result
         self._populate_result_tables(result)
         flagged_docs = sum(1 for r in result.doc_results if r.get("flagged"))
+        unobserved_docs = sum(
+            1 for r in result.doc_results
+            if classify_observation(r)[0] == "unobserved")
         self.summary_label.setText(self._(
             "summary_done", groups=len(result.groups),
             docs=len(result.doc_results), flagged=flagged_docs,
+            unobserved=unobserved_docs,
             pairs=len(result.code_pairs), tpairs=len(result.text_pairs),
             audit=len(result.audit_results)))
         self.run_btn.setEnabled(True)
@@ -1337,6 +1346,7 @@ class MainWindow(QMainWindow):
     def _populate_result_tables(self, result: ScanResult):
         status_flagged = self._("status_flagged")
         status_clean = self._("status_clean")
+        status_unobserved = self._("status_unobserved")
 
         self.doc_table.setSortingEnabled(False)
         self.doc_table.setRowCount(len(result.doc_results))
@@ -1345,11 +1355,24 @@ class MainWindow(QMainWindow):
             path_item.setData(Qt.UserRole, r)
             self.doc_table.setItem(row, 0, path_item)
             self.doc_table.setItem(row, 1, QTableWidgetItem(r["mask"]))
-            status = status_flagged if r.get("flagged") else status_clean
-            self.doc_table.setItem(row, 2, QTableWidgetItem(status))
-            if r.get("flagged"):
+            # v1.1.0 (design doc §3.6): the status is read through the single
+            # classifier; unobserved gets its own neutral wording and color.
+            status, reason, _detail = classify_observation(r)
+            if status == "unobserved":
+                label = status_unobserved
+                if reason:
+                    label += " (%s)" % self._("reason_" + reason)
+                bg = UNOBSERVED_BG
+            elif status == "flagged":
+                label = status_flagged
+                bg = FLAGGED_BG
+            else:
+                label = status_clean
+                bg = None
+            self.doc_table.setItem(row, 2, QTableWidgetItem(label))
+            if bg is not None:
                 for col in range(3):
-                    self.doc_table.item(row, col).setBackground(FLAGGED_BG)
+                    self.doc_table.item(row, col).setBackground(bg)
         self.tabs.setTabText(
             self._doc_tab_index, self._("doc_tab", n=len(result.doc_results)))
         self.doc_table.setSortingEnabled(True)

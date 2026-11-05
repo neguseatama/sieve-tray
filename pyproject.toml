@@ -41,10 +41,18 @@ sieve-tray-gui = "sieve_tray_gui:main"
 [tool.setuptools]
 packages = ["sieve_crowd"]
 py-modules = ["sieve_tray", "sieve_tray_gui", "sieve_tray_storage", "sieve_tray_i18n", "sieve_redact"]
+# v1.1.0 (design doc §3.8-F): the vendored sieve_crowd may carry data files
+# (.json etc.) in a future vendor update (v1.2.0). Declaring the patterns
+# now keeps such files from silently dropping out of wheels/sdists; with
+# no data files present the patterns match nothing and nothing changes.
+
 # v0.8.0: the default modifier vocab is sourced from sieve_referee's
 # embedded DEFAULT_MODIFIER_VOCAB at runtime (no separate data file
 # shipped). The bundled epistemic_modifiers_ja_v1.txt stays in the
 # repo as a reference file for users who want to copy/edit it.
+
+[tool.setuptools.package-data]
+sieve_crowd = ["*.json", "*.txt", "*.csv"]
 
 [tool.setuptools.dynamic]
 version = { attr = "sieve_tray.__version__" }

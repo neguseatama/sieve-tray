@@ -31,8 +31,11 @@ Any directory structure works. Files are routed by extension:
 """
 
 import argparse
+import ast
+import builtins
 import html
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,7 +45,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 CODE_EXTS = {".py"}
@@ -56,6 +59,53 @@ DOC_EXTS = {
 # images, .html) are excluded even though Sieve-Lens still observes them.
 TEXT_EXTS = {".txt", ".md"}
 IMAGE_EXTS = {".png"}
+
+# ---------------------------------------------------------------------------
+# v1.1.0: the third state "unobserved" (design doc §3.1-§3.4).
+#
+# Everything Tray could not observe is reported with a status and a reason
+# from this closed vocabulary - never with free-form error text. The
+# vocabulary is fixed by the design document; extending it is a design
+# decision and stops the implementation.
+# ---------------------------------------------------------------------------
+UNOBSERVED_REASONS = frozenset({
+    "refused",           # the engine refused extraction (Lens refusal code in detail)
+    "parse_failed",      # read, but parsing failed / H1=0 (observation not established)
+    "unreadable",        # could not be read (permission, I/O, special file)
+    "too_large",         # beyond Tray's own read limit (§3.4)
+    "symlink_skipped",   # a symbolic link - not read, not followed (§3.4)
+    "engine_unavailable",# required extension/engine missing or failed to install
+    "not_applicable",    # empty or statement-less code file - excluded from compare (§3.3)
+    "empty_input",       # empty text - nothing for Referee to evaluate (§3.3)
+})
+
+# The 13 Lens refusal codes known at v1.1.0. A code outside this set keeps
+# detail=None so a future Lens cannot leak new strings into reports.
+KNOWN_REFUSAL_CODES = frozenset({
+    "not_regular_file", "file_too_large", "too_many_entries",
+    "part_too_large", "total_too_large", "too_many_elements",
+    "doctype_not_allowed", "unsupported_encoding", "duplicate_part",
+    "encrypted", "malformed_xml", "main_part_missing",
+    "unsupported_namespace",
+})
+
+# Tray's own read limit for the files Tray reads itself (.py for Scope,
+# .txt/.md for Referee). Lens-owned formats keep Lens' own limits - no
+# double capping on this side (design doc §3.4).
+TRAY_READ_LIMIT_BYTES = 8 * 1024 * 1024
+
+# Which Lens extensions cover which suffixes: used to mark files
+# engine_unavailable when an extension fails to install (design doc §3.1).
+_LENS_EXT_SUFFIXES = {
+    "sieve_lens_ext.pdf": {".pdf"},
+    "sieve_lens_ext.ocr": {".png", ".jpg", ".jpeg", ".gif", ".bmp",
+                           ".tif", ".tiff", ".webp"},
+    "sieve_lens_ext.image_layers": {".png", ".jpg", ".jpeg", ".gif",
+                                    ".bmp", ".tif", ".tiff", ".webp"},
+    "sieve_lens_ext.html_css": {".html", ".htm"},
+    "sieve_lens_ext.html_css_selectors": {".html", ".htm"},
+    "sieve_lens_ext.pdf_images": {".pdf"},
+}
 
 # A progress callback takes a single human-readable status string.
 # The CLI passes `print`; a GUI can pass e.g. a Qt signal emitter or
@@ -91,6 +141,18 @@ class ScanResult:
     # skipped entirely.
     crowd_runs: Optional[list] = None
 
+    # v1.1.0: file-level entries for things Tray could not observe at all
+    # (unreadable, too large, symlink, engine unavailable, ...). Each
+    # entry: {"file": str, "engine": str, "reason": <closed vocab>,
+    # "detail": str | None}. Document observations carry their own status
+    # keys and are not duplicated here.
+    unobserved: List[dict] = field(default_factory=list)
+
+    # v1.1.0: how many code pairs Scope short-circuited (observation did
+    # establish, but the pair is trivially dissimilar and stays excluded
+    # as in v1.0.0). Surfaced in the report so the exclusion is visible.
+    short_circuited_excluded: int = 0
+
     def to_dict(self) -> dict:
         """JSON-serializable form, used by sieve_tray_storage for history."""
         return {
@@ -99,6 +161,8 @@ class ScanResult:
             "code_pairs": self.code_pairs,
             "text_pairs": self.text_pairs,
             "audit_results": self.audit_results,
+            "unobserved": self.unobserved,
+            "short_circuited_excluded": self.short_circuited_excluded,
         }
 
     @classmethod
@@ -107,7 +171,42 @@ class ScanResult:
         return cls(groups=groups, doc_results=d["doc_results"],
                     code_pairs=d["code_pairs"],
                     text_pairs=d.get("text_pairs", []),
-                    audit_results=d.get("audit_results", []))
+                    audit_results=d.get("audit_results", []),
+                    unobserved=d.get("unobserved", []),
+                    short_circuited_excluded=d.get("short_circuited_excluded", 0))
+
+
+def _walk_group(group_dir: Path) -> Tuple[List[Path], List[dict]]:
+    """v1.1.0: walk one group directory without following links (design doc §3.4).
+
+    Returns (regular_files, unobserved_entries). Regular files keep the
+    v1.0.0 semantics (sorted, is_file()). Symlinked files and directories
+    and special files (FIFO, device, ...) become unobserved entries with
+    the closed vocabulary, so nothing at or beyond the scan root is read
+    through a link and no special file is ever opened.
+    """
+    files: List[Path] = []
+    entries: List[dict] = []
+
+    def _entry(p: Path, reason: str) -> dict:
+        return {"file": str(p), "engine": "tray",
+                "reason": reason, "detail": None}
+
+    for dirpath, dirnames, filenames in os.walk(group_dir, followlinks=False):
+        dirnames[:] = sorted(dirnames)
+        for name in sorted(dirnames):
+            p = Path(dirpath) / name
+            if p.is_symlink():
+                entries.append(_entry(p, "symlink_skipped"))
+        for name in sorted(filenames):
+            p = Path(dirpath) / name
+            if p.is_symlink():
+                entries.append(_entry(p, "symlink_skipped"))
+            elif not p.is_file():
+                entries.append(_entry(p, "unreadable"))
+            else:
+                files.append(p)
+    return files, entries
 
 
 def scan(input_dir: Path) -> List[Tuple[str, List[Path]]]:
@@ -115,7 +214,7 @@ def scan(input_dir: Path) -> List[Tuple[str, List[Path]]]:
     for d in sorted(input_dir.iterdir()):
         if not d.is_dir() or d.name.startswith("."):
             continue
-        files = [f for f in sorted(d.rglob("*")) if f.is_file()]
+        files, _entries = _walk_group(d)
         if files:
             groups.append((d.name, files))
     return groups
@@ -132,8 +231,18 @@ def observe_documents(doc_paths: List[Path],
     try:
         from sieve_lens import SieveLensEngine
     except ImportError:
-        progress("Note: sieve-lens not installed; skipping document analysis.")
-        return []
+        progress("Note: sieve-lens not installed; marking documents unobserved.")
+        return [{
+            "path": str(f),
+            "mask": "0000-000",
+            "flagged": False,
+            "h_states": {},
+            "evidence": {},
+            "error": "ImportError",
+            "status": "unobserved",
+            "unobserved_reason": "engine_unavailable",
+            "unobserved_detail": None,
+        } for f in doc_paths]
 
     # v0.11.0 integration fix: install every available Lens extension so
     # PDF/image observation actually works through Tray (same order
@@ -141,6 +250,7 @@ def observe_documents(doc_paths: List[Path],
     # ocr, html_css_selectors supersedes html_css, pdf_images supersedes pdf).
     import importlib
     engine = SieveLensEngine()
+    failed_exts: List[str] = []
     for spec in (
         "sieve_lens_ext.pdf:install",
         "sieve_lens_ext.ocr:install",
@@ -153,49 +263,157 @@ def observe_documents(doc_paths: List[Path],
         try:
             getattr(importlib.import_module(mod_name), fn_name)(engine)
         except Exception:
-            continue
+            failed_exts.append(mod_name)
+    affected: set = set()
+    for mod_name in failed_exts:
+        affected |= _LENS_EXT_SUFFIXES.get(mod_name, set())
 
     results = []
     for f in doc_paths:
         try:
             obs = engine.observe(str(f))
-            results.append({
+            entry = {
                 "path": str(f),
                 "mask": obs.mask,
                 "flagged": (obs.mask != "1000-000"
                             and not obs.mask.startswith("0")),
                 "h_states": dict(obs.h_states),
                 "evidence": dict(obs.evidence),
-            })
+            }
         except Exception as e:
-            results.append({
+            entry = {
                 "path": str(f),
                 "mask": "0000-000",
                 "flagged": False,
                 "h_states": {},
                 "evidence": {},
                 "error": type(e).__name__,
-            })
+            }
+        status, reason, detail = classify_observation(entry)
+        if reason == "parse_failed" and f.suffix.lower() in affected:
+            # An extension this suffix needs failed to install (design doc §3.1).
+            reason = "engine_unavailable"
+        entry["status"] = status
+        entry["unobserved_reason"] = reason if status == "unobserved" else None
+        entry["unobserved_detail"] = detail if status == "unobserved" else None
+        results.append(entry)
     return results
 
 
-def compare_code(code_map: Dict[str, str],
-                  progress: ProgressCallback = _silent) -> List[dict]:
+def classify_observation(result: dict) -> Tuple[str, Optional[str], Optional[str]]:
+    """v1.1.0: the single classifier for the third state (design doc §3.1).
+
+    Reads only mask / evidence / error from the result dict - never file
+    contents or exception messages. Returns (status, unobserved_reason,
+    unobserved_detail); reason and detail are None unless status is
+    "unobserved". The report, the GUI and the history derivation all read
+    through this function, so "flagged" is interpreted in one place.
+    """
+    err = result.get("error")
+    if err is not None:
+        cls = getattr(builtins, str(err), None)
+        reason = ("unreadable"
+                  if isinstance(cls, type) and issubclass(cls, OSError)
+                  else "parse_failed")
+        return ("unobserved", reason, None)
+
+    mask = str(result.get("mask", ""))
+    if not mask:
+        # Not even a mask was recorded - derive conservatively (design doc §3.5).
+        return ("unobserved", "parse_failed", None)
+
+    evidence = result.get("evidence")
+    texts: List[str] = []
+    if isinstance(evidence, dict):
+        for values in evidence.values():
+            if isinstance(values, (list, tuple)):
+                texts.extend(str(v) for v in values)
+            elif values is not None:
+                texts.append(str(values))
+
+    if mask.startswith("0"):
+        for t in texts:
+            if t.startswith("Extraction refused: "):
+                code = t[len("Extraction refused: "):].strip()
+                detail = code if code in KNOWN_REFUSAL_CODES else None
+                return ("unobserved", "refused", detail)
+        # Measured on Lens (v0.21.1): a missing extractor is not an
+        # exception but a null observation whose evidence reads
+        # "Unsupported format: <suffix>" - an engine-capability gap,
+        # not a parse failure of the file.
+        for t in texts:
+            if t.startswith("Unsupported format:"):
+                return ("unobserved", "engine_unavailable", None)
+        return ("unobserved", "parse_failed", None)
+    if mask == "1000-000":
+        return ("clean", None, None)
+    return ("flagged", None, None)
+
+
+def summarize_results(results: List[dict]) -> dict:
+    """v1.1.0: pure aggregation over document results (design doc §3.5).
+
+    Returns {"flagged": n, "clean": n, "unobserved": n} plus
+    "unobserved_by_reason" keyed by the closed vocabulary. The GUI and
+    the report display these numbers; they never recount "flagged"
+    themselves.
+    """
+    counts = {"flagged": 0, "clean": 0, "unobserved": 0}
+    by_reason = {reason: 0 for reason in UNOBSERVED_REASONS}
+    for r in results:
+        status, reason, _detail = classify_observation(r)
+        counts[status] += 1
+        if status == "unobserved" and reason in by_reason:
+            by_reason[reason] += 1
+    counts["unobserved_by_reason"] = by_reason
+    return counts
+
+
+def _read_limited(path: Path,
+                  limit: Optional[int] = None) -> Tuple[Optional[str], Optional[str]]:
+    """v1.1.0: read at most limit+1 bytes (design doc §3.4).
+
+    Returns (text, None) on success or (None, "too_large") when the file
+    exceeds the limit. The OS is never asked for more than limit+1 bytes,
+    so oversized files are detected without loading them whole.
+    """
+    if limit is None:
+        limit = TRAY_READ_LIMIT_BYTES
+    with open(path, "rb") as fh:
+        chunk = fh.read(limit + 1)
+    if len(chunk) > limit:
+        return None, "too_large"
+    return chunk.decode("utf-8", errors="replace"), None
+
+
+def _compare_code_detailed(code_map: Dict[str, str],
+                           progress: ProgressCallback = _silent
+                           ) -> Tuple[List[dict], int]:
+    """v1.1.0: compare_code plus the short-circuit exclusion count.
+
+    Short-circuited pairs keep the v1.0.0 behavior (excluded from the
+    pair list), but the count is returned so the report can show that
+    the exclusion happened (design doc §3.2). Measured causes in Scope:
+    ast.parse failure (0000-000) and H1=1 with H2=0 and H3=0
+    (1000-000 - the observation did establish).
+    """
     if len(code_map) < 2:
-        return []
+        return [], 0
     try:
         from sieve_scope import SieveScopeEngineV1_3, SieveClusterAnalyzerV1_3
     except ImportError:
         progress("Note: sieve-scope not installed; skipping code analysis.")
-        return []
+        return [], 0
 
     engine = SieveScopeEngineV1_3()
     analyzer = SieveClusterAnalyzerV1_3(engine, min_cluster_size=2)
     analysis = analyzer.analyze_corpus(code_map)
 
     pairs = []
+    excluded = 0
     for (k1, k2), res in analysis["pair_results"].items():
         if res.get("short_circuited"):
+            excluded += 1
             continue
         pairs.append({
             "a": k1,
@@ -204,6 +422,12 @@ def compare_code(code_map: Dict[str, str],
             "h_states": dict(res.get("h_states", {})),
             "scores": dict(res.get("scores", {})),
         })
+    return pairs, excluded
+
+
+def compare_code(code_map: Dict[str, str],
+                  progress: ProgressCallback = _silent) -> List[dict]:
+    pairs, _excluded = _compare_code_detailed(code_map, progress)
     return pairs
 
 
@@ -755,8 +979,24 @@ def run_scan(input_dir: Path,
     (default), behavior is unchanged from v0.8.0 (subdirectory scan).
     """
     if groups is None:
-        groups = scan(input_dir)
+        # v1.1.0: the walk itself is symlink-safe and reports links and
+        # special files as unobserved entries (design doc §3.4).
+        groups = []
+        unobserved_entries: List[dict] = []
+        for d in sorted(input_dir.iterdir()):
+            if not d.is_dir() or d.name.startswith("."):
+                continue
+            files, entries = _walk_group(d)
+            if files:
+                groups.append((d.name, files))
+            unobserved_entries.extend(entries)
+    else:
+        unobserved_entries = []
     progress(f"Found {len(groups)} groups.")
+
+    def _unobserved(f: Path, engine: str, reason: str) -> None:
+        unobserved_entries.append({"file": str(f), "engine": engine,
+                                   "reason": reason, "detail": None})
 
     code_map: Dict[str, str] = {}
     text_map: Dict[str, str] = {}
@@ -765,24 +1005,62 @@ def run_scan(input_dir: Path,
         code, doc = split_files(files)
         for f in code:
             key = f"{name}/{f.name}"
+            # v1.1.0 (design doc §3.3/§3.4): never open links or special files;
+            # cap Tray's own reads; keep unparseable and empty sources
+            # visible instead of silently dropping them.
+            if f.is_symlink():
+                _unobserved(f, "tray", "symlink_skipped")
+                continue
+            if not f.is_file():
+                _unobserved(f, "tray", "unreadable")
+                continue
             try:
-                code_map[key] = f.read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+                text, err = _read_limited(f)
+            except OSError:
+                _unobserved(f, "scope", "unreadable")
+                continue
+            if err == "too_large":
+                _unobserved(f, "scope", "too_large")
+                continue
+            try:
+                tree = ast.parse(text)
+            except (SyntaxError, ValueError):
+                _unobserved(f, "scope", "parse_failed")
+                continue
+            if len(tree.body) == 0:
+                # Empty or comment/whitespace-only source: comparing it
+                # would fabricate a fake "similar" pair (design doc §3.3).
+                _unobserved(f, "scope", "not_applicable")
+                continue
+            code_map[key] = text
         for f in doc:
             if f.suffix.lower() in TEXT_EXTS:
                 key = f"{name}/{f.name}"
+                if f.is_symlink():
+                    _unobserved(f, "tray", "symlink_skipped")
+                    continue
+                if not f.is_file():
+                    _unobserved(f, "tray", "unreadable")
+                    continue
                 try:
-                    text_map[key] = f.read_text(encoding="utf-8", errors="replace")
-                except Exception:
-                    pass
+                    text, err = _read_limited(f)
+                except OSError:
+                    _unobserved(f, "referee", "unreadable")
+                    continue
+                if err == "too_large":
+                    _unobserved(f, "referee", "too_large")
+                    continue
+                if text.strip() == "":
+                    _unobserved(f, "referee", "empty_input")
+                    continue
+                text_map[key] = text
         all_docs.extend(doc)
 
     progress(f"Analyzing {len(all_docs)} documents...")
     doc_results = observe_documents(all_docs, progress)
 
     progress(f"Comparing {len(code_map)} code files...")
-    code_pairs = compare_code(code_map, progress)
+    code_pairs, short_circuited_excluded = _compare_code_detailed(code_map, progress)
 
     progress(f"Comparing {len(text_map)} text files for similarity...")
     text_pairs = compare_text(text_map, progress)
@@ -792,7 +1070,9 @@ def run_scan(input_dir: Path,
 
     return ScanResult(groups=groups, doc_results=doc_results,
                        code_pairs=code_pairs, text_pairs=text_pairs,
-                       audit_results=audit_results)
+                       audit_results=audit_results,
+                       unobserved=unobserved_entries,
+                       short_circuited_excluded=short_circuited_excluded)
 
 
 CSS = """
@@ -809,6 +1089,11 @@ th { background: #f0f0f0; }
 tr.flagged { background: #fff5f5; }
 code { font-family: Menlo, monospace; font-size: .85em; }
 """
+
+# v1.1.0: neutral style for unobserved rows - appended to the CSS only
+# when the report actually contains unobserved items, so a report with
+# none of them stays byte-identical to v1.0.0 (TR-T12).
+_UNOBSERVED_CSS = "\ntr.unobserved { background: #f0f0f0; }"
 
 
 def _crowd_cell(value, *, md=False, quoted=False) -> str:
@@ -834,12 +1119,19 @@ def render(result: ScanResult) -> str:
         result.doc_results, result.code_pairs, result.text_pairs)
     audit_results = result.audit_results
 
+    # v1.1.0: the third state is read through the single classifier;
+    # with zero unobserved items every byte matches v1.0.0 (TR-T12).
+    statuses = [classify_observation(r) for r in doc_results]
+    unobserved_total = (sum(1 for s in statuses if s[0] == "unobserved")
+                        + len(result.unobserved))
+
     parts = ["<!DOCTYPE html>",
              "<html><head><meta charset='UTF-8'>",
              "<title>Sieve Tray Report</title>",
-             f"<style>{CSS}</style></head><body>",
+             f"<style>{CSS}{_UNOBSERVED_CSS if unobserved_total else ''}</style></head><body>",
              "<h1>Sieve Tray Report</h1>",
-             f"<p>{len(groups)} groups scanned.</p>"]
+             f"<p>{len(groups)} groups scanned."
+             f"{f' Unobserved: {unobserved_total}.' if unobserved_total else ''}</p>"]
 
     parts.append("<h2>Documents</h2>")
     if not doc_results:
@@ -848,12 +1140,18 @@ def render(result: ScanResult) -> str:
         parts.append("<table><tr><th>File</th><th>Mask</th>"
                      "<th>Status</th></tr>")
         for r in doc_results:
-            cls = " class='flagged'" if r["flagged"] else ""
-            status = "flagged" if r["flagged"] else "clean"
+            status, reason, detail = classify_observation(r)
+            if status == "unobserved":
+                cls = " class='unobserved'"
+                label = ("unobserved (%s)" %
+                         (("%s: %s" % (reason, detail)) if detail else reason))
+            else:
+                cls = " class='flagged'" if status == "flagged" else ""
+                label = status
             parts.append(
                 f"<tr{cls}><td><code>{html.escape(r['path'])}</code></td>"
                 f"<td><code>{html.escape(r['mask'])}</code></td>"
-                f"<td>{status}</td></tr>"
+                f"<td>{label}</td></tr>"
             )
         parts.append("</table>")
 
@@ -872,6 +1170,12 @@ def render(result: ScanResult) -> str:
                 f"</tr>"
             )
         parts.append("</table>")
+    if result.short_circuited_excluded:
+        # v1.1.0 (design doc §3.2): the exclusion must remain visible in the
+        # report even though the pairs themselves stay excluded.
+        parts.append(
+            f"<p>{result.short_circuited_excluded} code pair(s) skipped "
+            "as trivially dissimilar (short-circuited).</p>")
 
     parts.append("<h2>Text Pairs</h2>")
     if not text_pairs:
@@ -912,6 +1216,31 @@ def render(result: ScanResult) -> str:
                 f"<td>{html.escape(a['scope'])}</td>"
                 f"<td>{html.escape(certainty)}</td>"
                 f"</tr>"
+            )
+        parts.append("</table>")
+
+    if unobserved_total:
+        from sieve_tray_i18n import tr
+        parts.append("<h2>Unobserved</h2>")
+        parts.append(f"<p>{html.escape(tr('en', 'unobserved_note'))}</p>")
+        parts.append("<table><tr><th>File</th><th>Engine</th>"
+                     "<th>Reason</th><th>Detail</th></tr>")
+        for r, (status, reason, detail) in zip(doc_results, statuses):
+            if status != "unobserved":
+                continue
+            parts.append(
+                f"<tr><td><code>{html.escape(r['path'])}</code></td>"
+                f"<td>lens</td>"
+                f"<td>{html.escape(reason)}</td>"
+                f"<td>{html.escape(detail) if detail else '—'}</td></tr>"
+            )
+        for e in result.unobserved:
+            detail = e.get("detail")
+            parts.append(
+                f"<tr><td><code>{html.escape(e.get('file', ''))}</code></td>"
+                f"<td>{html.escape(e.get('engine', ''))}</td>"
+                f"<td>{html.escape(e.get('reason', ''))}</td>"
+                f"<td>{html.escape(detail) if detail else '—'}</td></tr>"
             )
         parts.append("</table>")
 
@@ -959,8 +1288,15 @@ def render_text(result: ScanResult) -> str:
         result.doc_results, result.code_pairs, result.text_pairs)
     audit_results = result.audit_results
 
-    lines = ["# Sieve Tray Report", "",
-             f"_{len(groups)} groups scanned._", ""]
+    # v1.1.0: same counts as render() - via the single classifier.
+    statuses = [classify_observation(r) for r in doc_results]
+    unobserved_total = (sum(1 for s in statuses if s[0] == "unobserved")
+                        + len(result.unobserved))
+
+    counts_line = f"{len(groups)} groups scanned"
+    if unobserved_total:
+        counts_line += f". Unobserved: {unobserved_total}"
+    lines = ["# Sieve Tray Report", "", f"_{counts_line}._", ""]
 
     lines.append("## Documents")
     if not doc_results:
@@ -969,8 +1305,13 @@ def render_text(result: ScanResult) -> str:
         lines.append("| File | Mask | Status |")
         lines.append("| --- | --- | --- |")
         for r in doc_results:
-            status = "flagged" if r["flagged"] else "clean"
-            lines.append(f"| `{r['path']}` | `{r['mask']}` | {status} |")
+            status, reason, detail = classify_observation(r)
+            if status == "unobserved":
+                label = ("unobserved (%s)" %
+                         (("%s: %s" % (reason, detail)) if detail else reason))
+            else:
+                label = status
+            lines.append(f"| `{r['path']}` | `{r['mask']}` | {label} |")
     lines.append("")
 
     lines.append("## Code Pairs")
@@ -981,6 +1322,10 @@ def render_text(result: ScanResult) -> str:
         lines.append("| --- | --- | --- |")
         for p in code_pairs:
             lines.append(f"| `{p['a']}` | `{p['b']}` | `{p['mask']}` |")
+    if result.short_circuited_excluded:
+        lines.append("")
+        lines.append(f"_{result.short_circuited_excluded} code pair(s) skipped "
+                     "as trivially dissimilar (short-circuited)._")
     lines.append("")
 
     lines.append("## Text Pairs")
@@ -1013,6 +1358,25 @@ def render_text(result: ScanResult) -> str:
                 f"| {certainty} |")
     lines.append("")
 
+    if unobserved_total:
+        from sieve_tray_i18n import tr
+        lines.append("## Unobserved")
+        lines.append("")
+        lines.append(tr("en", "unobserved_note"))
+        lines.append("")
+        lines.append("| File | Engine | Reason | Detail |")
+        lines.append("| --- | --- | --- | --- |")
+        for r, (status, reason, detail) in zip(doc_results, statuses):
+            if status != "unobserved":
+                continue
+            lines.append(f"| `{r['path']}` | lens | {reason} "
+                         f"| {detail if detail else '—'} |")
+        for e in result.unobserved:
+            detail = e.get("detail")
+            lines.append(f"| `{e.get('file', '')}` | {e.get('engine', '')} "
+                         f"| {e.get('reason', '')} | {detail if detail else '—'} |")
+        lines.append("")
+
     if result.crowd_runs:
         from sieve_tray_i18n import tr
         lines.append("## Crowd")
@@ -1044,6 +1408,12 @@ def render_text(result: ScanResult) -> str:
 
 
 def main():
+    # v1.1.0 (design doc §3.8-E): the engines may use ProcessPoolExecutor, so a
+    # frozen (PyInstaller) CLI must call freeze_support() before any child
+    # process can re-execute this entry point. It is a no-op outside
+    # frozen runs.
+    import multiprocessing
+    multiprocessing.freeze_support()
     parser = argparse.ArgumentParser(prog="sieve-tray")
     parser.add_argument("input_dir", type=Path,
                         help="Directory containing subdirectories to scan")

@@ -16,9 +16,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-from sieve_tray import ScanResult
+from sieve_tray import ScanResult, classify_observation
 
 DEFAULT_DB_PATH = Path.home() / ".sieve_tray" / "history.db"
+
+# v1.1.0 (design doc §3.7): the crowd payload is stored as an allowlist, not a
+# denylist. Measured basis (v1.0.0): the receipt never contains cell values
+# (sieve_crowd/report.py), and the fields below are exactly those the GUI
+# history table and the report display. Table data (header / rows), report_json,
+# io, ok, before/after_alone, k_requested and config_path are not displayed
+# anywhere and stay out of the payload.
+CROWD_PAYLOAD_ALLOWLIST = frozenset({
+    "input_path", "output_path",
+    "records_in", "records_out", "suppressed",
+    "k_achieved", "max_risk", "avg_risk",
+    "status", "reason",
+    "report_text",
+})
+
+# v1.1.0: one-time settings flag for the payload scrub migration (§3.7 (2)).
+_CROWD_SCRUB_FLAG = "crowd_payload_scrub_v1_1_0"
 
 DEFAULT_SETTINGS = {
     "export_dir": str(Path.home()),
@@ -131,6 +148,14 @@ class Storage:
                 )
                 """
             )
+            # v1.1.0 (design doc §3.7 (2)): scrub legacy crowd payloads once.
+            # Never breaks history: a failure leaves the flag unset and the
+            # scrub is retried on the next start. load_crowd_runs sanitizes
+            # on read regardless ((1)), so old records are safe either way.
+            try:
+                self._scrub_crowd_payloads(conn)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # settings
@@ -199,7 +224,17 @@ class Storage:
             ).fetchone()
         if row is None:
             return None
-        return ScanResult.from_dict(json.loads(row[0]))
+        result = ScanResult.from_dict(json.loads(row[0]))
+        # v1.1.0 (design doc §3.5): records saved before the third state carry
+        # no status keys - derive them on read. Undeterminable records
+        # become unobserved/parse_failed, never silently clean.
+        for d in result.doc_results:
+            if "status" not in d:
+                status, reason, detail = classify_observation(d)
+                d["status"] = status
+                d["unobserved_reason"] = reason
+                d["unobserved_detail"] = detail
+        return result
 
     def delete_run(self, run_id: int) -> None:
         with closing(self._connect()) as conn, conn:
@@ -311,10 +346,57 @@ class Storage:
                  summary.get("avg_risk"),
                  summary.get("before_alone"),
                  summary.get("after_alone"),
-                 json.dumps(summary, ensure_ascii=False, sort_keys=True)))
+                 json.dumps(self._allowlisted(summary),
+                            ensure_ascii=False, sort_keys=True)))
             row_id = cur.lastrowid
         self.prune_crowd_runs()
         return row_id
+
+    @staticmethod
+    def _allowlisted(summary: dict) -> dict:
+        """v1.1.0: keep only the allowlisted keys of a crowd summary."""
+        return {k: v for k, v in summary.items()
+                if k in CROWD_PAYLOAD_ALLOWLIST}
+
+    def _scrub_crowd_payloads(self, conn) -> None:
+        """v1.1.0 (design doc §3.7 (2)): remove non-allowlisted keys from every
+        stored crowd payload, once. Idempotent: the settings flag marks
+        completion and the second run changes nothing. VACUUM keeps the
+        removed table data from lingering in free pages. Runs inside the
+        caller's connection; a failure propagates to the caller's guard
+        so the flag stays unset and the scrub is retried later.
+        """
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            (_CROWD_SCRUB_FLAG,)).fetchone()
+        if row is not None and row[0] == "done":
+            return
+        rows = conn.execute(
+            "SELECT id, payload_json FROM crowd_runs").fetchall()
+        changed = False
+        for row_id, payload in rows:
+            try:
+                data = json.loads(payload)
+            except ValueError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            scrubbed = {k: v for k, v in data.items()
+                        if k in CROWD_PAYLOAD_ALLOWLIST}
+            if scrubbed != data:
+                conn.execute(
+                    "UPDATE crowd_runs SET payload_json = ? WHERE id = ?",
+                    (json.dumps(scrubbed, ensure_ascii=False, sort_keys=True),
+                     row_id))
+                changed = True
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, 'done')"
+            " ON CONFLICT(key) DO UPDATE SET value = 'done'",
+            (_CROWD_SCRUB_FLAG,))
+        conn.commit()
+        if changed:
+            conn.execute("VACUUM")
+            conn.commit()
 
     def load_crowd_runs(self, limit: int = 20) -> list:
         """Return stored crowd run dicts, newest first.
@@ -328,7 +410,16 @@ class Storage:
                 " ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         records = []
         for row_id, timestamp, payload in rows:
-            record = json.loads(payload)
+            try:
+                data = json.loads(payload)
+            except ValueError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            # v1.1.0 (design doc §3.7 (1)): sanitize on read - records written
+            # before the allowlist never resurface their table data.
+            record = {k: v for k, v in data.items()
+                      if k in CROWD_PAYLOAD_ALLOWLIST}
             record["id"] = row_id
             record["timestamp"] = timestamp
             records.append(record)

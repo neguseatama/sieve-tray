@@ -66,9 +66,24 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "export_html": "Export Report",
         "status_flagged": "flagged",
         "status_clean": "clean",
+        # v1.1.0: the third state and its closed vocabulary (design doc §3.1).
+        "status_unobserved": "unobserved",
+        "unobserved_note": (
+            "Unobserved reports that the observation did not establish; "
+            "it does not mean the file is problem-free."
+        ),
+        "reason_refused": "refused",
+        "reason_parse_failed": "parse failed",
+        "reason_unreadable": "unreadable",
+        "reason_too_large": "too large",
+        "reason_symlink_skipped": "symlink skipped",
+        "reason_engine_unavailable": "engine unavailable",
+        "reason_not_applicable": "not applicable",
+        "reason_empty_input": "empty input",
         "scanning": "Scanning...",
         "summary_done": (
-            "Done: {groups} groups / Documents {docs} ({flagged} flagged) / "
+            "Done: {groups} groups / Documents {docs} ({flagged} flagged, "
+            "{unobserved} unobserved) / "
             "Code Pairs {pairs} / Text Pairs {tpairs} / Audit {audit}"
         ),
         "summary_history": (
@@ -258,9 +273,24 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "export_html": "レポートを書き出す",
         "status_flagged": "フラグ",
         "status_clean": "クリーン",
+        # v1.1.0: 第三の状態とその閉じた語彙（design doc §3.1）。
+        "status_unobserved": "未観測",
+        "unobserved_note": (
+            "未観測は、観測が成立しなかったことの報告であり、"
+            "問題がないことを意味しない。"
+        ),
+        "reason_refused": "拒否",
+        "reason_parse_failed": "解析失敗",
+        "reason_unreadable": "読めない",
+        "reason_too_large": "上限超過",
+        "reason_symlink_skipped": "リンクのため未読",
+        "reason_engine_unavailable": "エンジン利用不可",
+        "reason_not_applicable": "対象外",
+        "reason_empty_input": "空入力",
         "scanning": "スキャン中...",
         "summary_done": (
-            "完了: {groups}グループ / 文書 {docs}件（うちフラグ {flagged}件） / "
+            "完了: {groups}グループ / 文書 {docs}件（うちフラグ {flagged}件、"
+            "未観測 {unobserved}件） / "
             "コードペア {pairs}件 / テキストペア {tpairs}件 / 監査 {audit}件"
         ),
         "summary_history": (

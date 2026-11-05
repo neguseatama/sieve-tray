@@ -241,12 +241,12 @@ class TestDefaultModifierVocabPath(unittest.TestCase):
 
 
 class TestVersionBump(unittest.TestCase):
-    """v1.0.0 marker - guards against accidental version revert."""
+    """v1.1.0 marker - guards against accidental version revert."""
 
-    def test_version_is_1_0_0(self):
-        # v1.0.0: bumped for the crowd run history view
-        # (Crowd tab history section / README refresh / D141).
-        self.assertEqual(sieve_tray.__version__, "1.0.0")
+    def test_version_is_1_1_0(self):
+        # v1.1.0: bumped for the unobserved third state / crowd history
+        # allowlist / Tray-side read limits (design doc v1.1.0 §8).
+        self.assertEqual(sieve_tray.__version__, "1.1.0")
 
 
 class TestRunScanGroupsArgument(unittest.TestCase):
