@@ -93,9 +93,15 @@ class TestAuditText(unittest.TestCase):
         self.assertIn(red["backing"], {"unbacked", "theorem", "enumerated", "sample"})
         self.assertIn(red["scope"], {"universal", "measured"})
         self.assertEqual(red["pattern_name"], "UNBACKED_UNIVERSAL")
-        # modifier vocab provenance must be present (bundled default).
+        # modifier vocab provenance must be present, and the count must
+        # match the engine's embedded default at runtime. The count
+        # follows the engine version (sieve-referee 1.5.x grew the
+        # vocab from 10 to 17 on 2026-10-31), so pinning a literal here
+        # would break on every engine update (measured: v1.0.0 fails
+        # identically under referee 1.5.0).
         self.assertTrue(red["modifier_vocab_sha256"])
-        self.assertEqual(red["modifier_vocab_count"], 10)
+        from sieve_referee.quantifier_audit import DEFAULT_MODIFIER_VOCAB
+        self.assertEqual(red["modifier_vocab_count"], len(DEFAULT_MODIFIER_VOCAB))
 
     def test_green_sentences_are_not_surfaced(self):
         # A measured statement with no universal-scope vocabulary should
