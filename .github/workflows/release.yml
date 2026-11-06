@@ -76,3 +76,50 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/${{ matrix.asset_name }}
+
+  release-extras:
+    # v1.4.0: the SHA-256 list of the three assets and the artifact
+    # attestation. No code signing / notarization by decision - the
+    # verification means are the hash list and the build provenance.
+    # Measured 2026-11-06: actions/attest@v4 is the official action for
+    # new implementations (attest-build-provenance v4 is its wrapper);
+    # attestations are free for public repositories on all current
+    # GitHub plans. artifact-metadata: write is the fine-grained
+    # permission GA'd 2026-01-13 (creates the artifact storage record).
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        run: |
+          cd artifacts
+          sha256sum SieveTray-windows.zip SieveTray-macos-arm64.zip SieveTray-macos-intel.zip > SHA256SUMS.txt
+
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            artifacts/SieveTray-windows.zip
+            artifacts/SieveTray-macos-arm64.zip
+            artifacts/SieveTray-macos-intel.zip
+
+      - name: Upload SHA256SUMS.txt as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SHA256SUMS.txt
+          path: artifacts/SHA256SUMS.txt
+
+      - name: Attach SHA256SUMS.txt to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/SHA256SUMS.txt

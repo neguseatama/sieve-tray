@@ -108,8 +108,14 @@ REDACT_0100_SHA256 = (
 # engine import.
 MOLD_WITH_UNOBSERVED_CORE = (
     "73b31e81dd945de0be39a4bb01c2c80884d32260f599e3e5cf9ce78cec5287cd")
+# v1.4.0 (design §3.2, TR4): the with-unobserved HTML report intentionally
+# changed - the three-stage coloring appends the stage classes to the
+# unobserved rows and the stage CSS (the 0-unobserved report and the
+# Markdown rendering are byte-identical to v1.3.0; see TR4-T08/T09).
+# The v1.3.0 value was cd8181ec8b48d88e11284fa8ec886cea2a76fe231d6f8553d
+# be44eb0b2cb7b58.
 MOLD_WITH_UNOBSERVED_RENDER = (
-    "cd8181ec8b48d88e11284fa8ec886cea2a76fe231d6f8553dbe44eb0b2cb7b58")
+    "05677e669b5b6ea281b7fb3c4ef29a69d7140061716ccfc7be47fc8e32a547ed")
 MOLD_WITH_UNOBSERVED_RENDER_TEXT = (
     "c3b7e923cf8fbbb4f1661ab829ca2323f2969f7fcbbeb1176c9ade232c03eebb")
 MOLD_CLEAN_CORE = (
@@ -1033,8 +1039,8 @@ class TR3_T17_ReadmeEnJaAligned(unittest.TestCase):
         ja = (REPO_ROOT / "README.ja.md").read_text(encoding="utf-8")
         en_h1 = re.search(r"^# (.+)$", en, re.M).group(1)
         ja_h1 = re.search(r"^# (.+)$", ja, re.M).group(1)
-        self.assertIn("v1.3.0", en_h1, "en H1 is not v1.3.0: " + en_h1)
-        self.assertIn("v1.3.0", ja_h1, "ja H1 is not v1.3.0: " + ja_h1)
+        self.assertIn("v1.4.0", en_h1, "en H1 is not v1.4.0: " + en_h1)
+        self.assertIn("v1.4.0", ja_h1, "ja H1 is not v1.4.0: " + ja_h1)
         en_h2 = re.findall(r"^## (.+)$", en, re.M)
         ja_h2 = re.findall(r"^## (.+)$", ja, re.M)
         self.assertEqual(len(en_h2), len(ja_h2),
@@ -1068,13 +1074,13 @@ class TR3_T18_DependencyFloorsStayPublished(unittest.TestCase):
         self.assertIn("Pillow>=10.0", gui)
 
 
-class TR3_T19_Version130(unittest.TestCase):
-    """TR3-T19: __version__ and pyproject agree on 1.3.0 and the
-    CHANGELOG carries a [1.3.0] section."""
+class TR3_T19_Version140(unittest.TestCase):
+    """TR3-T19: __version__ and pyproject agree on 1.4.0 and the
+    CHANGELOG carries a [1.4.0] section (pin refreshed at v1.4.0)."""
 
-    def test_version_is_130(self):
-        self.assertEqual(sieve_tray.__version__, "1.3.0")
+    def test_version_is_140(self):
+        self.assertEqual(sieve_tray.__version__, "1.4.0")
 
-    def test_changelog_has_130(self):
+    def test_changelog_has_140(self):
         text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertIn("## [1.3.0]", text)
+        self.assertIn("## [1.4.0]", text)

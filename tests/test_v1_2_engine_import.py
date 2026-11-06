@@ -94,10 +94,14 @@ PINNED_CROWD_090_SHA256 = {
 }
 
 # Golden molds (TR2-T04/T05), measured on the pre-import tree at 0d0540a.
+# v1.4.0 note: the with-unobserved HTML render intentionally changed with
+# the three-stage coloring (stage classes + stage CSS; see TR4-T08) - the
+# v1.3.0 value was cd8181ec8b48d88e11284fa8ec886cea2a76fe231d6f8553dbe44e
+# b0b2cb7b58. The core and the Markdown render molds are unchanged.
 MOLD_WITH_UNOBSERVED_CORE = (
     "73b31e81dd945de0be39a4bb01c2c80884d32260f599e3e5cf9ce78cec5287cd")
 MOLD_WITH_UNOBSERVED_RENDER = (
-    "cd8181ec8b48d88e11284fa8ec886cea2a76fe231d6f8553dbe44eb0b2cb7b58")
+    "05677e669b5b6ea281b7fb3c4ef29a69d7140061716ccfc7be47fc8e32a547ed")
 MOLD_WITH_UNOBSERVED_RENDER_TEXT = (
     "c3b7e923cf8fbbb4f1661ab829ca2323f2969f7fcbbeb1176c9ade232c03eebb")
 MOLD_CLEAN_CORE = (
@@ -642,20 +646,20 @@ class TR2_T11_DependencyFloors(unittest.TestCase):
         self.assertIn("sieve-referee>=1.3.0", deps)
 
 
-class TR2_T12_Version130(unittest.TestCase):
-    """TR2-T12: version 1.3.0 across __version__, pyproject and the
-    CHANGELOG (pin refreshed at the v1.3.0 vendor update)."""
+class TR2_T12_Version140(unittest.TestCase):
+    """TR2-T12: version across __version__, pyproject and the
+    CHANGELOG (pin refreshed at the v1.4.0 lane)."""
 
-    def test_version_is_1_3_0(self):
-        self.assertEqual(sieve_tray.__version__, "1.3.0")
+    def test_version_is_1_4_0(self):
+        self.assertEqual(sieve_tray.__version__, "1.4.0")
 
     def test_pyproject_reads_version_from_module(self):
         text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn('attr = "sieve_tray.__version__"', text)
 
-    def test_changelog_has_130_section(self):
+    def test_changelog_has_140_section(self):
         text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertIn("## [1.3.0]", text)
+        self.assertIn("## [1.4.0]", text)
 
 
 if __name__ == "__main__":

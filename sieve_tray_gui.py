@@ -65,6 +65,11 @@ from sieve_tray import (
     crowd_parse_config,
     crowd_read_table,
     crowd_refusal_message,
+    crowd_scan_open,
+    save_scan_html,
+    remove_scan_temp_file,
+    sweep_scan_temp_files,
+    unobserved_stage,
 )
 from sieve_crowd import ConfigError, InputError, Role, parse_key
 from sieve_crowd.hints import hint as crowd_hint
@@ -86,7 +91,16 @@ FLAGGED_BG = QColor("#fff5f5")
 # v1.1.0: neutral third-state color - neither the green of clean nor the
 # emphasis of flagged (design doc §2-3). The exact look is the user's decision;
 # this gray is the minimal default, alternatives go into the report.
+# v1.4.0 (design §3.2): the row background now follows the three stages
+# (remedy / environment / excluded); UNOBSERVED_BG stays as the
+# environment-stage color (engine_unavailable), so that row keeps its
+# v1.3.0 look. The reason text stays in the row in every case.
 UNOBSERVED_BG = QColor("#f0f0f0")
+UNOBSERVED_STAGE_BG = {
+    "remedy": QColor("#fff4d6"),
+    "environment": QColor("#f0f0f0"),
+    "excluded": QColor("#f8f8f8"),
+}
 SIGNAL_BG = {
     "RED": QColor("#ffe0e0"),
     "YELLOW": QColor("#fff4cc"),
@@ -913,6 +927,11 @@ class MainWindow(QMainWindow):
         self._crowd_config_path = None
         self._crowd_thread = None
         self._crowd_worker = None
+        # v1.4.0: the tracked scan temp file and its bytes (for "save
+        # as"); the file is removed at exit and swept at the next start.
+        self._scan_temp_path = None
+        self._scan_html_bytes = None
+        sweep_scan_temp_files()
 
         crowd_page = QWidget()
         crowd_layout = QVBoxLayout(crowd_page)
@@ -999,18 +1018,37 @@ class MainWindow(QMainWindow):
         self.crowd_run_btn.clicked.connect(self.crowd_start_run)
         crowd_layout.addWidget(self.crowd_run_btn)
 
+        # v1.4.0 (design §3.1): the table observation (scan) - one entry
+        # that opens Crowd's one-page HTML in the system browser, plus
+        # the save action writing the very same bytes. No new screen.
+        scan_row = QHBoxLayout()
+        self.crowd_scan_btn = QPushButton(self._("crowd_scan_button"))
+        self.crowd_scan_btn.setEnabled(False)
+        self.crowd_scan_btn.clicked.connect(self.crowd_scan)
+        self.crowd_scan_save_btn = QPushButton(
+            self._("crowd_scan_save_button"))
+        self.crowd_scan_save_btn.setEnabled(False)
+        self.crowd_scan_save_btn.clicked.connect(self.crowd_scan_save)
+        scan_row.addWidget(self.crowd_scan_btn)
+        scan_row.addWidget(self.crowd_scan_save_btn, stretch=1)
+        crowd_layout.addLayout(scan_row)
+
+        # v1.4.0 (design §3.3): the input notes sit at the top of the
+        # result details, under the "About the input" heading, as a
+        # short bulleted list - no color, no icon (information, not a
+        # warning). Still never in the table area or the history.
+        self.crowd_notes_heading = QLabel("")
+        self.crowd_notes_heading.setWordWrap(True)
+        self.crowd_notes_heading.setVisible(False)
+        crowd_layout.addWidget(self.crowd_notes_heading)
+        self.crowd_notes_label = QLabel("")
+        self.crowd_notes_label.setWordWrap(True)
+        self.crowd_notes_label.setVisible(False)
+        crowd_layout.addWidget(self.crowd_notes_label)
+
         self.crowd_result_label = QLabel("")
         self.crowd_result_label.setWordWrap(True)
         crowd_layout.addWidget(self.crowd_result_label)
-
-        # v1.3.0: Crowd's stderr-equivalent notices (encoding adoption,
-        # sheet selection, missing formula caches) surface here in the
-        # result details - never in the table area or the history.
-        self.crowd_notes_label = QLabel("")
-        self.crowd_notes_label.setWordWrap(True)
-        self.crowd_notes_label.setStyleSheet("color: #666;")
-        self.crowd_notes_label.setVisible(False)
-        crowd_layout.addWidget(self.crowd_notes_label)
 
         crowd_layout.addWidget(QLabel(self._("crowd_result_receipt")))
         self.crowd_receipt_view = QPlainTextEdit()
@@ -1063,6 +1101,9 @@ class MainWindow(QMainWindow):
         self._refresh_crowd_history_table()
 
     def closeEvent(self, event):
+        # v1.4.0: the scan temp file is removed at exit (design §3.1).
+        if getattr(self, "_scan_temp_path", None) is not None:
+            remove_scan_temp_file(self._scan_temp_path)
         # Defensive: if a scan is still running in the background when the
         # window is closed, make sure the thread fully winds down before
         # this window (and its thread reference) is torn down. Destroying
@@ -1389,7 +1430,9 @@ class MainWindow(QMainWindow):
                 label = status_unobserved
                 if reason:
                     label += " (%s)" % self._("reason_" + reason)
-                bg = UNOBSERVED_BG
+                # v1.4.0: the background follows the three stages; the
+                # environment stage keeps the v1.3.0 gray.
+                bg = UNOBSERVED_STAGE_BG[unobserved_stage(reason)]
             elif status == "flagged":
                 label = status_flagged
                 bg = FLAGGED_BG
@@ -1804,18 +1847,90 @@ class MainWindow(QMainWindow):
         self.crowd_inspect_btn.setEnabled(True)
         self.crowd_dry_run_btn.setEnabled(True)
         self.crowd_run_btn.setEnabled(True)
+        self.crowd_scan_btn.setEnabled(True)
         self.crowd_run_inspect()
         self.crowd_config_edit.setPlainText(self._crowd_config_template())
 
     def _crowd_show_notices(self, notices):
-        """v1.3.0: show the engine notices in the result details (and
-        nowhere else). Empty notices hide the label entirely."""
+        """v1.4.0 (design §3.3): the input notes as a short bulleted
+        list under the "About the input" heading, at the top of the
+        result details. No color and no icon (information, not a
+        warning); empty notices hide both labels entirely. The lines
+        are Crowd's own one-line observations - values and sheet names
+        never enter them, and they never reach the history."""
         if notices:
-            self.crowd_notes_label.setText("\n".join(notices))
+            self.crowd_notes_heading.setText(self._("input_notes_heading"))
+            self.crowd_notes_label.setText(
+                "\n".join("• " + str(n) for n in notices))
+            self.crowd_notes_heading.setVisible(True)
             self.crowd_notes_label.setVisible(True)
         else:
+            self.crowd_notes_heading.setText("")
             self.crowd_notes_label.setText("")
+            self.crowd_notes_heading.setVisible(False)
             self.crowd_notes_label.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # v1.4.0 (design §3.1): the table observation (scan).  The HTML is
+    # Crowd 0.9.0's output byte for byte, written to a user-only temp
+    # file and opened in the system browser; it never enters the
+    # history.  The temp file is removed at exit and swept at the next
+    # start; "save as" writes the very same bytes.
+    # ------------------------------------------------------------------
+
+    def crowd_scan(self):
+        """Scan the currently loaded Crowd input (button entry)."""
+        if self._crowd_input_path is None:
+            return
+        self.crowd_scan_file(self._crowd_input_path)
+
+    def crowd_scan_file(self, path):
+        """Run the scan on one table path and open the HTML."""
+        try:
+            temp_path = crowd_scan_open(
+                path, lang=self.lang,
+                config_path=(str(self._crowd_config_path)
+                             if self._crowd_config_path is not None
+                             else None))
+        except InputError as exc:
+            code = getattr(exc, "code", None)
+            if code is not None:
+                # InputRefused: the closed-vocabulary code (or its i18n
+                # wording) - never with values.
+                QMessageBox.critical(
+                    self, self._("error_title"),
+                    crowd_refusal_message(code, self.lang))
+            else:
+                QMessageBox.critical(self, self._("error_title"),
+                                     f"{type(exc).__name__}: {exc}")
+            return
+        except (OSError, ConfigError) as exc:
+            # I/O errors and configuration/pack errors keep the existing
+            # generic display (no traceback, no values); refusals carry
+            # their closed-vocabulary code wording (handled above).
+            QMessageBox.critical(self, self._("error_title"),
+                                 f"{type(exc).__name__}: {exc}")
+            return
+        # a previous scan temp file (if any) goes away; the new one is
+        # tracked for the exit-time removal
+        if getattr(self, "_scan_temp_path", None) is not None:
+            remove_scan_temp_file(self._scan_temp_path)
+        self._scan_temp_path = temp_path
+        self._scan_html_bytes = temp_path.read_bytes()
+        self.crowd_scan_save_btn.setEnabled(True)
+
+    def crowd_scan_save(self):
+        """Save the generated scan HTML bytes unchanged."""
+        data = getattr(self, "_scan_html_bytes", None)
+        if data is None:
+            return
+        target, _ = QFileDialog.getSaveFileName(
+            self, self._("crowd_scan_save_button"), "",
+            "HTML (*.html);;All files (*)")
+        if not target:
+            return
+        save_scan_html(target, data)
+        self.log_view.appendPlainText("scan HTML saved: " + target)
 
     def crowd_run_inspect(self):
         if self._crowd_header is None or self._crowd_rows is None:

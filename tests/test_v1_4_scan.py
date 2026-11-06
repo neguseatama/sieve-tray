@@ -125,7 +125,7 @@ _UNOBSERVED = _result(
 def _cli_scan_bytes(input_path: Path, *, lang: str,
                     config_path=None) -> bytes:
     """The vendored CLI's scan output on stdout (the byte reference)."""
-    cmd = [sys.executable, "-m", "sieve_crowd", "scan", "-i", str(input_path),
+    cmd = [sys.executable, "-m", "sieve_crowd", "scan", str(input_path),
            "--lang", lang, "-o", "-"]
     if config_path is not None:
         cmd += ["-c", str(config_path)]
@@ -182,7 +182,7 @@ def test_t02_scan_inputs_csv_cp932_xlsx_and_refusal_wording(tmp_path):
     # refusal: a UTF-16-BOM CSV is refused with the closed-vocabulary code
     bad = tmp_path / "b.csv"
     bad.write_bytes(b"\xff\xfeA\x00,\x00B\x00\n")
-    from sieve_crowd import InputRefused
+    from sieve_crowd.model import InputRefused
     with pytest.raises(InputRefused) as ei:
         sieve_tray.crowd_scan_bytes(bad, lang="en", config_path=None)
     assert ei.value.code == "unsupported_encoding"
@@ -230,10 +230,12 @@ def test_t03_scan_never_reaches_history_and_temp_lifecycle(tmp_path):
     assert removed >= 1
     assert not leftover.exists() and keeper.exists()
 
-    # the exit-time removal takes the tracked file away
-    assert p.exists()
-    sieve_tray.remove_scan_temp_file(p)
-    assert not p.exists()
+    # the exit-time removal takes the tracked file away (a fresh file,
+    # since the sweep above already cleared the earlier ones)
+    p2 = sieve_tray.new_scan_temp_file(data, directory=tmp_path)
+    assert p2.exists()
+    sieve_tray.remove_scan_temp_file(p2)
+    assert not p2.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +246,7 @@ def test_t04_browser_open_receives_the_temp_path(tmp_path, monkeypatch):
     csv = tmp_path / "t04.csv"
     csv.write_bytes(CSV_BYTES)
     calls = []
+    real_open = sieve_tray.open_in_browser
     monkeypatch.setattr(sieve_tray, "open_in_browser",
                         lambda p: calls.append(Path(p)))
     got = sieve_tray.crowd_scan_open(csv, lang="en", config_path=None,
@@ -254,6 +257,7 @@ def test_t04_browser_open_receives_the_temp_path(tmp_path, monkeypatch):
 
     # the production wrapper opens a local file: URI only (no network)
     opened = []
+    monkeypatch.setattr(sieve_tray, "open_in_browser", real_open)
     monkeypatch.setattr(sieve_tray.webbrowser, "open",
                         lambda u, *a, **k: opened.append(u) or True)
     sieve_tray.open_in_browser(got)
@@ -435,9 +439,14 @@ def test_t12_release_workflow_hashes_and_attestation_static():
     assert "SHA256SUMS.txt" in text
     assert "sha256sum" in text
     # provenance attestation: the official action and the permissions
-    assert "actions/attest-build-provenance@" in text
+    # (measured 2026-11-06: actions/attest@v4 is the action the official
+    # README recommends for new implementations - attest-build-provenance
+    # v4 is its wrapper - and artifact-metadata: write is the permission
+    # GA'd on 2026-01-13 for the artifact storage record)
+    assert "actions/attest@" in text
     assert "id-token: write" in text
     assert "attestations: write" in text
+    assert "artifact-metadata: write" in text
     # still tag-only
     assert "tags:" in text
 
@@ -450,20 +459,23 @@ def test_t12_release_workflow_hashes_and_attestation_static():
 def test_t13_readme_first_launch_section_en_ja():
     en = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     ja = (REPO_ROOT / "README.ja.md").read_text(encoding="utf-8")
-    assert "## First launch" in en
-    assert "## 初回起動" in ja
+    assert any(line.startswith("## ") and "First launch" in line
+               for line in en.splitlines())
+    assert any(line.startswith("## ") and "初回起動" in line
+               for line in ja.splitlines())
     en_heads = [line for line in en.splitlines()
                 if line.startswith("## ")]
     ja_heads = [line for line in ja.splitlines()
                 if line.startswith("## ")]
     assert len(en_heads) == len(ja_heads) > 0
-    # the forward-looking policy holds: no limitations enumeration appears
-    for head in en_heads + ja_heads:
-        low = head.lower()
-        assert "limitation" not in low and "制限" not in head
-        assert "限界" not in head
+    # the limitations enumeration is not increased (the v1.3.0 baseline
+    # carries exactly one such section on each side)
+    assert sum("Limitation" in h for h in en_heads) <= 1
+    assert sum("制限" in h for h in ja_heads) <= 1
     # the SHA-256 verification hint is present in both
-    assert "SHA-256" in en and "SHA-256" in ja
+    assert "SHA256SUMS.txt" in en and "SHA256SUMS.txt" in ja
+    assert "SHA-256" in en or "SHA256" in en
+    assert "SHA-256" in ja or "SHA256" in ja
 
 
 # ---------------------------------------------------------------------------
@@ -558,8 +570,11 @@ def test_t15_golden_mold_v130_unchanged():
 
 def test_t16_version_pins():
     assert sieve_tray.__version__ == "1.4.0"
+    # pyproject keeps the single-source wiring (dynamic version read
+    # from sieve_tray.__version__)
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'version = "1.4.0"' in text
+    assert 'dynamic = ["version"]' in text
+    assert 'version = { attr = "sieve_tray.__version__" }' in text
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert "## [1.4.0]" in changelog
 

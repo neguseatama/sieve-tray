@@ -37,6 +37,7 @@ import html
 import json
 import os
 import sys
+import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -45,7 +46,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 
 CODE_EXTS = {".py"}
@@ -78,6 +79,40 @@ UNOBSERVED_REASONS = frozenset({
     "not_applicable",    # empty or statement-less code file - excluded from compare (§3.3)
     "empty_input",       # empty text - nothing for Referee to evaluate (§3.3)
 })
+
+# v1.4.0 (design §3.2): the three-stage grouping of the closed 8-reason
+# vocabulary.  Every reason sits in exactly one stage (the tests pin the
+# partition; a new reason must join this table - extending the vocabulary
+# itself stays a design decision).
+#   remedy      - file-side measures make the file observable again
+#   environment - an engine/environment-side gap, not the file's fault
+#   excluded    - by design not a scan target
+UNOBSERVED_STAGES = {
+    "remedy": frozenset({
+        "refused", "parse_failed", "unreadable", "too_large",
+        "symlink_skipped"}),
+    "environment": frozenset({"engine_unavailable"}),
+    "excluded": frozenset({"not_applicable", "empty_input"}),
+}
+
+# The stage background colors (design §3.2, the proposal values).  The
+# GUI palette is a fixed light theme (no dark mode), and the reason text
+# stays in the row, so the color is never the only carrier.
+UNOBSERVED_STAGE_BG = {
+    "remedy": "#fff4d6",
+    "environment": "#f0f0f0",
+    "excluded": "#f8f8f8",
+}
+
+
+def unobserved_stage(reason: str) -> str:
+    """Return the stage key ('remedy'/'environment'/'excluded') of one
+    reason from the closed vocabulary; unknown reasons raise ValueError
+    (a new reason has to join UNOBSERVED_STAGES first)."""
+    for stage, members in UNOBSERVED_STAGES.items():
+        if reason in members:
+            return stage
+    raise ValueError("unknown unobserved reason: %r" % (reason,))
 
 # The 13 Lens refusal codes known at v1.1.0. A code outside this set keeps
 # detail=None so a future Lens cannot leak new strings into reports.
@@ -1060,6 +1095,145 @@ def crowd_anonymize(header, rows, cfg, *, io=None, output_path=None,
         _crowd_atomic_write(output_path, write_any(result.header, result.rows, fmt))
     return _crowd_summary(result, lang)
 
+
+# ---------------------------------------------------------------------------
+# v1.4.0 (design §3.1): the table observation (scan).  The Crowd tab can
+# open Crowd 0.9.0's one-page HTML view of the current table in the
+# system browser.  Tray never post-processes the bytes: the vendored CLI
+# command writes them, so the output is byte-identical to
+# `python -m sieve_crowd scan` for the same input, language and
+# configuration (TR4-T01).  The HTML never enters the history; the temp
+# file is user-only (0600) and swept at the next start or removed at exit.
+# ---------------------------------------------------------------------------
+
+SCAN_TEMP_PREFIX = "sieve_tray_scan_"
+
+
+def _scan_namespace(input_path, *, lang, config_path, output):
+    """The argparse namespace the vendored scan command reads (the CLI
+    defaults: no --delimiter/--encoding/--sheet/--hint-pack, builtin
+    hints on, derived + hidden chars on, --max-rows 200000)."""
+    import argparse
+    return argparse.Namespace(
+        input=str(input_path), output=str(output) if output else None,
+        config=str(config_path) if config_path else None,
+        delimiter=None, in_format=None, encoding=None, sheet=None,
+        hint_pack=None, no_builtin_hints=False, no_hidden_chars=False,
+        subject=None, k=None, max_rows=200_000, no_derived=False,
+        lang=lang)
+
+
+def crowd_scan_bytes(input_path, *, lang="en", config_path=None) -> bytes:
+    """Run Crowd 0.9.0's scan and return the HTML bytes.
+
+    The input is first read through the same steps the CLI command uses
+    (resolve format -> pre-refuse -> read -> read table), so a refused
+    input raises InputRefused with its closed-vocabulary code before the
+    command turns it into an exit code - the GUI shows the code wording
+    and never a traceback or a value.  The HTML itself is written by the
+    vendored ``sieve_crowd.cli._cmd_scan`` into a private user-only temp
+    file and read back, which makes the bytes identical to the CLI
+    output by construction (TR4-T01).  Configuration or pack errors
+    raise ConfigError; I/O errors propagate as OSError.
+    """
+    import contextlib
+    import io
+    import tempfile
+    from sieve_crowd import ConfigError
+    from sieve_crowd.cli import (_cmd_scan, _pre_refuse, _read,
+                                 _read_table, _resolve_format)
+    ns = _scan_namespace(input_path, lang=lang, config_path=config_path,
+                         output=None)
+    in_fmt = _resolve_format(ns.input, None, dash_default="csv")
+    _pre_refuse(ns, in_fmt)
+    with contextlib.redirect_stderr(io.StringIO()):
+        data = _read(ns.input)
+        _read_table(ns, data, in_fmt, None)
+    fd, tmp = tempfile.mkstemp(prefix=SCAN_TEMP_PREFIX, suffix=".html")
+    os.close(fd)
+    try:
+        rc = _cmd_scan(_scan_namespace(input_path, lang=lang,
+                                       config_path=config_path, output=tmp))
+        if rc != 0:
+            raise ConfigError(
+                "the scan was refused (command exit code %d)" % rc)
+        with open(tmp, "rb") as fh:
+            return fh.read()
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def new_scan_temp_file(data: bytes, directory=None) -> Path:
+    """Write the scan HTML bytes to a user-only temp file; return it.
+
+    mkstemp creates the file with mode 0600 (on Windows the profile's
+    %TEMP% directory is already user-only), so only the user can read
+    it.  The caller tracks the returned path: the GUI removes it at
+    exit and the next start sweeps any leftover carrying the prefix.
+    """
+    import tempfile
+    fd, tmp = tempfile.mkstemp(prefix=SCAN_TEMP_PREFIX, suffix=".html",
+                               dir=str(directory) if directory else None)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return Path(tmp)
+
+
+def sweep_scan_temp_files(directory=None) -> int:
+    """Next-start cleanup: remove leftover scan temp files (only the
+    ones carrying SCAN_TEMP_PREFIX); return the number removed."""
+    import glob
+    import tempfile
+    base = str(directory) if directory else tempfile.gettempdir()
+    removed = 0
+    for path in glob.glob(os.path.join(base, SCAN_TEMP_PREFIX + "*.html")):
+        try:
+            os.unlink(path)
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def remove_scan_temp_file(path) -> None:
+    """Exit-time cleanup: best-effort removal of one tracked temp file."""
+    try:
+        os.unlink(str(path))
+    except OSError:
+        pass
+
+
+def open_in_browser(path) -> None:
+    """Open a local file in the system's default browser (a file: URI -
+    no network).  A thin wrapper so tests can intercept the call."""
+    webbrowser.open(Path(path).absolute().as_uri())
+
+
+def save_scan_html(target, data: bytes) -> None:
+    """Write the generated bytes unchanged to the user-chosen path."""
+    Path(target).write_bytes(data)
+
+
+def crowd_scan_open(input_path, *, lang="en", config_path=None,
+                    directory=None) -> Path:
+    """The whole scan flow: generate the bytes, write the user-only
+    temp file and open it in the default browser.  Returns the temp
+    file path (the caller tracks it for the exit-time removal)."""
+    data = crowd_scan_bytes(input_path, lang=lang, config_path=config_path)
+    p = new_scan_temp_file(data, directory=directory)
+    open_in_browser(p)
+    return p
+
 def run_scan(input_dir: Path,
              progress: ProgressCallback = _silent,
              audit_modifier_vocab: Optional[str] = None,
@@ -1216,10 +1390,16 @@ tr.flagged { background: #fff5f5; }
 code { font-family: Menlo, monospace; font-size: .85em; }
 """
 
-# v1.1.0: neutral style for unobserved rows - appended to the CSS only
-# when the report actually contains unobserved items, so a report with
-# none of them stays byte-identical to v1.0.0 (TR-T12).
-_UNOBSERVED_CSS = "\ntr.unobserved { background: #f0f0f0; }"
+# v1.1.0: the unobserved style is appended to the CSS only when the
+# report actually contains unobserved items, so a report with none of
+# them stays byte-identical to the pre-v1.1.0 output (TR-T12).
+# v1.4.0 (design §3.2): the single gray becomes the three-stage set; the
+# zero-unobserved case still emits nothing and keeps its v1.3.0 bytes.
+def _unobserved_stage_css() -> str:
+    return "\n" + "\n".join(
+        "tr.unobserved-%s { background: %s; }"
+        % (stage, UNOBSERVED_STAGE_BG[stage])
+        for stage in ("remedy", "environment", "excluded"))
 
 
 def _crowd_cell(value, *, md=False, quoted=False) -> str:
@@ -1254,7 +1434,7 @@ def render(result: ScanResult) -> str:
     parts = ["<!DOCTYPE html>",
              "<html><head><meta charset='UTF-8'>",
              "<title>Sieve Tray Report</title>",
-             f"<style>{CSS}{_UNOBSERVED_CSS if unobserved_total else ''}</style></head><body>",
+             f"<style>{CSS}{_unobserved_stage_css() if unobserved_total else ''}</style></head><body>",
              "<h1>Sieve Tray Report</h1>",
              f"<p>{len(groups)} groups scanned."
              f"{f' Unobserved: {unobserved_total}.' if unobserved_total else ''}</p>"]
@@ -1268,7 +1448,8 @@ def render(result: ScanResult) -> str:
         for r in doc_results:
             status, reason, detail = classify_observation(r)
             if status == "unobserved":
-                cls = " class='unobserved'"
+                cls = (" class='unobserved unobserved-%s'"
+                       % unobserved_stage(reason))
                 label = ("unobserved (%s)" %
                          (("%s: %s" % (reason, detail)) if detail else reason))
             else:
@@ -1355,15 +1536,18 @@ def render(result: ScanResult) -> str:
             if status != "unobserved":
                 continue
             parts.append(
-                f"<tr><td><code>{html.escape(r['path'])}</code></td>"
+                f"<tr class='unobserved unobserved-{unobserved_stage(reason)}'>"
+                f"<td><code>{html.escape(r['path'])}</code></td>"
                 f"<td>lens</td>"
                 f"<td>{html.escape(reason)}</td>"
                 f"<td>{html.escape(detail) if detail else '—'}</td></tr>"
             )
         for e in result.unobserved:
             detail = e.get("detail")
+            stage = unobserved_stage(e.get("reason", ""))
             parts.append(
-                f"<tr><td><code>{html.escape(e.get('file', ''))}</code></td>"
+                f"<tr class='unobserved unobserved-{stage}'"
+                f"><td><code>{html.escape(e.get('file', ''))}</code></td>"
                 f"<td>{html.escape(e.get('engine', ''))}</td>"
                 f"<td>{html.escape(e.get('reason', ''))}</td>"
                 f"<td>{html.escape(detail) if detail else '—'}</td></tr>"

@@ -226,6 +226,10 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "crowd_output_default": "default: <name>_anonymized.<ext>",
         "crowd_output_browse": "Browse...",
         "crowd_run_button": "Run",
+        # v1.4.0: the table observation (scan) and the input notes
+        "crowd_scan_button": "Observe table (scan)",
+        "crowd_scan_save_button": "Save scan HTML as...",
+        "input_notes_heading": "About the input",
         "crowd_result_status": "Status",
         "crowd_result_records_in": "Records In",
         "crowd_result_records_out": "Records Out",
@@ -452,6 +456,10 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "crowd_output_default": "既定: <名前>_anonymized.<拡張子>",
         "crowd_output_browse": "参照...",
         "crowd_run_button": "実行",
+        # v1.4.0: 表の観測（scan）と入力についてのメモ
+        "crowd_scan_button": "表を観測（scan）",
+        "crowd_scan_save_button": "scan の HTML を保存...",
+        "input_notes_heading": "入力について",
         "crowd_result_status": "状態",
         "crowd_result_records_in": "入力レコード数",
         "crowd_result_records_out": "出力レコード数",
