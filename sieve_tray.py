@@ -45,7 +45,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 
 CODE_EXTS = {".py"}
@@ -376,6 +376,14 @@ def _read_limited(path: Path,
     Returns (text, None) on success or (None, "too_large") when the file
     exceeds the limit. The OS is never asked for more than limit+1 bytes,
     so oversized files are detected without loading them whole.
+
+    v1.3.0: the decode applies the series-wide character-code policy
+    (design doc §3.1): a UTF-8 BOM (utf-8-sig), then strict UTF-8, then
+    strict CP932; anything else returns (None, "unsupported_encoding")
+    and the caller records the file as unobserved ('refused').
+    errors="replace" and "ignore" are never used, and UTF-16/UTF-32
+    BOMs refuse outright (v1.0.0 read with errors="replace"; the limit
+    arrived in v1.1.0, the strict policy only now).
     """
     if limit is None:
         limit = TRAY_READ_LIMIT_BYTES
@@ -383,32 +391,30 @@ def _read_limited(path: Path,
         chunk = fh.read(limit + 1)
     if len(chunk) > limit:
         return None, "too_large"
-    return chunk.decode("utf-8", errors="replace"), None
+    if (chunk[:4] in (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")
+            or chunk[:2] in (b"\xff\xfe", b"\xfe\xff")):
+        return None, "unsupported_encoding"
+    for encoding in ("utf-8-sig", "utf-8", "cp932"):
+        try:
+            return chunk.decode(encoding), None
+        except UnicodeDecodeError:
+            continue
+    return None, "unsupported_encoding"
 
 
-def _compare_code_detailed(code_map: Dict[str, str],
-                           progress: ProgressCallback = _silent
-                           ) -> Tuple[List[dict], int]:
-    """v1.1.0: compare_code plus the short-circuit exclusion count.
+def _scope_pairs_from_analysis(analysis: dict
+                               ) -> Tuple[List[dict], int, List[dict]]:
+    """v1.3.0: extract Tray's pair list from a Scope analyze_corpus
+    result, plus the engine's skipped entries.
 
-    Short-circuited pairs keep the v1.0.0 behavior (excluded from the
-    pair list), but the count is returned so the report can show that
-    the exclusion happened (design doc §3.2). Measured causes in Scope:
-    ast.parse failure (0000-000) and H1=1 with H2=0 and H3=0
-    (1000-000 - the observation did establish).
+    Returns (pairs, excluded, skipped_entries). Pairs keep the v1.1.0
+    shape; a scores:null pair (scope 1.3.1+) becomes {}. Skipped
+    entries (scope 1.3.1+, each {path, reason}) become unobserved-
+    shaped dicts carrying the engine's own closed vocabulary; a reason
+    outside the vocabulary falls to parse_failed and the original
+    string never surfaces. Engines without the keys (scope 1.3.0)
+    behave exactly as v1.2.0.
     """
-    if len(code_map) < 2:
-        return [], 0
-    try:
-        from sieve_scope import SieveScopeEngineV1_3, SieveClusterAnalyzerV1_3
-    except ImportError:
-        progress("Note: sieve-scope not installed; skipping code analysis.")
-        return [], 0
-
-    engine = SieveScopeEngineV1_3()
-    analyzer = SieveClusterAnalyzerV1_3(engine, min_cluster_size=2)
-    analysis = analyzer.analyze_corpus(code_map)
-
     pairs = []
     excluded = 0
     for (k1, k2), res in analysis["pair_results"].items():
@@ -420,14 +426,79 @@ def _compare_code_detailed(code_map: Dict[str, str],
             "b": k2,
             "mask": res["mask"],
             "h_states": dict(res.get("h_states", {})),
-            "scores": dict(res.get("scores", {})),
+            # scores can be null (scope 1.3.1: H1=0 pair) - never
+            # dict(None)
+            "scores": dict(res.get("scores") or {}),
         })
-    return pairs, excluded
+    skipped_entries = []
+    for item in analysis.get("skipped") or []:
+        reason = item.get("reason")
+        if reason not in UNOBSERVED_REASONS:
+            # out of the closed vocabulary: drop to parse_failed and
+            # keep the original string out of the results
+            reason = "parse_failed"
+        skipped_entries.append(
+            {"file": str(item.get("path", "")), "engine": "scope",
+             "reason": reason, "detail": None})
+    return pairs, excluded, skipped_entries
+
+
+def _merge_unobserved(existing: List[dict], incoming: List[dict]
+                      ) -> List[dict]:
+    """v1.3.0: fold engine 'skipped' entries into Tray's unobserved
+    list without double-counting a path.
+
+    An incoming entry whose file is already recorded replaces the
+    earlier entry (the engine's reason wins - it observed the file
+    further than Tray's own pre-classification); the rest are appended
+    in order. File strings are compared as recorded; Tray writes the
+    engine paths in its own {group}/{file} shape before merging.
+    """
+    merged = list(existing)
+    index = {e.get("file"): i for i, e in enumerate(merged)}
+    for entry in incoming:
+        f = entry.get("file")
+        if f in index:
+            merged[index[f]] = entry
+        else:
+            index[f] = len(merged)
+            merged.append(entry)
+    return merged
+
+
+def _compare_code_detailed(code_map: Dict[str, str],
+                           progress: ProgressCallback = _silent
+                           ) -> Tuple[List[dict], int, List[dict]]:
+    """v1.1.0: compare_code plus the short-circuit exclusion count.
+
+    Short-circuited pairs keep the v1.0.0 behavior (excluded from the
+    pair list), but the count is returned so the report can show that
+    the exclusion happened (design doc §3.2). Measured causes in Scope:
+    ast.parse failure (0000-000) and H1=1 with H2=0 and H3=0
+    (1000-000 - the observation did establish).
+
+    v1.3.0: also returns the engine's skipped entries (scope 1.3.1+;
+    empty for scope 1.3.0) so run_scan can fold them into the
+    unobserved list without double-counting a path.
+    """
+    if len(code_map) < 2:
+        return [], 0, []
+    try:
+        from sieve_scope import SieveScopeEngineV1_3, SieveClusterAnalyzerV1_3
+    except ImportError:
+        progress("Note: sieve-scope not installed; skipping code analysis.")
+        return [], 0, []
+
+    engine = SieveScopeEngineV1_3()
+    analyzer = SieveClusterAnalyzerV1_3(engine, min_cluster_size=2)
+    analysis = analyzer.analyze_corpus(code_map)
+
+    return _scope_pairs_from_analysis(analysis)
 
 
 def compare_code(code_map: Dict[str, str],
                   progress: ProgressCallback = _silent) -> List[dict]:
-    pairs, _excluded = _compare_code_detailed(code_map, progress)
+    pairs, _excluded, _skipped = _compare_code_detailed(code_map, progress)
     return pairs
 
 
@@ -838,6 +909,41 @@ def sanitize_tree(input_dir, config_path, out_root,
             base["failed"].append((rel, result))
     return base
 
+def crowd_read_table(path: Path) -> Tuple[list, list, list]:
+    """v1.3.0: read a data file through Crowd 0.9.0's input layer.
+
+    Returns (header, rows, notices). The character code is decided by
+    the series-wide policy and auto-detection only (design 3.1): a
+    UTF-8 BOM, then strict UTF-8, then strict CP932; anything else is
+    refused with InputRefused('unsupported_encoding'). No encoding UI
+    is offered. ``notices`` are Crowd's one-line stderr observations
+    (encoding adoption, sheet selection, missing formula caches): the
+    GUI surfaces them in the result details and nowhere else - they
+    never enter the table area or the history payload.
+    """
+    from sieve_crowd.tableio import detect_format
+    from sieve_crowd.tabular import read_input
+    data = path.read_bytes()
+    fmt = detect_format(path.suffix)
+    return read_input(data, fmt, path=str(path))
+
+
+def crowd_refusal_message(code: str, lang: str = "en") -> str:
+    """v1.3.0: display wording for a Crowd refusal code.
+
+    Codes map to the i18n keys crowd_refusal_<code> (en/ja
+    symmetric); a code without a wording surfaces as the code itself.
+    Values are never interpolated - the message carries no file or
+    cell data.
+    """
+    import sieve_tray_i18n
+    key = "crowd_refusal_" + str(code)
+    strings = sieve_tray_i18n.STRINGS.get(lang)
+    if strings and key in strings:
+        return sieve_tray_i18n.tr(lang, key)
+    return str(code)
+
+
 def crowd_inspect(header, rows) -> list:
     """Column observations from the crowd engine (no roles guessed).
 
@@ -994,9 +1100,10 @@ def run_scan(input_dir: Path,
         unobserved_entries = []
     progress(f"Found {len(groups)} groups.")
 
-    def _unobserved(f: Path, engine: str, reason: str) -> None:
+    def _unobserved(f: Path, engine: str, reason: str,
+                    detail: Optional[str] = None) -> None:
         unobserved_entries.append({"file": str(f), "engine": engine,
-                                   "reason": reason, "detail": None})
+                                   "reason": reason, "detail": detail})
 
     code_map: Dict[str, str] = {}
     text_map: Dict[str, str] = {}
@@ -1021,6 +1128,13 @@ def run_scan(input_dir: Path,
                 continue
             if err == "too_large":
                 _unobserved(f, "scope", "too_large")
+                continue
+            if err == "unsupported_encoding":
+                # v1.3.0 (design doc §3.5): the file is neither UTF-8
+                # (BOM included) nor CP932 - nothing was read into the
+                # results, no replacement characters were produced.
+                _unobserved(f, "scope", "refused",
+                            detail="unsupported_encoding")
                 continue
             try:
                 tree = ast.parse(text)
@@ -1050,6 +1164,11 @@ def run_scan(input_dir: Path,
                 if err == "too_large":
                     _unobserved(f, "referee", "too_large")
                     continue
+                if err == "unsupported_encoding":
+                    # v1.3.0 (design doc §3.5): see the code branch above.
+                    _unobserved(f, "referee", "refused",
+                                detail="unsupported_encoding")
+                    continue
                 if text.strip() == "":
                     _unobserved(f, "referee", "empty_input")
                     continue
@@ -1060,7 +1179,14 @@ def run_scan(input_dir: Path,
     doc_results = observe_documents(all_docs, progress)
 
     progress(f"Comparing {len(code_map)} code files...")
-    code_pairs, short_circuited_excluded = _compare_code_detailed(code_map, progress)
+    code_pairs, short_circuited_excluded, scope_skipped = (
+        _compare_code_detailed(code_map, progress))
+
+    # v1.3.0: fold the engine's own skipped entries into the unobserved
+    # list - engine reasons win over Tray's pre-classification on the
+    # same path, so a file is never counted twice.
+    unobserved_entries = _merge_unobserved(unobserved_entries,
+                                           scope_skipped)
 
     progress(f"Comparing {len(text_map)} text files for similarity...")
     text_pairs = compare_text(text_map, progress)

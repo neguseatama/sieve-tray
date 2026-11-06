@@ -155,15 +155,21 @@ CLEAN_TREE = {
 
 _FIXTURE_HEADER = ["name", "age", "city", "note"]
 _FIXTURE_ROWS = [
-    ["Alice", "34", "Tokyo", "memo"],
-    ["Bob", "41", "Osaka", "note"],
-    ["Carol", "34", "Tokyo", "info"],
+    ["Alice", "34", "東京", "memo"],
+    ["Bob", "41", "大阪", "note"],
+    ["Carol", "34", "東京", "info"],
 ]
 _FIXTURE_CSV_TEXT = (
     "name,age,city,note\n"
-    "Alice,34,Tokyo,memo\n"
-    "Bob,41,Osaka,note\n"
-    "Carol,34,Tokyo,info\n")
+    "Alice,34,東京,memo\n"
+    "Bob,41,大阪,note\n"
+    "Carol,34,東京,info\n")
+_FIXTURE_XLSX_SHARED = [
+    "name", "age", "city", "note",
+    "Alice", "34", "東京", "memo",
+    "Bob", "41", "大阪", "note",
+    "Carol", "info",
+]
 
 
 def _sha256(data: bytes) -> str:
@@ -586,15 +592,16 @@ class TR3_T07_CrowdTabReadsThroughV090InputLayer(unittest.TestCase):
             p_c.write_text(_FIXTURE_CSV_TEXT, encoding="utf-8")
             p_x = Path(d) / "t.xlsx"
             p_x.write_bytes(_xlsx_bytes(
-                [("Sheet1", rows)],
-                ["name", "age", "city", "note", "Alice", "34", "Tokyo",
-                 "memo", "Bob", "41", "Osaka", "note", "Carol", "info"]))
+                [("Sheet1", [_FIXTURE_HEADER] + rows)],
+                _FIXTURE_XLSX_SHARED))
             h_c, r_c, _n = sieve_tray.crowd_read_table(p_c)
             h_x, r_x, n_x = sieve_tray.crowd_read_table(p_x)
             self.assertEqual((h_c, r_c), (h_x, r_x),
                              ".xlsx does not match the same-content CSV")
-            self.assertTrue(any("using sheet 1" in n for n in n_x),
-                            "no sheet-selection notice: " + repr(n_x))
+            # upstream policy: a single visible sheet is silent; the
+            # workbook notice fires for multiple sheets or a hidden
+            # sheet (pinned in TR3-T09)
+            self.assertEqual(n_x, [])
 
 
 class TR3_T08_CrowdFileFilterAndContainerRefusal(unittest.TestCase):
@@ -638,13 +645,13 @@ class TR3_T09_CrowdNoticesSurvive(unittest.TestCase):
 
     def test_xlsx_workbook_notices_pass_through(self):
         rows = _FIXTURE_ROWS
-        shared = ["name", "age", "city", "note", "Alice", "34", "Tokyo",
-                  "memo", "Bob", "41", "Osaka", "note", "Carol", "info"]
+        shared = _FIXTURE_XLSX_SHARED
         with tempfile.TemporaryDirectory() as d:
             # two sheets, one hidden: both notice kinds must survive
             p = Path(d) / "t.xlsx"
             p.write_bytes(_xlsx_bytes(
-                [("Sheet1", rows), ("Sheet2", rows, "hidden")], shared))
+                [("Sheet1", [_FIXTURE_HEADER] + rows),
+                 ("Sheet2", rows, "hidden")], shared))
             _h, _r, notices = sieve_tray.crowd_read_table(p)
             self.assertTrue(notices, "notices list is empty")
             self.assertTrue(all(isinstance(n, str) and n for n in notices))
@@ -1033,10 +1040,16 @@ class TR3_T17_ReadmeEnJaAligned(unittest.TestCase):
         self.assertEqual(len(en_h2), len(ja_h2),
                          "## heading counts differ: %d vs %d"
                          % (len(en_h2), len(ja_h2)))
-        for h in en_h2 + ja_h2:
-            low = h.lower()
-            self.assertFalse("limitation" in low or "制限" in h,
-                             "limitations section present: " + h)
+        # the pre-existing Known Limitations section stays as it is:
+        # not removed, not extended (design doc §3.6 - a reader-facing
+        # list of limits is not grown for this release)
+        limit_en = [h for h in en_h2
+                    if "limitation" in h.lower()]
+        limit_ja = [h for h in ja_h2 if "制限" in h]
+        self.assertEqual(len(limit_en), 1,
+                         "en limitations sections: %r" % limit_en)
+        self.assertEqual(len(limit_ja), 1,
+                         "ja limitations sections: %r" % limit_ja)
 
 
 class TR3_T18_DependencyFloorsStayPublished(unittest.TestCase):

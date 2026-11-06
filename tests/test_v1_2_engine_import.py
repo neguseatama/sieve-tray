@@ -2,8 +2,10 @@
 
 The pins below were measured against the upstream repositories before
 implementation:
-  - Crowd upstream tag v0.8.2, tree c91e999bc2db8690f68200dda7a6c4a7cf02aebe
-  - Redact upstream tag v0.9.0, tree 12f6573e0102cd85ca39b5a861626c4dafa634c7
+  - Crowd upstream main def0053 (v0.9.0), tree a06c92a6105d9a06932c534aca831b5f306f9d10
+  - Redact upstream tag v0.10.0 (1fb012da96a5d47c97f1562458fe59aa52daaa7f)
+Pins refreshed at the v1.3.0 vendor update; the golden molds (TR2-T04/T05)
+are unchanged and keep their pre-import values.
 TR2-T09 (test_flagged_sentence_is_surfaced follows the upstream vocab) is
 already satisfied on this base: commit 0d0540a re-derived the count from
 the engine's runtime vocab, and the test passes against referee 1.5.0.
@@ -46,30 +48,30 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Upstream pins (measured 2026-11-05 at the tags named above).
 # ---------------------------------------------------------------------------
 
-CROWD_UPSTREAM_VERSION = "0.8.2"
+CROWD_UPSTREAM_VERSION = "0.9.0"
 CHARTABLE_SHA256 = "c5ae4757bc9d07a2dcd1507d662460c3412c932d73318e54912569608242e605"
 BUILTIN_PACK_SHA = "1fae5827a7048ca1e4b92c7d12792a755f5b21e63d6392bc2a1fbdb4e3dc66c4"
 TEMPLATE_SHA2 = "0d5c35d82dc54004ad7f34b80be69103a80a0d20dccc4dae22f7e6412ba6c657"
 RUN_TABLE_SHA = "b58249febc35c4feb6f6bfe1632aab92ca802c611759d31138d8ae040061500e"
 
-REDACT_UPSTREAM_VERSION = "0.9.0"
-REDACT_090_SHA256 = "2d69a091b1cf068a492bea840e4f0eace338dda4d34a6b1b31873cb9e155dd64"
+REDACT_UPSTREAM_VERSION = "0.10.0"
+REDACT_0100_SHA256 = "61096b78a64a9273a722170d1591dede5edd8b03b2956e498deb1bf2f0c4c397"
 
 FIXTURE_PINS = {
     "people.csv": "cf32626e9b45317efad3a35a8ff3721bd3b3dfe876422034a124d18774a289e9",
     "config.json": "92d6161279bac14a4a543f7096f553e3ce163a58c6fab1c485bb3e74ae32bb9e",
 }
 
-# Every file of upstream sieve_crowd/ at v0.8.2 (sha256 per file).
-PINNED_CROWD_082_SHA256 = {
-    "__init__.py": "2176374c9418fd0dba83d456de89852b0d4e4a3f1ce8ebf2a109efe4a0643057",
+# Every file of upstream sieve_crowd/ at v0.9.0 (sha256 per file).
+PINNED_CROWD_090_SHA256 = {
+    "__init__.py": "8d0099cc26b14df1c5b14c2b037875811cdb970bc96e4fe81cf45e8cc41663ad",
     "__main__.py": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
     "audit.py": "ccbe07c7f0e1a647bea7b64aaa785264b517484961bfdc6e1a62253ac4f21684",
     "chartable.py": "4a01afa04a9678d86a0562ae48a2b578b2dd547247d941762088fcf32405b7a5",
     "chartable_v1.json": "c5ae4757bc9d07a2dcd1507d662460c3412c932d73318e54912569608242e605",
-    "cli.py": "39869af6acbec555a3a93e6df5fa524f48e0f1144f0826083452dc2897101356",
+    "cli.py": "a4887a7100fe642a1f2b6119be0456297e6297992a5a00813c578a5f95b8fa29",
     "config.py": "3fc0b1f9e95b7f05c88b4bf00f37faa6f529fd9e1c3fa000c54c137bd16d3a3d",
-    "csvio.py": "a44bc5be874c6dbbb26b4c5d852cc424ba826614233ebea1c3a5e2c8b0b538fa",
+    "csvio.py": "80a90e8e714093e385a1245e53ab1c83bc942b81c5fb0a1359f817beb2a985b5",
     "derived.py": "2123cc0d4b2ef5dc5e2ecccf718827512278339e7cf3e02379fa4518e82076f8",
     "engine.py": "d7384c5eb5c6012f731ab9af04e0483ca92316b6b73b980f4a88a3541616dc5d",
     "generalize.py": "a5c0c7fdb306e028ade1c51b69872f030a6d13e54d9b1cb6c57023037839cea0",
@@ -79,13 +81,15 @@ PINNED_CROWD_082_SHA256 = {
     "hints.py": "a0d79c844380a2ac0d21900be0ad7d7d65a64f064266516a5674cf23ff8271d3",
     "jsonio.py": "60a5b1ea05137ad3f6ab710eb11879b19b528658e95452db7c15f98cc8891cd9",
     "measure.py": "21ed70795ae40971c3447674736e58f06c0569cab14b8c3c52d946231b853a15",
-    "model.py": "5bd109dfd9183e59bd66abc4257b47776870d1e18472dee3a33e064173fde496",
+    "model.py": "620bb06b38a17a264e01853d7458b0a8fcc9e32ddbb9d4cd547ed8a79a9a6a0f",
     "prng.py": "8e8eefe63cb711c72e5bd2da43ea198245361692796a1529b402d72bc5728594",
     "pseudonym.py": "e58d3b62d78b75d6e871bc4bf0acf3960d7ecf41a2b597be6aeb1c5b54e6769b",
     "report.py": "9ff81387e24e5e8ca2ab4153a2e3a677a2c66be08e83e44ec98c932f377b7c6a",
     "scan.py": "482ee976cf25735ffeb4990c8feb5ef3ab859fca4312aec0ba30cb96b066d906",
     "search.py": "b782ecb5a9c771e325782a6d08bc4081cde21bb1dbc98f00dc94c2e6967efbb4",
-    "tableio.py": "d752b22685d50bfeafd01b47d6230d696e2f99205d5711d72a98c650afd2eee6",
+    "tableio.py": "cdd8ae2722e1ffb2f18f9e5e084c80a3caffabaac0f37db0fc8970f1b88ff6b4",
+    "tabular.py": "b838bf53429320f42c7d4a10be640e233dd41bd2c00648ff56f66530996c9179",
+    "xlsx_reader.py": "a7c6e8c3a4aa6dad1d56fcaf9b457ab3aad7d995781e529a3886e215fdee4da9",
     "xmlio.py": "640eb6c9714f8b3396f175d5e1a3b36ada9d9e852d5943036ef1722dde3cebac",
 }
 
@@ -182,7 +186,8 @@ def _load_pyproject() -> dict:
 
 class TR2_T01_VendoredCrowdMatchesUpstream082(unittest.TestCase):
     """TR2-T01: the vendored sieve_crowd/ is byte-identical to upstream
-    0.8.2, and the engine reproduces upstream's own golden pins."""
+    0.9.0 (pin refreshed at the v1.3.0 vendor update), and the engine
+    reproduces upstream's own golden pins."""
 
     def setUp(self):
         self.vendored = REPO_ROOT / "sieve_crowd"
@@ -194,11 +199,11 @@ class TR2_T01_VendoredCrowdMatchesUpstream082(unittest.TestCase):
             if path.is_file() and "__pycache__" not in path.parts:
                 actual[str(path.relative_to(self.vendored))] = _sha256(
                     path.read_bytes())
-        missing = sorted(set(PINNED_CROWD_082_SHA256) - set(actual))
-        extra = sorted(set(actual) - set(PINNED_CROWD_082_SHA256))
+        missing = sorted(set(PINNED_CROWD_090_SHA256) - set(actual))
+        extra = sorted(set(actual) - set(PINNED_CROWD_090_SHA256))
         self.assertEqual(missing, [], "missing vendored files")
         self.assertEqual(extra, [], "unexpected vendored files")
-        diff = [name for name, sha in sorted(PINNED_CROWD_082_SHA256.items())
+        diff = [name for name, sha in sorted(PINNED_CROWD_090_SHA256.items())
                 if actual[name] != sha]
         self.assertEqual(diff, [],
                          "files differing from upstream v0.8.2: " + ", ".join(diff))
@@ -291,13 +296,13 @@ class TR2_T02_ChartableShipsInPackageData(unittest.TestCase):
 
 class TR2_T03_VendoredRedactMatchesUpstream090(unittest.TestCase):
     """TR2-T03: the vendored sieve_redact.py is byte-identical to
-    upstream 0.9.0."""
+    upstream 0.10.0 (pin refreshed at the v1.3.0 vendor update)."""
 
     def test_vendored_module_matches_pin(self):
         vendored = REPO_ROOT / "sieve_redact.py"
         self.assertTrue(vendored.is_file(), "vendored sieve_redact.py missing")
         actual = _sha256(vendored.read_bytes())
-        self.assertEqual(actual, REDACT_090_SHA256)
+        self.assertEqual(actual, REDACT_0100_SHA256)
 
 
 class TR2_T04_GoldenMoldLensScopeReport(unittest.TestCase):
@@ -386,7 +391,7 @@ class TR2_T06_Crowd082ItemsTrayReads(unittest.TestCase):
         "zip": {"role": "qi", "type": "prefix", "length": 3},
     }}
 
-    def test_vendored_crowd_is_082(self):
+    def test_vendored_crowd_is_090(self):
         import sieve_crowd
         self.assertEqual(sieve_crowd.__version__, CROWD_UPSTREAM_VERSION)
 
@@ -637,20 +642,20 @@ class TR2_T11_DependencyFloors(unittest.TestCase):
         self.assertIn("sieve-referee>=1.3.0", deps)
 
 
-class TR2_T12_Version120(unittest.TestCase):
-    """TR2-T12: version 1.2.0 across __version__, pyproject and the
-    CHANGELOG."""
+class TR2_T12_Version130(unittest.TestCase):
+    """TR2-T12: version 1.3.0 across __version__, pyproject and the
+    CHANGELOG (pin refreshed at the v1.3.0 vendor update)."""
 
-    def test_version_is_1_2_0(self):
-        self.assertEqual(sieve_tray.__version__, "1.2.0")
+    def test_version_is_1_3_0(self):
+        self.assertEqual(sieve_tray.__version__, "1.3.0")
 
     def test_pyproject_reads_version_from_module(self):
         text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn('attr = "sieve_tray.__version__"', text)
 
-    def test_changelog_has_120_section(self):
+    def test_changelog_has_130_section(self):
         text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertIn("## [1.2.0]", text)
+        self.assertIn("## [1.3.0]", text)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import secrets
+import stat
 import sys
 import tempfile
 from typing import Mapping, Optional, Sequence
@@ -14,9 +15,10 @@ from . import __version__
 from .config import parse_config, parse_key
 from .engine import anonymize, inspect_table, plan_table
 from .hints import hint
-from .model import ConfigError, InputError
+from .model import ConfigError, InputError, InputRefused
 from .report import Report
-from .tableio import FORMATS, detect_format, read_any, write_any
+from .tableio import FORMATS, IN_FORMATS, detect_format, write_any
+from .tabular import ENCODINGS, read_input
 
 EXIT_OK, EXIT_IO, EXIT_CONFIG, EXIT_REFUSED = 0, 1, 2, 3
 
@@ -44,11 +46,15 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"sieve-crowd {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    i = sub.add_parser("inspect", help="describe the columns of a table (csv, json or xml) and write a config template")
+    i = sub.add_parser("inspect", help="describe the columns of a table (csv, json, xml or xlsx) and write a config template")
     i.add_argument("input")
     i.add_argument("--delimiter", help="CSV only")
-    i.add_argument("--in-format", choices=FORMATS,
+    i.add_argument("--in-format", choices=IN_FORMATS,
                    help="force the input format (default: from the file extension)")
+    i.add_argument("--encoding", choices=ENCODINGS,
+                   help="CSV only: the input character code (default: auto)")
+    i.add_argument("--sheet", metavar="NAME|INDEX",
+                   help="xlsx only: the sheet to read (default: the first visible sheet)")
     i.add_argument("--lang", choices=["en", "ja"], default="en")
     i.add_argument("--config-out", metavar="FILE", help="write a template with role '?' for every column")
     i.add_argument("--force", action="store_true")
@@ -63,14 +69,18 @@ def _parser() -> argparse.ArgumentParser:
     k.add_argument("-o", "--output", required=True)
     k.add_argument("--force", action="store_true")
 
-    r = sub.add_parser("run", help="anonymize a table (csv, json or xml)")
+    r = sub.add_parser("run", help="anonymize a table (csv, json, xml or xlsx)")
     r.add_argument("input")
     r.add_argument("-c", "--config", required=True)
     r.add_argument("-o", "--output")
     r.add_argument("--dry-run", action="store_true", help="measure only; write no table")
     r.add_argument("--delimiter", help="CSV only")
-    r.add_argument("--in-format", choices=FORMATS,
+    r.add_argument("--in-format", choices=IN_FORMATS,
                    help="force the input format (default: from the file extension)")
+    r.add_argument("--encoding", choices=ENCODINGS,
+                   help="CSV only: the input character code (default: auto)")
+    r.add_argument("--sheet", metavar="NAME|INDEX",
+                   help="xlsx only: the sheet to read (default: the first visible sheet)")
     r.add_argument("--out-format", choices=FORMATS,
                    help="force the output format (default: from the output extension)")
     r.add_argument("--key-file")
@@ -94,8 +104,12 @@ def _parser() -> argparse.ArgumentParser:
     pl.add_argument("input")
     pl.add_argument("-c", "--config", required=True)
     pl.add_argument("--delimiter", help="CSV only")
-    pl.add_argument("--in-format", choices=FORMATS,
+    pl.add_argument("--in-format", choices=IN_FORMATS,
                     help="force the input format (default: from the file extension)")
+    pl.add_argument("--encoding", choices=ENCODINGS,
+                    help="CSV only: the input character code (default: auto)")
+    pl.add_argument("--sheet", metavar="NAME|INDEX",
+                    help="xlsx only: the sheet to read (default: the first visible sheet)")
     pl.add_argument("--lang", choices=["en", "ja"], default="en")
     pl.add_argument("--k", type=int)
     pl.add_argument("--l", type=int)
@@ -127,8 +141,12 @@ def _parser() -> argparse.ArgumentParser:
                          "are observed on it. A configured column with a role other than "
                          "qi/sensitive is required")
     au.add_argument("--delimiter", help="CSV only")
-    au.add_argument("--in-format", choices=FORMATS,
+    au.add_argument("--in-format", choices=IN_FORMATS,
                     help="force the input format (default: from the file extension)")
+    au.add_argument("--encoding", choices=ENCODINGS,
+                    help="CSV only: the input character code (default: auto)")
+    au.add_argument("--sheet", metavar="NAME|INDEX",
+                    help="xlsx only: the sheet to read (default: the first visible sheet)")
     au.add_argument("--lang", choices=["en", "ja"], default="en")
     au.add_argument("--max-rows", type=int, default=200_000)
     au.add_argument("--max-evals", type=int, default=20_000)
@@ -143,6 +161,13 @@ def _parser() -> argparse.ArgumentParser:
     sc.add_argument("-c", "--config",
                     help="use the declared roles as they are (scan = plan + audit); "
                          "without it the roles are provisional, from the hint packs")
+    sc.add_argument("--delimiter", help="CSV only")
+    sc.add_argument("--in-format", choices=IN_FORMATS,
+                    help="force the input format (default: from the file extension)")
+    sc.add_argument("--encoding", choices=ENCODINGS,
+                    help="CSV only: the input character code (default: auto)")
+    sc.add_argument("--sheet", metavar="NAME|INDEX",
+                    help="xlsx only: the sheet to read (default: the first visible sheet)")
     sc.add_argument("--hint-pack", metavar="FILE", action="append",
                     help="load a hint pack (may be given more than once)")
     sc.add_argument("--no-builtin-hints", action="store_true",
@@ -189,6 +214,44 @@ def _delimiter(given: Optional[str], sides: set[str]) -> Optional[str]:
     return given
 
 
+def _input_options(a: argparse.Namespace, fmt: str):
+    """Guard --encoding (csv) and --sheet (xlsx), like --delimiter above."""
+    encoding = getattr(a, "encoding", None)
+    sheet = getattr(a, "sheet", None)
+    if encoding is not None and fmt != "csv":
+        raise InputError("--encoding applies to csv only (the table is json/xml/xlsx)")
+    if sheet is not None and fmt != "xlsx":
+        raise InputError("--sheet applies to xlsx only (the table is csv/json/xml)")
+    return encoding, sheet
+
+
+def _pre_refuse(a: argparse.Namespace, fmt: str) -> None:
+    """Refuse a non-regular xlsx input before opening it (v0.9.0).
+
+    os.stat never opens the path, so a FIFO or device is refused without
+    waiting for bytes that may never come; other formats keep the v0.8.2
+    behaviour (a fifo csv can be streamed into).  OSError propagates to
+    the caller's handler; InputRefused exits 1 with the code only.
+    """
+    if fmt != "xlsx" or a.input == "-":
+        return
+    st = os.stat(a.input)
+    if not stat.S_ISREG(st.st_mode):
+        raise InputRefused("not_regular_file")
+
+
+def _read_table(a: argparse.Namespace, data: bytes, fmt: str,
+                delim: Optional[str]):
+    """Read through the input layer and print its stderr notices (v0.9.0)."""
+    encoding, sheet = _input_options(a, fmt)
+    header, rows, notices = read_input(
+        data, fmt, delimiter=delim, encoding=encoding, sheet=sheet,
+        path=None if a.input == "-" else a.input)
+    for line in notices:
+        print(line, file=sys.stderr)
+    return header, rows
+
+
 def _packs_line(pack_info: Sequence[Mapping], en: bool) -> str:
     """D (v0.5.1): one leading line naming the loaded packs (recommended)."""
     parts = []
@@ -205,11 +268,20 @@ def _cmd_inspect(a: argparse.Namespace) -> int:
     try:
         in_fmt = _resolve_format(a.input, a.in_format, dash_default="csv")
         delim = _delimiter(a.delimiter, {in_fmt})
-        header, rows = read_any(_read(a.input), in_fmt, delim)
+        _pre_refuse(a, in_fmt)
+        data = _read(a.input)
+    except InputRefused as exc:
+        print(f"error: {exc}", file=sys.stderr); return EXIT_IO
     except InputError as exc:
         print(f"error: {exc}", file=sys.stderr); return EXIT_CONFIG
     except OSError as exc:
         print(f"error: cannot read the input ({exc.strerror})", file=sys.stderr); return EXIT_IO
+    try:
+        header, rows = _read_table(a, data, in_fmt, delim)
+    except InputRefused as exc:
+        print(f"error: {exc}", file=sys.stderr); return EXIT_IO
+    except InputError as exc:
+        print(f"error: {exc}", file=sys.stderr); return EXIT_CONFIG
     packs = _hint_packs(a)
     if isinstance(packs, int):
         return packs
@@ -346,7 +418,13 @@ def _cmd_run(a: argparse.Namespace) -> int:
     try:
         in_fmt = _resolve_format(a.input, a.in_format, dash_default="csv")
         out_fmt = _resolve_format(a.output, a.out_format, dash_default="csv") if a.output else None
+        if out_fmt is not None and out_fmt not in FORMATS:
+            raise InputError("--out-format must be csv, json or xml "
+                             "(xlsx output is not supported)")
         delim = _delimiter(a.delimiter, {in_fmt} | (set() if out_fmt is None else {out_fmt}))
+        _pre_refuse(a, in_fmt)
+    except InputRefused as exc:
+        print(f"error: {exc}", file=sys.stderr); return EXIT_IO
     except InputError as exc:
         print(f"error: {exc}", file=sys.stderr); return EXIT_CONFIG
     try:
@@ -358,11 +436,15 @@ def _cmd_run(a: argparse.Namespace) -> int:
     except OSError as exc:
         print(f"error: cannot read the configuration or key ({exc.strerror})", file=sys.stderr); return EXIT_IO
     try:
-        header, rows = read_any(_read(a.input), in_fmt, delim)
-    except InputError as exc:
-        print(f"error: {exc}", file=sys.stderr); return EXIT_CONFIG
+        data = _read(a.input)
     except OSError as exc:
         print(f"error: cannot read the input ({exc.strerror})", file=sys.stderr); return EXIT_IO
+    try:
+        header, rows = _read_table(a, data, in_fmt, delim)
+    except InputRefused as exc:
+        print(f"error: {exc}", file=sys.stderr); return EXIT_IO
+    except InputError as exc:
+        print(f"error: {exc}", file=sys.stderr); return EXIT_CONFIG
     try:
         result = anonymize(header, rows, cfg, io=(in_fmt, out_fmt))
     except ConfigError as exc:
@@ -389,6 +471,9 @@ def _cmd_plan(a: argparse.Namespace) -> int:
     try:
         in_fmt = _resolve_format(a.input, a.in_format, dash_default="csv")
         delim = _delimiter(a.delimiter, {in_fmt})
+        _pre_refuse(a, in_fmt)
+    except InputRefused as exc:
+        print(f"error: {exc}", file=sys.stderr); return EXIT_IO
     except InputError as exc:
         print(f"error: {exc}", file=sys.stderr); return EXIT_CONFIG
     try:
@@ -400,11 +485,15 @@ def _cmd_plan(a: argparse.Namespace) -> int:
     except OSError as exc:
         print(f"error: cannot read the configuration or key ({exc.strerror})", file=sys.stderr); return EXIT_IO
     try:
-        header, rows = read_any(_read(a.input), in_fmt, delim)
-    except InputError as exc:
-        print(f"error: {exc}", file=sys.stderr); return EXIT_CONFIG
+        data = _read(a.input)
     except OSError as exc:
         print(f"error: cannot read the input ({exc.strerror})", file=sys.stderr); return EXIT_IO
+    try:
+        header, rows = _read_table(a, data, in_fmt, delim)
+    except InputRefused as exc:
+        print(f"error: {exc}", file=sys.stderr); return EXIT_IO
+    except InputError as exc:
+        print(f"error: {exc}", file=sys.stderr); return EXIT_CONFIG
     packs = _hint_packs(a)
     if isinstance(packs, int):
         return packs
@@ -461,6 +550,9 @@ def _cmd_audit(a: argparse.Namespace) -> int:
     try:
         in_fmt = _resolve_format(a.input, a.in_format, dash_default="csv")
         delim = _delimiter(a.delimiter, {in_fmt})
+        _pre_refuse(a, in_fmt)
+    except InputRefused as exc:
+        print(f"error: {exc}", file=sys.stderr); return EXIT_IO
     except InputError as exc:
         print(f"error: {exc}", file=sys.stderr); return EXIT_CONFIG
     try:
@@ -472,11 +564,15 @@ def _cmd_audit(a: argparse.Namespace) -> int:
     except OSError as exc:
         print(f"error: cannot read the configuration or key ({exc.strerror})", file=sys.stderr); return EXIT_IO
     try:
-        header, rows = read_any(_read(a.input), in_fmt, delim)
-    except InputError as exc:
-        print(f"error: {exc}", file=sys.stderr); return EXIT_CONFIG
+        data = _read(a.input)
     except OSError as exc:
         print(f"error: cannot read the input ({exc.strerror})", file=sys.stderr); return EXIT_IO
+    try:
+        header, rows = _read_table(a, data, in_fmt, delim)
+    except InputRefused as exc:
+        print(f"error: {exc}", file=sys.stderr); return EXIT_IO
+    except InputError as exc:
+        print(f"error: {exc}", file=sys.stderr); return EXIT_CONFIG
     # v0.7.0: audit is imported here only - run/plan/inspect never pull it in.
     from .audit import audit_table, report_text, validate_subject
     try:
@@ -522,6 +618,9 @@ def _cmd_scan(a: argparse.Namespace) -> int:
             return EXIT_CONFIG                    # nothing is written
     try:
         in_fmt = _resolve_format(a.input, None, dash_default="csv")
+        _pre_refuse(a, in_fmt)
+    except InputRefused as exc:
+        print(f"error: {exc}", file=sys.stderr); return EXIT_IO
     except InputError as exc:
         print(f"error: {exc}", file=sys.stderr); return EXIT_CONFIG
     try:
@@ -530,7 +629,9 @@ def _cmd_scan(a: argparse.Namespace) -> int:
         print(f"error: cannot read the input ({exc.strerror})", file=sys.stderr)
         return EXIT_IO
     try:
-        header, rows = read_any(data, in_fmt, None)
+        header, rows = _read_table(a, data, in_fmt, None)
+    except InputRefused as exc:
+        print(f"error: {exc}", file=sys.stderr); return EXIT_IO
     except InputError as exc:
         print(f"error: {exc}", file=sys.stderr); return EXIT_CONFIG
     packs = _hint_packs(a)

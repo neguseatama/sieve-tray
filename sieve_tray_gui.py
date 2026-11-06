@@ -63,10 +63,12 @@ from sieve_tray import (
     crowd_dry_run,
     crowd_inspect,
     crowd_parse_config,
+    crowd_read_table,
+    crowd_refusal_message,
 )
 from sieve_crowd import ConfigError, InputError, Role, parse_key
 from sieve_crowd.hints import hint as crowd_hint
-from sieve_crowd.tableio import detect_format, read_any
+from sieve_crowd.tableio import detect_format
 
 
 def resource_path(relative: str) -> Path:
@@ -159,9 +161,16 @@ CROWD_OK_FG = QColor("#1a6b1a")
 
 def crowd_default_output(input_path: Path) -> Path:
     """Default crowd output path: <stem>_anonymized.<ext> next to the
-    input file. The input itself is never the default."""
+    input file. The input itself is never the default.
+
+    v1.3.0: an .xlsx input defaults to a .csv output - the engine
+    writes csv/json/xml only.
+    """
+    ext = input_path.suffix
+    if ext.lower() == ".xlsx":
+        ext = ".csv"
     return input_path.with_name(
-        input_path.stem + "_anonymized" + input_path.suffix)
+        input_path.stem + "_anonymized" + ext)
 
 
 class CrowdWorker(QObject):
@@ -897,6 +906,7 @@ class MainWindow(QMainWindow):
         self._crowd_header = None
         self._crowd_rows = None
         self._crowd_fmt = None
+        self._crowd_notices = []
         self._crowd_inspect_info = None
         self._crowd_last_dry_run = None
         self._crowd_key_path = None
@@ -992,6 +1002,16 @@ class MainWindow(QMainWindow):
         self.crowd_result_label = QLabel("")
         self.crowd_result_label.setWordWrap(True)
         crowd_layout.addWidget(self.crowd_result_label)
+
+        # v1.3.0: Crowd's stderr-equivalent notices (encoding adoption,
+        # sheet selection, missing formula caches) surface here in the
+        # result details - never in the table area or the history.
+        self.crowd_notes_label = QLabel("")
+        self.crowd_notes_label.setWordWrap(True)
+        self.crowd_notes_label.setStyleSheet("color: #666;")
+        self.crowd_notes_label.setVisible(False)
+        crowd_layout.addWidget(self.crowd_notes_label)
+
         crowd_layout.addWidget(QLabel(self._("crowd_result_receipt")))
         self.crowd_receipt_view = QPlainTextEdit()
         self.crowd_receipt_view.setReadOnly(True)
@@ -1745,18 +1765,32 @@ class MainWindow(QMainWindow):
             self.crowd_load_file(Path(path))
 
     def crowd_load_file(self, path: Path):
+        # v1.3.0: the read goes through Crowd 0.9.0's input layer
+        # (read_input): the character code is auto-detected only (BOM
+        # UTF-8 / UTF-8 / CP932 - the series policy), .xlsx reads as a
+        # workbook, and the engine's notices come back separately.
         try:
-            data = path.read_bytes()
-            fmt = detect_format(path.suffix)
-            header, rows = read_any(data, fmt)
+            header, rows, notices = crowd_read_table(path)
         except (OSError, InputError) as exc:
-            QMessageBox.critical(self, self._("error_title"),
-                                 f"{type(exc).__name__}: {exc}")
+            code = getattr(exc, "code", None)
+            if code is not None:
+                # InputRefused: surface the closed-vocabulary code (or
+                # its i18n wording) - never with values.
+                QMessageBox.critical(
+                    self, self._("error_title"),
+                    crowd_refusal_message(code, self.lang))
+            else:
+                QMessageBox.critical(self, self._("error_title"),
+                                     f"{type(exc).__name__}: {exc}")
             return
+        # the format detection now lives inside the engine; the receipt
+        # io pair still needs it, so keep detecting from the extension
+        fmt = detect_format(path.suffix)
         self._crowd_input_path = path
         self._crowd_header = header
         self._crowd_rows = rows
         self._crowd_fmt = fmt
+        self._crowd_notices = list(notices)
         self._crowd_inspect_info = None
         self._crowd_last_dry_run = None
         self.crowd_input_label.setText(str(path))
@@ -1766,11 +1800,22 @@ class MainWindow(QMainWindow):
         self.crowd_result_label.setText("")
         self.crowd_result_label.setStyleSheet("")
         self.crowd_receipt_view.setPlainText("")
+        self._crowd_show_notices(notices)
         self.crowd_inspect_btn.setEnabled(True)
         self.crowd_dry_run_btn.setEnabled(True)
         self.crowd_run_btn.setEnabled(True)
         self.crowd_run_inspect()
         self.crowd_config_edit.setPlainText(self._crowd_config_template())
+
+    def _crowd_show_notices(self, notices):
+        """v1.3.0: show the engine notices in the result details (and
+        nowhere else). Empty notices hide the label entirely."""
+        if notices:
+            self.crowd_notes_label.setText("\n".join(notices))
+            self.crowd_notes_label.setVisible(True)
+        else:
+            self.crowd_notes_label.setText("")
+            self.crowd_notes_label.setVisible(False)
 
     def crowd_run_inspect(self):
         if self._crowd_header is None or self._crowd_rows is None:

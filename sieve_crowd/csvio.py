@@ -6,12 +6,13 @@ import io
 from .model import InputError
 
 
-def read_table(data: bytes, delimiter: str = ",") -> tuple[list[str], list[list[str]]]:
-    """UTF-8 (BOM allowed) CSV with a header row."""
-    try:
-        text = data.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise InputError("the input is not valid UTF-8") from None
+def read_table_text(text: str, delimiter: str = ",") -> tuple[list[str], list[list[str]]]:
+    """Decoded CSV text with a header row (the syntax layer; v0.9.0).
+
+    The character-code layer lives in :mod:`sieve_crowd.tabular`; this
+    function is the v0.8.2 parsing behaviour unchanged, so the same text
+    yields the very same table, errors and exit codes.
+    """
     try:
         rows = list(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter))
     except csv.Error as exc:
@@ -24,6 +25,19 @@ def read_table(data: bytes, delimiter: str = ",") -> tuple[list[str], list[list[
         if len(r) != len(header):
             raise InputError(f"row {i} has {len(r)} fields, the header has {len(header)}")
     return header, body
+
+
+def read_table(data: bytes, delimiter: str = ",") -> tuple[list[str], list[list[str]]]:
+    """UTF-8 (BOM allowed) CSV with a header row.
+
+    Kept as the strict-UTF-8 byte entry; the CLI reads through
+    :mod:`sieve_crowd.tabular` since v0.9.0.
+    """
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise InputError("the input is not valid UTF-8") from None
+    return read_table_text(text, delimiter)
 
 
 def write_table(header: list[str], rows: list[list[str]], delimiter: str = ",") -> bytes:
