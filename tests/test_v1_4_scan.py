@@ -329,8 +329,15 @@ def test_t07_gui_row_background_follows_the_stage(tmp_path, monkeypatch):
                  evidence={"H1": ["Unsupported format: .xyz"]}),
         ])
         win._populate_result_tables(result)
-        remedy_item = win.doc_table.item(0, 2)
-        env_item = win.doc_table.item(1, 2)
+        # measured on a real Qt (v1.4.0 fix1): the population re-enables
+        # sorting, so the table re-sorts by the header's default indicator
+        # (column 0, descending) - rows are located by path, never by
+        # position
+        rows = {}
+        for row in range(win.doc_table.rowCount()):
+            rows[win.doc_table.item(row, 0).text()] = row
+        remedy_item = win.doc_table.item(rows["g/b.pdf"], 2)
+        env_item = win.doc_table.item(rows["g/c.xyz"], 2)
         assert remedy_item.background().color().name() == "#fff4d6"
         assert env_item.background().color().name() == "#f0f0f0"
         # the reason text stays in the row - the color is never the only
@@ -400,6 +407,10 @@ def test_t11_input_notes_shape_en_ja(tmp_path):
         cp_csv = tmp_path / "cp.csv"
         cp_csv.write_bytes("名前,年齢\n佐藤,34\n".encode("cp932"))
         win.crowd_load_file(cp_csv)
+        # measured on a real Qt (v1.4.0 fix1): QTabWidget hides the
+        # non-current pages, so the visibility of the notes only means
+        # something once the Crowd tab is the current one
+        win.tabs.setCurrentIndex(win._crowd_tab_index)
         heading = win.crowd_notes_heading
         notes = win.crowd_notes_label
         assert heading.isVisibleTo(win) and notes.isVisibleTo(win)
@@ -606,7 +617,9 @@ def test_gui_scan_open_flow_saves_and_cleans(tmp_path, monkeypatch):
         assert temp_path.read_bytes() == _cli_scan_bytes(csv, lang=win.lang)
         assert win.crowd_scan_save_btn.isEnabled()
 
-        target = tmp_path / "out" / "scan.html"
+        # a real save dialog can only return a path in an existing
+        # folder, so the target sits directly in tmp_path (v1.4.0 fix1)
+        target = tmp_path / "scan.html"
         monkeypatch.setattr(QFileDialog, "getSaveFileName",
                             staticmethod(
                                 lambda *a, **k: (str(target), "")))
