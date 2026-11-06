@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.4.0] - 2026-11-06
+
+### Added
+- **Table observation (`scan`) in the Crowd tab**: pick one CSV (UTF-8 or
+  CP932) or `.xlsx` file and Crowd 0.9.0's one-page HTML report of how the
+  table currently looks — roles, groups, hidden-character findings; no cell
+  values — opens in the system browser. The HTML is Crowd's output byte for
+  byte (Tray never post-processes it); it is written to a user-only temp
+  file (mode 0600), never enters the history, is swept at the next start
+  and removed at exit, and a "Save scan HTML as..." action writes the very
+  same bytes to a chosen path. Refused inputs surface through the existing
+  closed-vocabulary code wording — no values, no traceback.
+- **First-launch guidance and distribution verification**: each release
+  now publishes a `SHA256SUMS.txt` list of the three assets next to the
+  binaries, and the release workflow attaches a build-provenance
+  attestation (`actions/attest@v4`; free for public repositories). The
+  README (en/ja) gains a short "First launch" section — macOS "Open
+  Anyway", Windows "More info → Run anyway" — plus the SHA-256 check.
+
+### Changed
+- **Three-stage coloring of unobserved rows (design §3.2)**: the closed
+  8-reason vocabulary is grouped into remedy (amber `#fff4d6`; refused,
+  parse_failed, unreadable, too_large, symlink_skipped), environment (the
+  v1.3.0 gray `#f0f0f0`; engine_unavailable) and excluded (faint gray
+  `#f8f8f8`; not_applicable, empty_input). The row background follows the
+  stage in the GUI and the HTML report; the reason text stays in the row;
+  the aggregate line shows only when something is unobserved; the
+  zero-unobserved reports (HTML and Markdown) stay byte-identical to
+  v1.3.0.
+- **Input notes shape (design §3.3)**: Crowd's per-input observations move
+  to the top of the result details as a short bulleted list under the
+  "About the input" heading, without color or icon; they stay hidden when
+  there is nothing to note.
+
 ## [1.3.0] - 2026-11-06
 
 ### Added

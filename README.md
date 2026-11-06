@@ -1,6 +1,6 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v1.3.0
+# Sieve Tray v1.4.0
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
@@ -12,7 +12,11 @@
 > [Sieve Redact](https://github.com/neguseatama/sieve-redact), the masking
 > engine behind the text/image Sanitize actions, and — new in v0.10.0 —
 > [Sieve Crowd](https://github.com/neguseatama/sieve-crowd), the table
-> anonymization engine behind the Anonymize tab. Point it at a folder of
+> anonymization engine behind the Anonymize tab. New in v1.4.0, the
+> Anonymize tab also gains a one-click **table observation (`scan`)**:
+> Crowd's single-page HTML report of how the table currently looks —
+> roles, groups and hidden-character findings, never cell values —
+> opened straight in your browser. Point it at a folder of
 > submissions and it detects and reports, in one pass, documents containing
 > invisible content or hidden prompts, code pairs with suspicious structural
 > similarity, text pairs that look paraphrased or reused, and sentences that
@@ -89,6 +93,12 @@ Redact removes it with a receipt that proves nothing else changed.
   automatically, by extension.
 - **Background-threaded GUI** — scanning never freezes the window, even on
   large submission sets.
+- **Table observation (`scan`) & three-stage unobserved colors** — pick one
+  CSV/Excel file and read Crowd's one-page HTML view of the current table in
+  your browser; rows Tray could not observe are grouped into three readable
+  stages in the app and the HTML report (amber = fixable on the file side,
+  gray = engine-side gap, faint gray = out of scope by design), with the
+  reason text always shown alongside the color.
 - **English and Japanese UI** — switch languages from the Settings dialog
   (English by default). Note: Sieve Referee's own explanation text for a
   flagged text pair is generated in Japanese regardless of UI language,
@@ -284,6 +294,21 @@ print(result.audit_results) # v0.8.0: file / sentence_sha256 / sentence_text /
 
 Path("report.html").write_text(render(result))
 ```
+
+---
+
+## 🚀 First launch
+
+Download the zip for your platform from the
+[Releases](https://github.com/neguseatama/sieve-tray/releases) page, unzip
+it, and run `SieveTray`. macOS shows its Gatekeeper note once — open
+**System Settings → Privacy & Security** and click **Open Anyway**;
+Windows shows its SmartScreen note once — click **More info** →
+**Run anyway**; after that the app starts normally. Each release also
+publishes a `SHA256SUMS.txt` list next to the assets, so you can verify
+the download before the first start — `shasum -a 256 SieveTray-macos-arm64.zip`
+(macOS/Linux) or `certutil -hashfile SieveTray-windows.zip SHA256`
+(Windows) — and compare it with the list.
 
 ---
 
