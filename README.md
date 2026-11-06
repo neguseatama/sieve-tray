@@ -1,6 +1,6 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v1.0.0
+# Sieve Tray v1.3.0
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
@@ -146,6 +146,16 @@ Redact removes it with a receipt that proves nothing else changed.
   `.txt`/`.md`, and files that don't match are reported as excluded
   (never as failures). A config mixing both kinds is rejected up front
   with nothing processed. Every output gets a machine-readable receipt.
+- **Safer images, wider phone coverage (new in v1.3.0)** — the bundled
+  Sieve Redact is 0.10.0: images beyond the engine's pixel limit are
+  refused up front with a readable message instead of being processed,
+  and phone numbers written with a full-width or half-width katakana
+  long-vowel mark (`090ー1234ー5678` / `090ｰ1234ｰ5678`) are observed and
+  masked exactly like their hyphenated twin.
+- **Engine skips surface as unobserved (new in v1.3.0)** — when an
+  engine reports that it could not observe a file, Tray lists it under
+  "unobserved" with the engine's own reason, so a gap in the analysis
+  is never presented as a clean result.
 - **Anonymize tables (new in v0.10.0)** — the **Anonymize** tab sends a
   table file (`.csv`/`.json`/`.xml`) to the bundled Sieve Crowd engine:
   inspect columns (distinct counts, unique ratios, suggested roles), dry-run
@@ -158,6 +168,13 @@ Redact removes it with a receipt that proves nothing else changed.
   local history database and included in exported reports. The tab also
   keeps an 8-column run history view (latest 20 runs, refreshed at
   startup and after each run; new in v1.0.0).
+- **CP932 and Excel input (new in v1.3.0)** — the Anonymize tab reads
+  CP932 (Windows-31J) CSVs and Excel `.xlsx` workbooks through the same
+  engine, with the character code auto-detected (a UTF-8 BOM, then
+  strict UTF-8, then strict CP932; anything else is refused). The
+  engine's notices — encoding adoption, sheet selection, missing formula
+  caches — surface in the result details, never in the table area or
+  the history.
 - **Sanitize history tab** — every sanitize run (folder and single
   image) is listed in its own tab with timestamp, folder, config,
   output location, files and ok count, masked items, and integrity

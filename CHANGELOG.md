@@ -1,5 +1,54 @@
 # Changelog
 
+## [1.3.0] - 2026-11-06
+
+### Added
+- **Crowd 0.9.0 vendored (engine update)**: the Anonymize tab now reads
+  CP932 (Windows-31J) CSVs and Excel `.xlsx` workbooks through the same
+  engine (`sieve_crowd.tabular.read_input`). The character code is
+  auto-detected only — a UTF-8 BOM, then strict UTF-8, then strict
+  CP932; anything else is refused — with no encoding UI (design doc
+  §3.2). Crowd's stderr-equivalent notices (encoding adoption, sheet
+  selection, missing formula caches) surface in the result details of
+  the tab and nowhere else: they never enter the table area or the
+  history payload (the allowlist is unchanged; 0.9.0 added no output
+  items — report.py and inspect.py are byte-identical to 0.8.2).
+- **Redact 0.10.0 vendored (engine update)**: the sanitize screens get
+  the pixel-limit refusal (images beyond 64,000,000 pixels are refused
+  up front with a readable message through the existing error path —
+  no traceback) and the wider phone observation (`090ー1234ー5678` /
+  `090ｰ1234ｰ5678` — full-width and half-width katakana long-vowel
+  marks — are observed and masked like the hyphenated twin). The
+  existing text anonymization output is byte-identical (golden mold).
+- **Engine "could not observe" folds into unobserved (design doc
+  §3.4)**: Scope's `skipped` entries (1.3.1+) land in the unobserved
+  list with the engine's own closed vocabulary; `scores: null` pairs
+  (H1=0) are handled safely; an out-of-vocabulary reason falls to
+  `parse_failed` with the original string kept out of the results;
+  Tray's own pre-classification and an engine skip pointing at the
+  same path count once (the engine's reason wins). Engines without
+  the keys (scope 1.3.0, referee 1.5.x) behave exactly as v1.2.0.
+- **Series character-code policy in Tray's own reads (design doc
+  §3.5)**: `_read_limited` (the 8 MiB-limited read feeding Scope and
+  Referee) now decodes strictly — UTF-8 BOM, strict UTF-8, strict
+  CP932 — and anything else is recorded as unobserved `refused`
+  (detail `unsupported_encoding`). `errors="replace"` is gone
+  (v1.0.0 read with replace; the 8 MiB limit arrived in v1.1.0, the
+  strict policy only now — measured on the tags), so a CP932 file
+  now yields the same result as its UTF-8 twin and no replacement
+  character can leak into a result. UTF-16/UTF-32 BOMs refuse
+  outright.
+
+### Changed
+- **README alignment**: `README.md` (English) now follows
+  `README.ja.md` again — same heading structure, same version; the
+  limitations section is unchanged (not extended).
+- **Referee `skipped` note (measured)**: referee 1.5.1's `skipped`
+  payload lives in its CLI/dashboard layer; the `batch_evaluate`
+  library API Tray calls returns no such key, so Tray's text lane
+  keeps the v1.2.0 behavior (the key-less branch design doc §3.4
+  allows). Folding it in awaits an upstream library key.
+
 ## [1.2.0] - 2026-11-05
 
 ### Added
