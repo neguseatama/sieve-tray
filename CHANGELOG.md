@@ -1,5 +1,53 @@
 # Changelog
 
+## [2.0.0] - 2026-11-08
+
+### Added
+- **Gate (the M1 quarantine lane)**: pick a folder and one pass keeps only
+  the visible text of the documents, replaces personal data with Redact's
+  label mode (sequential per-occurrence labels), observes the hidden text
+  for AI-instruction vocabulary (Lens x Order coupling - only the not-
+  visible segments, first 10,000 chars each, up to 500 segments per
+  document, truncations and skips recorded), and splits the output into
+  `handoff/` (what gets passed on) and `local/` (the operator report and
+  the engine receipts with content_sha256).  The normalized receipt
+  (`handoff/gate-receipt.json`, written last) carries counts, hashes and
+  closed-vocabulary codes - never bodies, hidden text or the replaced
+  values.  CLI `gate` / `verify` shapes (the legacy
+  `<input folder> -o report.html` shape is unchanged) and a GUI "Gate"
+  tab (en/ja).
+- **HTML observation lane** (§3.2 as amended 2026-11-08): Lens core does
+  not detect `<style>`-rule hiding, so Gate uses the extras lane
+  (html_css_selectors) with a charset pre-check done by Gate itself
+  (BOM UTF-8 -> strict UTF-8 -> strict CP932 -> refused; CP932 HTML is
+  observed through a user-only UTF-8 temp copy removed afterwards).
+  Measured (0.22.0): the extras lane reports a rule match as a css_hidden
+  segment while its body emitter still marks the matched body visible, so
+  Gate fails closed - such an HTML is `not_produced` (`engine_refused`)
+  and its visible text is never written to `handoff/`.  Without the
+  extras lane the HTML is `not_produced` (`engine_unavailable`).
+- **Verification**: `verify` re-checks a receipt at three scopes
+  (outputs_only / inputs_and_outputs / replay); overall is match /
+  differs / not_verifiable with CLI exit codes 0 / 1 / 2 and closed
+  reason vocabularies (7 item reasons, 5 not-verifiable reasons).
+- **Sample pack**: `samples/gate/` (13 harmless samples across the 10
+  §3.5 categories) with `MANIFEST.json` (SHA-256 + expected
+  observations, never a digest); deterministic regeneration via
+  `tools/make_gate_samples.py`; a self-check (GUI button and
+  `gate --self-check`) compares the expected observations.
+- **History**: a dedicated `gate_runs` table (allowlisted counts,
+  receipt digest, engine versions; no paths, no bodies), added with
+  `CREATE TABLE IF NOT EXISTS`; the existing tables stay untouched.
+
+### Changed
+- Vendored Redact 0.11.0 (the certified M1 implementation) and vendored
+  sieve-order v1.1.0 (both byte-identical to upstream); `sieve-lens`
+  floor raised to the published 0.22.0.  The receipt reports the
+  redaction counts as `redact.by_mode` (the earlier draft's
+  `redact.aliases` was renamed: 0.11.0 labels occurrences sequentially
+  and shares one counter with `label`, so mode counts are the accurate
+  vocabulary).
+
 ## [1.4.0] - 2026-11-06
 
 ### Added

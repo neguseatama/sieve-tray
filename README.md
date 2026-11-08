@@ -63,6 +63,26 @@ Sanitize actions put Sieve Redact behind the text and image editors.
 
 ---
 
+## 🚪 Gate
+
+Gate is the M1 quarantine lane: pick a folder, and in a single run it keeps
+only the visible text of your documents, replaces personal data with
+sequential labels, observes the hidden text for AI-instruction
+vocabulary, and splits the output into `handoff/` (what you hand over)
+and `local/` (what stays here) with a verifiable receipt.
+
+1. CLI: `python3 sieve_tray.py gate <input folder> -o <output folder>`
+2. Hand over the `handoff/` folder; keep `local/` for yourself.
+3. Re-check later: `python3 sieve_tray.py verify <handoff>/gate-receipt.json`
+
+The receipt (`handoff/gate-receipt.json`) records counts, hashes and the
+closed-vocabulary codes of the run - never document bodies, hidden text
+or the replaced values. `verify` re-checks the outputs against it.
+The anonymization uses Redact's label mode: each occurrence gets the
+next sequential label (`[REDACTED]1`, `[REDACTED]2`, ...).
+
+---
+
 ## 🧩 The Sieve Series
 
 Sieve is a family of deterministic, zero-dependency engines that share
