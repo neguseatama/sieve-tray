@@ -2816,8 +2816,8 @@ def _gate_main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(prog="sieve-tray")
     sub = parser.add_subparsers(dest="cmd", required=True)
     g = sub.add_parser("gate", help="run the Gate over a folder")
-    g.add_argument("input_dir", type=Path)
-    g.add_argument("-o", "--output", type=Path, required=True)
+    g.add_argument("input_dir", type=Path, nargs="?", default=None)
+    g.add_argument("-o", "--output", type=Path, default=None)
     g.add_argument("--redact-builtin", action="append", default=None,
                    metavar="NAME")
     g.add_argument("--redact-config", type=Path, default=None)
@@ -2836,9 +2836,12 @@ def _gate_main(argv: List[str]) -> int:
 
     if args.cmd == "gate":
         if args.self_check:
-            print(json.dumps(gate_self_check(progress=print),
-                             ensure_ascii=False, indent=1))
-            return 0
+            result = gate_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            return 0 if "error" not in result else 2
+        if args.input_dir is None or args.output is None:
+            parser.error("gate needs an input folder and -o/--output "
+                         "(or --self-check)")
         receipt = run_gate(
             args.input_dir, args.output, progress=print,
             redact_builtins=(tuple(args.redact_builtin)
