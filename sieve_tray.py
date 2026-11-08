@@ -33,10 +33,12 @@ Any directory structure works. Files are routed by extension:
 import argparse
 import ast
 import builtins
+import hashlib
 import html
 import json
 import os
 import sys
+import tempfile
 import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,7 +48,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "1.4.0"
+__version__ = "2.0.0"
 
 
 CODE_EXTS = {".py"}
@@ -1717,6 +1719,1147 @@ def render_text(result: ScanResult) -> str:
     return "\n".join(lines)
 
 
+# ===========================================================================
+# v2.0.0 (M1 Gate): the pre-handoff quarantine, anonymization and receipt
+# lane (request doc §3.1-§3.6, rev. 2026-11-08, plus the 2026-11-08
+# design-chat ruling).
+#
+# Gate walks a folder and, per item: decides the lane -> observes ->
+# treats -> writes.  Documents yield only their visible text (strip of
+# the five invisible kinds), personal data is replaced with sequential
+# labels (Redact, mode label), the hidden text is observed by Order,
+# and the output is split into handoff/ (what gets passed on) and
+# local/ (what stays here).  The normalized receipt is written last.
+#
+# Closed vocabularies (extending any of them stops the implementation):
+#   - not_produced reasons (6): needs_settings / unobserved /
+#     not_applicable / engine_unavailable / engine_refused / write_failed
+#   - verification item reasons (7) and not_verifiable reasons (5),
+#     in verify_gate below.
+#
+# HTML lane (§3.2 as amended, measured in worklog §85): core Lens does
+# NOT detect <style>-rule hiding, so Gate uses the extras lane
+# (sieve_lens_ext.html_css_selectors) with a charset pre-check done
+# here first.  The extras lane reports a rule match as a css_hidden
+# segment whose location carries "selector:" while its body emitter
+# still marks the matched body visible - so Gate fails closed: any
+# rule-originated css_hidden segment makes the item not_produced
+# (engine_refused) and its visible text is never written to handoff/.
+# Without the extras lane the HTML is not_produced (engine_unavailable).
+# ===========================================================================
+
+GATE_RECEIPT_VERSION = 1
+GATE_KIND = "sieve-gate"
+# The repository root (sieve_tray.py sits at the root): used for the
+# vendored-module hashes and the bundled sample pack.
+REPO_ROOT = Path(__file__).resolve().parent
+GATE_OUTPUT_SUFFIX = ".visible.txt"
+GATE_ORDER_MAX_CHARS = 10000
+GATE_ORDER_MAX_SEGMENTS = 500
+GATE_DEFAULT_BUILTINS = ("email", "phone-jp", "postal-jp")
+GATE_REDACT_MODE = "label"
+GATE_ORDER_VERSION = "1.1.0"
+GATE_HTML_RULE_MARKER = "selector:"
+
+# The five default strip kinds (request §3.2/§3.7-1), in receipt order.
+GATE_STRIP_KINDS = ("zero_width_space", "word_joiner", "bom_mid_text",
+                    "bidi_control", "tag_chars")
+
+NOT_PRODUCED_REASONS = frozenset({
+    "needs_settings", "unobserved", "not_applicable",
+    "engine_unavailable", "engine_refused", "write_failed"})
+
+# Fixed stage per reason; "unobserved" resolves through the item's own
+# unobserved_reason via the existing 8-reason stages (§3.2: no new colors).
+NOT_PRODUCED_STAGE = {
+    "needs_settings": "remedy",
+    "not_applicable": "excluded",
+    "engine_unavailable": "environment",
+    "engine_refused": "remedy",
+    "write_failed": "remedy",
+}
+
+# Gate lane suffixes (request §3.2).  .pdf rides the document lane only
+# when the Lens extras carry it; without extras nothing observes it.
+GATE_DOC_EXTS = {".docx", ".html", ".htm", ".md", ".txt", ".pdf"}
+GATE_TABLE_EXTS = {".csv", ".xlsx"}
+GATE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp",
+                   ".tif", ".tiff", ".webp"}
+
+
+def not_produced_stage(reason: str, unobserved_reason=None) -> str:
+    """One stage per not_produced reason (request §3.2).
+
+    "unobserved" takes the stage of the item's own unobserved_reason
+    (the existing three-stage mapping of the 8-reason vocabulary).
+    Unknown values raise ValueError - a new reason has to join the
+    closed tables first.
+    """
+    if reason == "unobserved":
+        if unobserved_reason is None:
+            raise ValueError("unobserved needs unobserved_reason")
+        return unobserved_stage(unobserved_reason)
+    if reason in NOT_PRODUCED_STAGE:
+        return NOT_PRODUCED_STAGE[reason]
+    raise ValueError("unknown not_produced reason: %r" % (reason,))
+
+
+def _gate_hidden():
+    return {"count": 0, "order_observed": 0, "order_axes": {},
+            "truncated": 0, "skipped": 0}
+
+
+def _gate_removed_zero():
+    return {k: 0 for k in GATE_STRIP_KINDS}
+
+
+def _gate_norm_json(obj) -> str:
+    """The normalized JSON of one receipt (request §3.4): UTF-8, keys
+    sorted, no spaces, ensure_ascii=False, no floats, one trailing LF."""
+    return json.dumps(obj, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")) + "\n"
+
+
+def _gate_digest(receipt: dict) -> str:
+    """sha256 over the normalized body without the digest key."""
+    body = {k: v for k, v in receipt.items() if k != "digest"}
+    blob = json.dumps(body, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(blob).hexdigest()
+
+
+def _gate_write_atomic(path: Path, data: bytes) -> None:
+    """Write via a temp file, then rename (request §3.1)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / (path.name + ".tmp-gate")
+    tmp.write_bytes(data)
+    os.replace(str(tmp), str(path))
+
+
+def _gate_rel_sort_key(rel: str) -> bytes:
+    return rel.encode("utf-8")
+
+
+def _gate_walk(input_dir: Path):
+    """Relative (POSIX, as the OS returns it) paths of every regular
+    file under input_dir, sorted by their UTF-8 bytes.  Symlinks stay
+    in the list as items (they are never followed); directories and
+    special files do not."""
+    items = []
+    for root, dirs, names in os.walk(input_dir, followlinks=False):
+        dirs.sort()
+        for name in names:
+            p = Path(root) / name
+            rel = p.relative_to(input_dir)
+            items.append(rel.as_posix() if rel.as_posix() != str(rel)
+                         else str(rel).replace(os.sep, "/"))
+    items.sort(key=_gate_rel_sort_key)
+    return items
+
+
+def _gate_charset_check(data: bytes):
+    """The series policy (request §3.2, measured against Crowd 0.9.0):
+    UTF-8 BOM -> strict UTF-8 -> strict CP932; UTF-16/32 BOMs are
+    refused; no errors="replace".  Returns (text, encoding_name) or
+    (None, None) when refused."""
+    if data.startswith(b"\x00\x00\xfe\xff") or \
+            data.startswith(b"\xff\xfe\x00\x00") or \
+            data.startswith(b"\xfe\xff") or data.startswith(b"\xff\xfe"):
+        return None, None
+    try:
+        if data.startswith(b"\xef\xbb\xbf"):
+            return data.decode("utf-8-sig"), "utf-8-sig"
+        return data.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        pass
+    try:
+        return data.decode("cp932"), "cp932"
+    except UnicodeDecodeError:
+        return None, None
+
+
+def _gate_html_lane_ready() -> bool:
+    """The extras lane is usable only when html_css_selectors AND
+    cssselect2 import (worklog §85: without cssselect2 the extractor
+    degrades silently to no rule detection)."""
+    try:
+        import sieve_lens_ext.html_css_selectors as _sel  # noqa: F401
+    except ImportError:
+        return False
+    import sys as _sys
+    mod = _sys.modules.get("sieve_lens_ext.html_css_selectors")
+    if mod is None or not getattr(mod, "CSSSELECT2_AVAILABLE", False):
+        return False
+    return True
+
+
+def _gate_build_engine():
+    """A Lens engine with every available extras installed (same order
+    contract as observe_documents)."""
+    from sieve_lens import SieveLensEngine
+    import importlib
+    engine = SieveLensEngine()
+    for spec in ("sieve_lens_ext.pdf:install",
+                 "sieve_lens_ext.ocr:install",
+                 "sieve_lens_ext.image_layers:install",
+                 "sieve_lens_ext.html_css:install",
+                 "sieve_lens_ext.html_css_selectors:install",
+                 "sieve_lens_ext.pdf_images:install"):
+        mod_name, _, fn_name = spec.partition(":")
+        try:
+            getattr(importlib.import_module(mod_name), fn_name)(engine)
+        except Exception:
+            pass
+    return engine
+
+
+def _gate_engine_table() -> list:
+    """The engines block of the receipt: name, version, source,
+    file_sha256 (request §3.4)."""
+    engines = []
+    try:
+        import sieve_lens as _lens
+        v = _lens.__version__
+        sha = hashlib.sha256(
+            Path(_lens.__file__).read_bytes()).hexdigest()
+        engines.append({"name": "sieve-lens", "version": v,
+                        "source": "pip", "file_sha256": sha})
+    except Exception:
+        engines.append({"name": "sieve-lens", "version": None,
+                        "source": "pip", "file_sha256": None})
+    for name, module_name, version, rel in (
+            ("sieve-redact", "sieve_redact", None, "sieve_redact.py"),
+            ("sieve-crowd", "sieve_crowd", None, None)):
+        try:
+            mod = __import__(module_name)
+            if version is None:
+                version = getattr(mod, "VERSION", None) or \
+                    getattr(mod, "__version__", None)
+            if rel is not None:
+                sha = hashlib.sha256(
+                    (REPO_ROOT / rel).read_bytes()).hexdigest()
+            else:
+                sha = hashlib.sha256(
+                    Path(mod.__file__).read_bytes()).hexdigest()
+            engines.append({"name": name, "version": version,
+                            "source": "vendored", "file_sha256": sha})
+        except Exception:
+            engines.append({"name": name, "version": None,
+                            "source": "vendored", "file_sha256": None})
+    try:
+        import sieve_order as _order  # vendored package
+        sha = hashlib.sha256(
+            Path(_order.observer.__file__).read_bytes()).hexdigest()
+        engines.append({"name": "sieve-order", "version": GATE_ORDER_VERSION,
+                        "source": "vendored", "file_sha256": sha})
+    except Exception:
+        engines.append({"name": "sieve-order", "version": GATE_ORDER_VERSION,
+                        "source": "vendored", "file_sha256": None})
+    return engines
+
+
+def _gate_engines_version() -> str:
+    return "; ".join("%s %s" % (e["name"], e["version"])
+                     for e in _gate_engine_table())
+
+
+def _gate_order_observe(text: str) -> dict:
+    """Order on one hidden segment, capped at the §3.3 limits.
+    Returns {"observed": bool, "axes": {...}, "truncated": bool}."""
+    truncated = len(text) > GATE_ORDER_MAX_CHARS
+    slice_ = text[:GATE_ORDER_MAX_CHARS]
+    import sieve_order
+    obs = sieve_order.observe(slice_, rules=None)
+    axes: Dict[str, int] = {}
+    for e in obs.evidence:
+        axes[e.axis] = axes.get(e.axis, 0) + 1
+    return {"observed": True, "axes": axes, "truncated": truncated}
+
+
+def _gate_classify_hidden(segments) -> Tuple[list, list]:
+    """Split not-visible segments into (orderable, rule_hidden).
+
+    orderable  - hidden text segments the Order lane may read (bodies
+                 whose hiding was decided per element: inline style,
+                 hidden attribute, docx concealment, comments, ...).
+    rule_hidden - css_hidden segments whose location carries the
+                 "selector:" marker: a <style>-rule matched something,
+                 but the extras body emitter still marks that body
+                 visible -> the item must fail closed (§85).
+    """
+    orderable, rule_hidden = [], []
+    for s in segments:
+        if s.visible:
+            continue
+        if (s.kind == "css_hidden"
+                and GATE_HTML_RULE_MARKER in (s.location or "")):
+            rule_hidden.append(s)
+        else:
+            orderable.append(s)
+    return orderable, rule_hidden
+
+
+def _gate_order_on_hidden(orderable) -> dict:
+    """Observe up to GATE_ORDER_MAX_SEGMENTS hidden segments with
+    Order; record truncations and skips (request §3.3)."""
+    hidden = _gate_hidden()
+    hidden["count"] = len(orderable)  # caller may extend by rule_hidden
+    observed = 0
+    axes: Dict[str, int] = {}
+    for seg in orderable:
+        if observed >= GATE_ORDER_MAX_SEGMENTS:
+            hidden["skipped"] += 1
+            continue
+        try:
+            res = _gate_order_observe(seg.text)
+        except Exception:
+            # §3.3: an Order exception leaves the Order observation of
+            # this document unobserved (engine_unavailable) and the run
+            # continues.
+            hidden["order_observed"] = 0
+            hidden["order_axes"] = {}
+            return hidden
+        observed += 1
+        if res["truncated"]:
+            hidden["truncated"] += 1
+        for axis, n in res["axes"].items():
+            axes[axis] = axes.get(axis, 0) + n
+    hidden["order_observed"] = observed
+    hidden["order_axes"] = dict(sorted(axes.items()))
+    return hidden
+
+
+def _gate_redact_apply(text: str, *, builtins, mode, config_path,
+                       receipts_dir: Optional[Path], seq: int):
+    """Apply Redact through the same call path the Sanitize tab uses
+    (sieve_redact.main with SystemExit captured).  Returns
+    (out_text, receipt, redactions) or (None, None, engine_detail)
+    when the engine refuses.  The machine receipt (with content_sha256)
+    is stored under local/ only."""
+    try:
+        import sieve_redact
+    except ImportError:
+        return None, None, "sieve-redact missing"
+    import contextlib
+    import io as _io
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "in.txt"
+        src.write_text(text, encoding="utf-8")
+        out = Path(td) / "out.txt"
+        rec = Path(td) / "receipt.json"
+        argv = [str(src), "-o", str(out)]
+        if config_path is not None:
+            argv += ["--config", str(config_path)]
+        else:
+            for name in builtins:
+                argv += ["--builtin", f"{name}:{mode}"]
+        argv += ["--receipt", str(rec)]
+        out_buf, err_buf = _io.StringIO(), _io.StringIO()
+        rc = None
+        try:
+            with contextlib.redirect_stdout(out_buf), \
+                    contextlib.redirect_stderr(err_buf):
+                rc = sieve_redact.main(argv)
+        except SystemExit as exc:
+            code = exc.code
+            if code is None:
+                rc = 0
+            elif isinstance(code, int):
+                rc = code
+            else:
+                rc = 1
+        if rc is None:
+            rc = 0
+        if rc != 0:
+            return None, None, f"redact rc={rc}"
+        out_text = out.read_text(encoding="utf-8")
+        receipt = json.loads(rec.read_text(encoding="utf-8"))
+    if receipts_dir is not None:
+        receipts_dir.mkdir(parents=True, exist_ok=True)
+        _gate_write_atomic(receipts_dir / f"redact-{seq:04d}.json",
+                           json.dumps(receipt, ensure_ascii=False,
+                                      sort_keys=True,
+                                      indent=1).encode("utf-8"))
+    by_mode: Dict[str, int] = {}
+    for r in receipt.get("redactions", []):
+        m = r.get("mode") or "unknown"
+        by_mode[m] = by_mode.get(m, 0) + 1
+    return out_text, receipt, dict(sorted(by_mode.items()))
+
+
+def _gate_output_name(rel: str, index: int, include_paths: bool) -> str:
+    if include_paths:
+        return "handoff/" + rel + GATE_OUTPUT_SUFFIX
+    return "handoff/%04d%s" % (index, GATE_OUTPUT_SUFFIX)
+
+
+def _gate_item_shell(rel: Optional[str], index: int, kind: str,
+                     input_bytes: int, input_sha: Optional[str],
+                     include_paths: bool, include_input_hashes: bool) -> dict:
+    item = {
+        "kind": kind,
+        "input": {"bytes": input_bytes},
+        "status": None,
+        "unobserved_reason": None,
+        "unobserved_detail": None,
+        "lens": {"mask": None},
+        "hidden_segments": _gate_hidden(),
+        "removed_invisible": _gate_removed_zero(),
+        "redact": {"spans": 0, "by_mode": {}},
+        "treatment": "not_produced",
+        "not_produced_reason": None,
+        "engine_detail": None,
+        "output": None,
+    }
+    if include_paths:
+        item["path"] = rel
+    else:
+        item["index"] = index
+    if include_input_hashes and input_sha is not None:
+        item["input"]["sha256"] = input_sha
+    return item
+
+
+def _gate_finish_item(item: dict, treatment: str, reason=None,
+                      engine_detail=None, out_blob: Optional[bytes] = None,
+                      out_path: Optional[str] = None):
+    if treatment == "produced":
+        item["treatment"] = "produced"
+        item["output"] = {
+            "path": out_path,
+            "bytes": len(out_blob),
+            "sha256": hashlib.sha256(out_blob).hexdigest(),
+        }
+    else:
+        item["treatment"] = "not_produced"
+        item["not_produced_reason"] = reason
+        item["engine_detail"] = engine_detail
+
+
+def run_gate(input_dir: Path, output_dir: Path, *,
+             progress: ProgressCallback = _silent,
+             redact_builtins=GATE_DEFAULT_BUILTINS,
+             redact_mode: str = GATE_REDACT_MODE,
+             redact_config=None, no_redact: bool = False,
+             crowd_config=None, include_paths: bool = True,
+             include_input_hashes: bool = True,
+             storage_path=None) -> dict:
+    """The M1 Gate (request §3.1): one pass over a folder, producing
+    handoff/ + local/ + the normalized receipt.  Returns the receipt
+    dict (with its digest).
+
+    Fails closed before any work when the output directory exists and
+    is not empty, or when it sits inside the input folder or contains
+    it (ValueError)."""
+    input_dir = Path(input_dir)
+    output_dir = Path(output_dir)
+    if progress is None:
+        progress = _silent
+    if not input_dir.is_dir():
+        raise ValueError("input folder does not exist: %s" % input_dir)
+    out_abs = output_dir.absolute()
+    in_abs = input_dir.absolute()
+    if out_abs == in_abs or in_abs in out_abs.parents or \
+            out_abs in in_abs.parents:
+        raise ValueError(
+            "output folder must not contain or sit inside the input "
+            "folder")
+    if out_abs.exists():
+        if not out_abs.is_dir():
+            raise ValueError("output path exists and is not a folder")
+        if any(out_abs.iterdir()):
+            raise ValueError(
+                "output folder exists and is not empty")
+    redact_builtins = tuple(redact_builtins or ())
+    if redact_config is not None:
+        redact_config = Path(redact_config)
+        if not redact_config.is_file():
+            raise ValueError("redact config file not found")
+
+    handoff = out_abs / "handoff"
+    local = out_abs / "local"
+    receipts_dir = local / "engine-receipts"
+    handoff.mkdir(parents=True, exist_ok=False)
+    local.mkdir(parents=True, exist_ok=False)
+
+    config_sha = None
+    if redact_config is not None:
+        config_sha = "sha256:" + hashlib.sha256(
+            redact_config.read_bytes()).hexdigest()
+    crowd_sha = None
+    if crowd_config is not None:
+        crowd_path = Path(crowd_config)
+        crowd_sha = "sha256:" + hashlib.sha256(
+            crowd_path.read_bytes()).hexdigest()
+
+    items: List[dict] = []
+    fragments: List[dict] = []
+    engine = _gate_build_engine()
+    rels = _gate_walk(input_dir)
+    progress("Gate: %d items" % len(rels))
+    for seq, rel in enumerate(rels, start=1):
+        src = input_dir / rel
+        item = _gate_item_shell(rel, seq, "other", 0, None,
+                                include_paths, include_input_hashes)
+        # every item below overwrites the shell fields as its lane decides
+        items.append(item)
+        try:
+            if src.is_symlink():
+                item["kind"] = _gate_kind_of(rel)
+                item["status"] = "unobserved"
+                item["unobserved_reason"] = "symlink_skipped"
+                item["lens"] = {"mask": "0000-000"}
+                _gate_finish_item(item, "not_produced", "unobserved")
+                continue
+            if not src.is_file():
+                item["kind"] = _gate_kind_of(rel)
+                item["status"] = "unobserved"
+                item["unobserved_reason"] = "unreadable"
+                item["lens"] = {"mask": "0000-000"}
+                _gate_finish_item(item, "not_produced", "unobserved")
+                continue
+            data = src.read_bytes()
+            item["input"] = {"bytes": len(data)}
+            if include_input_hashes:
+                item["input"]["sha256"] = hashlib.sha256(data).hexdigest()
+            suffix = src.suffix.lower()
+            kind = _gate_kind_of(rel)
+            item["kind"] = kind
+            if kind == "document":
+                _gate_item_document(engine, src, data, suffix, item,
+                                    handoff, receipts_dir, seq,
+                                    (() if no_redact else redact_builtins),
+                                    redact_mode,
+                                    (None if no_redact else redact_config),
+                                    include_paths, fragments)
+            elif kind == "table":
+                _gate_item_table(src, item, seq, handoff, crowd_config)
+            elif kind == "image":
+                _gate_item_image(engine, src, item)
+            else:
+                _gate_finish_item(item, "not_produced", "not_applicable")
+        except OSError as exc:
+            item["status"] = "unobserved"
+            item["unobserved_reason"] = "unreadable"
+            item["unobserved_detail"] = type(exc).__name__
+            _gate_finish_item(item, "not_produced", "unobserved")
+        progress("Gate: %s" % rel)
+
+    # --- summary
+    status_counts = {"flagged": 0, "clean": 0, "unobserved": 0}
+    np_reasons = {r: 0 for r in sorted(NOT_PRODUCED_REASONS)}
+    produced_n = 0
+    for it in items:
+        if it["treatment"] == "produced":
+            produced_n += 1
+        else:
+            np_reasons[it["not_produced_reason"]] += 1
+        st = it["status"]
+        if st in status_counts:
+            status_counts[st] += 1
+    receipt = {
+        "receipt_version": GATE_RECEIPT_VERSION,
+        "kind": GATE_KIND,
+        "tool": {"name": "sieve-tray", "version": __version__},
+        "engines": _gate_engine_table(),
+        "settings": {
+            "redact": {
+                "builtins": (list(redact_builtins)
+                             if not no_redact else []),
+                "mode": (redact_mode if not no_redact else None),
+                "config_sha256": config_sha},
+            "strip_invisible": list(GATE_STRIP_KINDS),
+            "crowd_config_sha256": crowd_sha,
+            "include_paths": include_paths,
+            "include_input_hashes": include_input_hashes,
+        },
+        "items": items,
+        "summary": {
+            "items": len(items),
+            "produced": produced_n,
+            "not_produced": len(items) - produced_n,
+            "not_produced_by_reason": np_reasons,
+            "status": status_counts,
+        },
+    }
+    receipt["digest"] = _gate_digest(receipt)
+
+    # --- the receipt is written last (request §3.1)
+    _gate_write_atomic(handoff / "gate-receipt.json",
+                       _gate_norm_json(receipt).encode("utf-8"))
+
+    # --- the local report (fragments stay here, never in handoff/)
+    report = _render_gate_report(receipt, fragments)
+    _gate_write_atomic(local / "gate-report.html",
+                       report.encode("utf-8"))
+
+    # --- history (allowlisted counts only; no paths, no bodies)
+    if storage_path is not None:
+        try:
+            from sieve_tray_storage import Storage
+            storage = Storage(str(storage_path))
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            storage.record_gate_run(
+                run_id="gate-" + now.replace(":", "").replace("-", ""),
+                created_at=now, items_total=len(items),
+                produced=produced_n,
+                np_needs_settings=np_reasons["needs_settings"],
+                np_unobserved=np_reasons["unobserved"],
+                np_not_applicable=np_reasons["not_applicable"],
+                np_engine_unavailable=np_reasons["engine_unavailable"],
+                np_engine_refused=np_reasons["engine_refused"],
+                np_write_failed=np_reasons["write_failed"],
+                status_flagged=status_counts["flagged"],
+                status_clean=status_counts["clean"],
+                status_unobserved=status_counts["unobserved"],
+                receipt_digest=receipt["digest"],
+                engines_version=_gate_engines_version())
+        except Exception:
+            progress("Gate: history record skipped")
+
+    return receipt
+
+
+def _gate_kind_of(rel: str) -> str:
+    suffix = "." + rel.rsplit(".", 1)[-1].lower() if "." in rel else ""
+    if suffix in GATE_DOC_EXTS:
+        return "document"
+    if suffix in GATE_TABLE_EXTS:
+        return "table"
+    if suffix in GATE_IMAGE_EXTS:
+        return "image"
+    return "other"
+
+
+def _gate_item_document(engine, src: Path, data: bytes, suffix: str,
+                        item: dict, handoff: Path, receipts_dir: Path,
+                        seq: int, builtins, mode, redact_config_path,
+                        include_paths: bool, fragments: List[dict]) -> None:
+    """The document lane: Lens observation -> visible text (strip) ->
+    Redact (label) -> handoff.  HTML rides the extras lane with a
+    charset pre-check done here first; a rule-originated css_hidden
+    segment fails the item closed (§85)."""
+    # --- observation
+    try:
+        if suffix in (".html", ".htm"):
+            text_dec, enc = _gate_charset_check(data)
+            if text_dec is None:
+                item["status"] = "unobserved"
+                item["unobserved_reason"] = "refused"
+                item["unobserved_detail"] = "unsupported_encoding"
+                item["lens"] = {"mask": "0000-000"}
+                _gate_finish_item(item, "not_produced", "unobserved")
+                return
+            if not _gate_html_lane_ready():
+                item["status"] = "unobserved"
+                item["unobserved_reason"] = "engine_unavailable"
+                item["lens"] = {"mask": "0000-000"}
+                _gate_finish_item(item, "not_produced",
+                                  "engine_unavailable")
+                return
+            if enc == "cp932":
+                # observe a user-only UTF-8 temp copy, removed afterwards
+                with tempfile.TemporaryDirectory() as td:
+                    tmp = Path(td) / "cp932-copy.html"
+                    tmp.write_text(text_dec, encoding="utf-8")
+                    os.chmod(str(tmp), 0o600)
+                    obs = engine.observe(str(tmp))
+            else:
+                obs = engine.observe(str(src))
+        else:
+            obs = engine.observe(str(src))
+        mask = obs.mask
+        entry = {"path": str(src), "mask": mask,
+                 "flagged": (mask != "1000-000"
+                             and not mask.startswith("0")),
+                 "h_states": dict(obs.h_states),
+                 "evidence": dict(obs.evidence)}
+    except Exception as e:  # noqa: BLE001
+        entry = {"path": str(src), "mask": "0000-000", "flagged": False,
+                 "h_states": {}, "evidence": {},
+                 "error": type(e).__name__}
+        mask = entry["mask"]
+    status, reason, detail = classify_observation(entry)
+    item["lens"] = {"mask": mask}
+    if status == "unobserved":
+        item["status"] = status
+        item["unobserved_reason"] = reason
+        item["unobserved_detail"] = detail
+        _gate_finish_item(item, "not_produced", "unobserved")
+        return
+    item["status"] = status
+    # --- hidden segments (Lens x Order, request §3.3)
+    orderable, rule_hidden = _gate_classify_hidden(
+        getattr(obs, "segments", []))
+    if rule_hidden:
+        # fail closed: the <style>-rule matched a body the extras
+        # emitter still marks visible - the visible text is never
+        # handed off; the withheld bodies stay in the local report only
+        hidden = _gate_hidden()
+        hidden["count"] = len(orderable) + len(rule_hidden)
+        item["hidden_segments"] = hidden
+        for seg in getattr(obs, "segments", []):
+            if seg.visible and seg.text and seg.text.strip():
+                fragments.append({"item": seq, "text": seg.text,
+                                  "kind": "withheld"})
+        _gate_finish_item(item, "not_produced", "engine_refused",
+                          engine_detail="css_rule_hidden")
+        return
+    for seg in orderable:
+        if seg.text and seg.text.strip():
+            fragments.append({"item": seq, "text": seg.text,
+                              "kind": "hidden"})
+    item["hidden_segments"] = _gate_order_on_hidden(orderable)
+    # --- visible text
+    try:
+        from sieve_lens import visible_text
+    except ImportError:
+        _gate_finish_item(item, "not_produced", "engine_unavailable",
+                          engine_detail="visible_text missing")
+        return
+    vt = visible_text(obs, strip=set(GATE_STRIP_KINDS))
+    out_text = vt.text
+    if out_text and not out_text.endswith("\n"):
+        out_text += "\n"
+    removed = _gate_removed_zero()
+    for k, v in vt.removed.items():
+        if k in removed:
+            removed[k] = v
+    item["removed_invisible"] = removed
+    # --- redact (label, by_mode - the 2026-11-08 ruling)
+    if redact_config_path is not None or builtins:
+        res = _gate_redact_apply(out_text, builtins=builtins, mode=mode,
+                                 config_path=redact_config_path,
+                                 receipts_dir=receipts_dir, seq=seq)
+        out_text, _redact_receipt, by_mode = res
+        if out_text is None:
+            _gate_finish_item(item, "not_produced", "engine_refused",
+                              engine_detail=by_mode)
+            return
+        item["redact"] = {"spans": sum(by_mode.values()),
+                          "by_mode": by_mode}
+    out_blob = out_text.encode("utf-8")
+    out_path = _gate_output_name(
+        _gate_item_rel(item), seq, include_paths)
+    _gate_write_atomic(handoff / out_path[len("handoff/"):], out_blob)
+    _gate_finish_item(item, "produced", out_blob=out_blob,
+                      out_path=out_path)
+
+
+def _gate_item_rel(item: dict) -> str:
+    return item.get("path") or ("%04d" % item.get("index", 0))
+
+
+def _gate_item_table(src: Path, item: dict, seq: int, handoff: Path,
+                     crowd_config) -> None:
+    """The table lane: anonymized through Crowd only when a Crowd
+    config file is supplied; otherwise unprocessed (needs_settings)."""
+    if crowd_config is None:
+        _gate_finish_item(item, "not_produced", "needs_settings")
+        return
+    try:
+        import sieve_crowd
+        cfg = json.loads(Path(crowd_config).read_text(encoding="utf-8"))
+        config = sieve_crowd.parse_config(cfg)
+        result = sieve_crowd.anonymize(src, config)
+        out_blob = result.output_bytes
+    except Exception as e:  # noqa: BLE001
+        _gate_finish_item(item, "not_produced", "engine_refused",
+                          engine_detail=f"crowd {type(e).__name__}")
+        return
+    out_path = _gate_output_name(_gate_item_rel(item), seq, "path" in item)
+    _gate_write_atomic(handoff / out_path[len("handoff/"):], out_blob)
+    _gate_finish_item(item, "produced", out_blob=out_blob,
+                      out_path=out_path)
+
+
+def _gate_item_image(engine, src: Path, item: dict) -> None:
+    """The image lane: observed by Lens (existing routing), never
+    produced - region selection is required (§3.2)."""
+    try:
+        obs = engine.observe(str(src))
+        mask = obs.mask
+        entry = {"path": str(src), "mask": mask,
+                 "flagged": (mask != "1000-000"
+                             and not mask.startswith("0")),
+                 "h_states": dict(obs.h_states),
+                 "evidence": dict(obs.evidence)}
+    except Exception as e:  # noqa: BLE001
+        entry = {"path": str(src), "mask": "0000-000", "flagged": False,
+                 "h_states": {}, "evidence": {},
+                 "error": type(e).__name__}
+    status, reason, detail = classify_observation(entry)
+    item["lens"] = {"mask": entry["mask"]}
+    if status == "unobserved":
+        item["status"] = status
+        item["unobserved_reason"] = reason
+        item["unobserved_detail"] = detail
+        _gate_finish_item(item, "not_produced", "unobserved")
+    else:
+        item["status"] = status
+        _gate_finish_item(item, "not_produced", "needs_settings")
+
+
+GATE_REPORT_CSS = """
+body { font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+       max-width: 960px; margin: 2rem auto; padding: 0 1rem;
+       color: #1a1a1a; background: #fafafa; }
+h1 { font-size: 1.4rem; }
+table { width: 100%; border-collapse: collapse; background: #fff;
+        border: 1px solid #ddd; }
+th, td { text-align: left; padding: .4rem .6rem; font-size: .85rem;
+         border-bottom: 1px solid #eee; }
+th { background: #f0f0f0; }
+pre { background: #fff; border: 1px solid #ddd; padding: .6rem;
+      font-size: .8rem; white-space: pre-wrap; word-break: break-all; }
+"""
+
+
+def _render_gate_report(receipt: dict, fragments: List[dict]) -> str:
+    """The local operator report (request §3.1): counts, the item table
+    with the §3.2 stage colors, and the hidden/withheld fragments -
+    escaped and length-capped.  No external requests; handoff/ never
+    receives this."""
+    parts = ["<!DOCTYPE html><html><head><meta charset=\"utf-8\">",
+             "<title>Sieve Gate report</title>",
+             "<style>%s</style></head><body>" % GATE_REPORT_CSS,
+             "<h1>Sieve Gate report</h1>",
+             "<p>tool sieve-tray %s</p>" % html.escape(
+                 receipt["tool"]["version"]),
+             "<p>items %d (produced %d / not produced %d) "
+             "- status flagged %d, clean %d, unobserved %d</p>" % (
+                 receipt["summary"]["items"],
+                 receipt["summary"]["produced"],
+                 receipt["summary"]["not_produced"],
+                 receipt["summary"]["status"]["flagged"],
+                 receipt["summary"]["status"]["clean"],
+                 receipt["summary"]["status"]["unobserved"]),
+             "<table><tr><th>Item</th><th>Kind</th><th>Status</th>"
+             "<th>Treatment</th><th>Reason</th><th>Hidden</th>"
+             "<th>Redact</th></tr>"]
+    for it in receipt["items"]:
+        ident = _gate_item_rel(it)
+        reason = it.get("not_produced_reason") or ""
+        style = ""
+        if it["treatment"] == "not_produced" and reason:
+            try:
+                stage = not_produced_stage(reason,
+                                           it.get("unobserved_reason"))
+                style = ' style="background: %s"' % UNOBSERVED_STAGE_BG[
+                    stage]
+            except ValueError:
+                style = ""
+        hidden = it.get("hidden_segments") or {}
+        parts.append(
+            "<tr%s><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+            "<td>%s</td><td>%d</td><td>%d</td></tr>" % (
+                style, html.escape(str(ident)), html.escape(it["kind"]),
+                html.escape(str(it["status"])),
+                html.escape(it["treatment"]), html.escape(reason),
+                hidden.get("count", 0), it["redact"]["spans"]))
+    parts.append("</table>")
+    if fragments:
+        parts.append("<h2>Hidden text observed by Order (local only)</h2>")
+        for fr in fragments:
+            snippet = fr["text"][:200]
+            parts.append("<pre>%s</pre>" % html.escape(snippet))
+    parts.append("<p>This is an observation report, not a judgment. "
+                 "Human review is required.</p>")
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
+
+def open_report_gate(path) -> None:
+    """Open the Gate report in the system browser (a file: URI - the
+    same thin wrapper the scan report uses)."""
+    open_in_browser(path)
+
+
+# The closed verification vocabularies (request §3.4).
+VERIFY_REASONS = frozenset({
+    "input_changed", "input_missing", "item_added", "output_changed",
+    "output_missing", "replay_differs", "engine_version_differs"})
+VERIFY_NOT_VERIFIABLE_REASONS = frozenset({
+    "receipt_unreadable", "receipt_version_unsupported",
+    "receipt_digest_mismatch", "settings_unavailable",
+    "handoff_incomplete"})
+
+
+def _gate_verify_item_ident(it: dict) -> dict:
+    ident = {}
+    if "path" in it:
+        ident["path"] = it["path"]
+    else:
+        ident["index"] = it["index"]
+    return ident
+
+
+def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
+                scope=None, redact_config=None) -> dict:
+    """Re-check a run (request §3.4).  scope is always reported:
+    outputs_only / inputs_and_outputs / replay.  overall is
+    match / differs / not_verifiable; the CLI maps it to exit codes
+    0 / 1 / 2.  The words of judgment ("pass" etc.) are never used."""
+    receipt_path = Path(receipt_path)
+    result = {"scope": None, "overall": None, "items": [],
+              "not_verifiable_reason": None}
+    if not receipt_path.is_file():
+        result["scope"] = scope or "outputs_only"
+        result["overall"] = "not_verifiable"
+        result["not_verifiable_reason"] = "handoff_incomplete"
+        return result
+    try:
+        obj = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        result["scope"] = scope or "outputs_only"
+        result["overall"] = "not_verifiable"
+        result["not_verifiable_reason"] = "receipt_unreadable"
+        return result
+    result["scope"] = scope
+    if obj.get("receipt_version") != GATE_RECEIPT_VERSION:
+        result["overall"] = "not_verifiable"
+        result["not_verifiable_reason"] = "receipt_version_unsupported"
+        return result
+    if obj.get("digest") != _gate_digest(obj):
+        result["overall"] = "not_verifiable"
+        result["not_verifiable_reason"] = "receipt_digest_mismatch"
+        return result
+    if scope is None:
+        if output_dir is not None and input_dir is not None:
+            scope = "inputs_and_outputs"
+        elif output_dir is not None:
+            scope = "outputs_only"
+        elif input_dir is not None:
+            scope = "replay"
+        else:
+            raise ValueError(
+                "verify needs an output folder, an input folder, or an "
+                "explicit scope")
+        result["scope"] = scope
+    elif scope not in ("outputs_only", "inputs_and_outputs", "replay"):
+        raise ValueError("unknown scope: %r" % (scope,))
+
+    # engine version drift is reported but never stops the comparison
+    current = {e["name"]: e["version"] for e in _gate_engine_table()}
+    version_drift = []
+    for e in obj.get("engines", []):
+        if current.get(e["name"]) != e["version"]:
+            version_drift.append(e["name"])
+
+    reasons: List[dict] = []
+
+    if scope in ("outputs_only", "inputs_and_outputs"):
+        base = Path(output_dir) if output_dir else receipt_path.parent
+        for it in obj.get("items", []):
+            out_info = it.get("output")
+            if out_info is None:
+                continue
+            rel = out_info["path"][len("handoff/"):]
+            p = base / rel
+            if not p.is_file():
+                entry = _gate_verify_item_ident(it)
+                entry["reason"] = "output_missing"
+                reasons.append(entry)
+                continue
+            blob = p.read_bytes()
+            if hashlib.sha256(blob).hexdigest() != out_info["sha256"]:
+                entry = _gate_verify_item_ident(it)
+                entry["reason"] = "output_changed"
+                reasons.append(entry)
+
+    if scope == "inputs_and_outputs":
+        in_dir = Path(input_dir)
+        present = {}
+        for root, _dirs, names in os.walk(in_dir, followlinks=False):
+            for name in names:
+                rel = (Path(root) / name).relative_to(in_dir)
+                present[rel.as_posix()] = (Path(root) / name)
+        seen = set()
+        for it in obj.get("items", []):
+            path = it.get("path")
+            if path is None:
+                continue
+            seen.add(path)
+            p = in_dir / path
+            if not p.is_file() or p.is_symlink():
+                entry = _gate_verify_item_ident(it)
+                entry["reason"] = "input_missing"
+                reasons.append(entry)
+                continue
+            want = it.get("input", {}).get("sha256")
+            got = hashlib.sha256(p.read_bytes()).hexdigest()
+            if want and got != want:
+                entry = _gate_verify_item_ident(it)
+                entry["reason"] = "input_changed"
+                reasons.append(entry)
+        for rel in present:
+            if rel not in seen:
+                reasons.append({"path": rel, "reason": "item_added"})
+
+    if scope == "replay":
+        settings = obj.get("settings", {})
+        config_sha = settings.get("redact", {}).get("config_sha256")
+        if config_sha is not None:
+            if redact_config is None:
+                result["overall"] = "not_verifiable"
+                result["not_verifiable_reason"] = "settings_unavailable"
+                return result
+            got = "sha256:" + hashlib.sha256(
+                Path(redact_config).read_bytes()).hexdigest()
+            if got != config_sha:
+                result["overall"] = "not_verifiable"
+                result["not_verifiable_reason"] = "settings_unavailable"
+                return result
+        with tempfile.TemporaryDirectory() as td:
+            replay_out = Path(td) / "out"
+            red = settings.get("redact", {})
+            receipt2 = run_gate(
+                Path(input_dir), replay_out,
+                redact_builtins=tuple(red.get("builtins")
+                                      or GATE_DEFAULT_BUILTINS),
+                redact_mode=red.get("mode") or GATE_REDACT_MODE,
+                redact_config=redact_config,
+                no_redact=not red.get("builtins") and
+                red.get("config_sha256") is None,
+                include_paths=settings.get("include_paths", True),
+                include_input_hashes=settings.get(
+                    "include_input_hashes", True))
+        if receipt2["digest"] != obj.get("digest"):
+            for it2 in receipt2["items"]:
+                ident = _gate_verify_item_ident(it2)
+                ident["reason"] = "replay_differs"
+                reasons.append(ident)
+        else:
+            old_out = {(_gate_verify_item_ident(i2))["path"]
+                       if "path" in i2 else ("index", i2["index"]): i2
+                       for i2 in obj.get("items", [])}
+
+    if version_drift:
+        for it in obj.get("items", []):
+            entry = _gate_verify_item_ident(it)
+            entry["reason"] = "engine_version_differs"
+            reasons.append(entry)
+
+    # deduplicate: an item keeps at most one reason, replay_differs and
+    # engine_version_differs included (the comparison never stops)
+    dedup = {}
+    for entry in reasons:
+        key = (entry.get("path"), entry.get("index"))
+        if key not in dedup:
+            dedup[key] = entry
+    result["items"] = list(dedup.values())
+    result["overall"] = "differs" if result["items"] else "match"
+    result["not_verifiable_reason"] = None
+    return result
+
+
+def gate_self_check(progress: ProgressCallback = _silent) -> dict:
+    """The self-check (request §3.5): run the sample pack through Gate
+    in a temp folder and compare the expected observations (never a
+    digest).  Returns {"expected": n, "matching": n, "differences":
+    [...]}."""
+    manifest_path = REPO_ROOT / "samples" / "gate" / "MANIFEST.json"
+    if not manifest_path.is_file():
+        # The sample pack is a repository resource (the audit's reference
+        # vocab follows the same pattern): installed wheels and frozen
+        # bundles do not carry it.  Report a structured error instead of
+        # crashing with a FileNotFoundError.
+        return {"error": "sample_pack_not_available",
+                "detail": str(REPO_ROOT / "samples" / "gate")}
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    import shutil as _shutil
+    with tempfile.TemporaryDirectory() as td:
+        inp = Path(td) / "in"
+        inp.mkdir()
+        out = Path(td) / "out"
+        for entry in manifest["items"]:
+            _shutil.copyfile(REPO_ROOT / "samples" / "gate" / entry["file"],
+                             inp / entry["file"])
+        receipt = run_gate(inp, out, progress=progress)
+    by_name = {it["path"]: it for it in receipt["items"]}
+    fields = ("kind", "status", "hidden_count", "order_observed",
+              "order_axes", "redact_spans", "treatment",
+              "not_produced_reason")
+    diffs = []
+    for entry in manifest["items"]:
+        it = by_name.get(entry["file"])
+        if it is None:
+            diffs.append({"file": entry["file"], "field": "presence",
+                          "expected": True, "actual": None})
+            continue
+        expect = entry["expect"]
+        actual = {
+            "kind": it["kind"],
+            "status": it["status"],
+            "hidden_count": it["hidden_segments"]["count"],
+            "order_observed": it["hidden_segments"]["order_observed"],
+            "order_axes": it["hidden_segments"]["order_axes"],
+            "redact_spans": it["redact"]["spans"],
+            "treatment": it["treatment"],
+            "not_produced_reason": it["not_produced_reason"],
+        }
+        for field in fields:
+            if actual[field] != expect.get(field):
+                diffs.append({"file": entry["file"], "field": field,
+                              "expected": expect.get(field),
+                              "actual": actual[field]})
+    return {"expected": len(manifest["items"]),
+            "matching": len(manifest["items"]) - len(diffs),
+            "differences": diffs}
+
+
+def _gate_main(argv: List[str]) -> int:
+    """The `gate` / `verify` shapes (request §3.6).  Only entered when
+    sys.argv[1] is exactly one of those words, so the legacy
+    `<input folder> -o report.html` shape keeps working."""
+    parser = argparse.ArgumentParser(prog="sieve-tray")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    g = sub.add_parser("gate", help="run the Gate over a folder")
+    g.add_argument("input_dir", type=Path)
+    g.add_argument("-o", "--output", type=Path, required=True)
+    g.add_argument("--redact-builtin", action="append", default=None,
+                   metavar="NAME")
+    g.add_argument("--redact-config", type=Path, default=None)
+    g.add_argument("--no-redact", action="store_true")
+    g.add_argument("--crowd-config", type=Path, default=None)
+    g.add_argument("--no-paths", action="store_true")
+    g.add_argument("--no-input-hashes", action="store_true")
+    g.add_argument("--self-check", action="store_true")
+    v = sub.add_parser("verify", help="verify a Gate receipt")
+    v.add_argument("receipt", type=Path)
+    v.add_argument("input_dir", nargs="?", type=Path, default=None)
+    v.add_argument("--output", "-o", type=Path, default=None)
+    v.add_argument("--scope", default=None)
+    v.add_argument("--redact-config", type=Path, default=None)
+    args = parser.parse_args(argv)
+
+    if args.cmd == "gate":
+        if args.self_check:
+            print(json.dumps(gate_self_check(progress=print),
+                             ensure_ascii=False, indent=1))
+            return 0
+        receipt = run_gate(
+            args.input_dir, args.output, progress=print,
+            redact_builtins=(tuple(args.redact_builtin)
+                             if args.redact_builtin
+                             else GATE_DEFAULT_BUILTINS),
+            redact_config=args.redact_config, no_redact=args.no_redact,
+            crowd_config=args.crowd_config,
+            include_paths=not args.no_paths,
+            include_input_hashes=not args.no_input_hashes)
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Handoff: %s" % (args.output / "handoff"))
+        print("Report:  %s" % (args.output / "local" / "gate-report.html"))
+        return 0
+    result = verify_gate(
+        args.receipt, input_dir=args.input_dir, output_dir=args.output,
+        scope=args.scope, redact_config=args.redact_config)
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return {"match": 0, "differs": 1,
+            "not_verifiable": 2}[result["overall"]]
+
+
 def main():
     # v1.1.0 (design doc §3.8-E): the engines may use ProcessPoolExecutor, so a
     # frozen (PyInstaller) CLI must call freeze_support() before any child
@@ -1724,6 +2867,12 @@ def main():
     # frozen runs.
     import multiprocessing
     multiprocessing.freeze_support()
+    # v2.0.0 (M1 Gate): the new shapes start only when the first
+    # argument is exactly `gate` or `verify`; the legacy
+    # `<input folder> -o report.html` shape keeps working unchanged
+    # (a folder literally named `gate` is passed as `./gate`).
+    if len(sys.argv) > 1 and sys.argv[1] in ("gate", "verify"):
+        sys.exit(_gate_main(sys.argv[1:]))
     parser = argparse.ArgumentParser(prog="sieve-tray")
     parser.add_argument("input_dir", type=Path,
                         help="Directory containing subdirectories to scan")

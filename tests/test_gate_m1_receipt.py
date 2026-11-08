@@ -384,7 +384,18 @@ def test_t12_not_verifiable_version_and_digest(tmp_path):
     result = _verify(path, output_dir=out / "handoff")
     assert result["not_verifiable_reason"] == "receipt_version_unsupported"
 
-    # digest mismatch: mutate the body without re-computing the digest
+    # digest mismatch: restore a consistent receipt first (version 1,
+    # fresh digest), then mutate the body WITHOUT re-computing the digest
+    obj = json.loads(path.read_text(encoding="utf-8"))
+    obj["receipt_version"] = 1
+    body = {k: v for k, v in obj.items() if k != "digest"}
+    norm = json.dumps(body, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"))
+    body["digest"] = "sha256:" + hashlib.sha256(
+        norm.encode("utf-8")).hexdigest()
+    blob = json.dumps(body, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")) + "\n"
+    path.write_text(blob, encoding="utf-8")
     obj = json.loads(path.read_text(encoding="utf-8"))
     obj["summary"]["items"] = 9999
     blob = json.dumps(obj, ensure_ascii=False, sort_keys=True,
@@ -398,7 +409,7 @@ def test_t12_not_verifiable_settings_unavailable(tmp_path):
     inp, out = tmp_path / "in", tmp_path / "out"
     _mk_tree(inp)
     cfg = tmp_path / "rules.cfg"
-    cfg.write_text("高橋:delete\n", encoding="utf-8")
+    cfg.write_text("rule 高橋:delete\n", encoding="utf-8")
     _run_gate(inp, out, redact_config=cfg)
     receipt = json.loads(_receipt_path(out).read_text(encoding="utf-8"))
     assert receipt["settings"]["redact"]["config_sha256"] is not None

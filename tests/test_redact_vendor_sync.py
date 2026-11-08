@@ -11,7 +11,7 @@ import hashlib
 import pathlib
 
 VENDORED = pathlib.Path(__file__).resolve().parent.parent / "sieve_redact.py"
-PINNED_SHA256 = "61096b78a64a9273a722170d1591dede5edd8b03b2956e498deb1bf2f0c4c397"
+PINNED_SHA256 = "9203c7476fbac1eb0f25e75c6f31ea48732b4928b43ad2f641c5f5902c94e836"
 
 
 def test_vendored_module_matches_pin():

@@ -148,6 +148,32 @@ class Storage:
                 )
                 """
             )
+            # v2.0.0 (M1 Gate): a dedicated Gate history table with its
+            # own allowlist - counts, receipt digest, engine versions.
+            # No paths, file names, bodies or fragments are ever stored
+            # here (request doc §3.6); existing tables stay untouched.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS gate_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    items_total INTEGER NOT NULL,
+                    produced INTEGER NOT NULL,
+                    np_needs_settings INTEGER NOT NULL,
+                    np_unobserved INTEGER NOT NULL,
+                    np_not_applicable INTEGER NOT NULL,
+                    np_engine_unavailable INTEGER NOT NULL,
+                    np_engine_refused INTEGER NOT NULL,
+                    np_write_failed INTEGER NOT NULL,
+                    status_flagged INTEGER NOT NULL,
+                    status_clean INTEGER NOT NULL,
+                    status_unobserved INTEGER NOT NULL,
+                    receipt_digest TEXT NOT NULL,
+                    engines_version TEXT NOT NULL
+                )
+                """
+            )
             # v1.1.0 (design doc §3.7 (2)): scrub legacy crowd payloads once.
             # Never breaks history: a failure leaves the flag unset and the
             # scrub is retried on the next start. load_crowd_runs sanitizes
@@ -357,6 +383,59 @@ class Storage:
         """v1.1.0: keep only the allowlisted keys of a crowd summary."""
         return {k: v for k, v in summary.items()
                 if k in CROWD_PAYLOAD_ALLOWLIST}
+
+    # ------------------------------------------------------------------
+    # v2.0.0 (M1 Gate): the gate_runs allowlist table
+    # ------------------------------------------------------------------
+
+    def record_gate_run(self, run_id: str, created_at: str, items_total: int,
+                        produced: int, np_needs_settings: int,
+                        np_unobserved: int, np_not_applicable: int,
+                        np_engine_unavailable: int, np_engine_refused: int,
+                        np_write_failed: int, status_flagged: int,
+                        status_clean: int, status_unobserved: int,
+                        receipt_digest: str, engines_version: str) -> int:
+        """Persist one Gate run's allowlisted summary; returns the row id.
+
+        The columns are exactly the allowlist of request doc §3.6 -
+        counts, the receipt digest and the engine versions. Paths,
+        file names, bodies and fragments are structurally absent.
+        """
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute(
+                "INSERT INTO gate_runs (run_id, created_at, items_total,"
+                " produced, np_needs_settings, np_unobserved,"
+                " np_not_applicable, np_engine_unavailable,"
+                " np_engine_refused, np_write_failed, status_flagged,"
+                " status_clean, status_unobserved, receipt_digest,"
+                " engines_version)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (str(run_id), str(created_at), int(items_total),
+                 int(produced), int(np_needs_settings), int(np_unobserved),
+                 int(np_not_applicable), int(np_engine_unavailable),
+                 int(np_engine_refused), int(np_write_failed),
+                 int(status_flagged), int(status_clean),
+                 int(status_unobserved), str(receipt_digest),
+                 str(engines_version)))
+            row_id = cur.lastrowid
+        return row_id
+
+    def load_gate_runs(self, limit: int = 20) -> list:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT id, run_id, created_at, items_total, produced,"
+                " np_needs_settings, np_unobserved, np_not_applicable,"
+                " np_engine_unavailable, np_engine_refused,"
+                " np_write_failed, status_flagged, status_clean,"
+                " status_unobserved, receipt_digest, engines_version"
+                " FROM gate_runs ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        keys = ["id", "run_id", "created_at", "items_total", "produced",
+                "np_needs_settings", "np_unobserved", "np_not_applicable",
+                "np_engine_unavailable", "np_engine_refused",
+                "np_write_failed", "status_flagged", "status_clean",
+                "status_unobserved", "receipt_digest", "engines_version"]
+        return [dict(zip(keys, row)) for row in rows]
 
     def _scrub_crowd_payloads(self, conn) -> None:
         """v1.1.0 (design doc §3.7 (2)): remove non-allowlisted keys from every

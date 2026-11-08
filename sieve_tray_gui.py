@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QTableWidget, QTableWidgetItem,
     QTabWidget, QPlainTextEdit, QFileDialog, QMessageBox, QHeaderView,
-    QDialog, QFormLayout, QSpinBox, QDialogButtonBox, QCheckBox,
+    QDialog, QFormLayout, QGridLayout, QSpinBox, QDialogButtonBox, QCheckBox,
     QComboBox, QListWidget, QScrollArea,
 )
 from PySide6.QtGui import (QColor, QIcon, QAction, QPainter, QPixmap,
@@ -756,11 +756,167 @@ class AboutDialog(QDialog):
         layout.addWidget(close_btn)
 
 
+class GatePage(QWidget):
+    """The v2.0.0 Gate tab (request §3.6): pick an input folder and an
+    output folder, run the Gate, open the report / the handoff folder,
+    verify a receipt, run the self-check.  The texts describe the
+    actual behavior (sequential per-occurrence labels)."""
+
+    def __init__(self, lang: str, parent=None):
+        super().__init__(parent)
+        self.lang = lang
+        self._ = lambda key, **kw: tr(lang, key, **kw)
+        layout = QVBoxLayout(self)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel(self._("gate_input_label")), 0, 0)
+        self.gate_input_edit = QLineEdit()
+        self.gate_input_edit.setReadOnly(True)
+        gate_browse = QPushButton(self._("browse_folder"))
+        gate_browse.clicked.connect(self.choose_input)
+        grid.addWidget(self.gate_input_edit, 0, 1)
+        grid.addWidget(gate_browse, 0, 2)
+        grid.addWidget(QLabel(self._("gate_output_label")), 1, 0)
+        self.gate_output_edit = QLineEdit()
+        self.gate_output_edit.setReadOnly(True)
+        gate_browse_out = QPushButton(self._("browse_folder"))
+        gate_browse_out.clicked.connect(self.choose_output)
+        grid.addWidget(self.gate_output_edit, 1, 1)
+        grid.addWidget(gate_browse_out, 1, 2)
+        layout.addLayout(grid)
+
+        self.redact_label = QLabel(self._("gate_redact_label"))
+        layout.addWidget(self.redact_label)
+        self.gate_no_redact_cb = QCheckBox(self._("gate_no_redact"))
+        self.gate_no_paths_cb = QCheckBox(self._("gate_no_paths"))
+        self.gate_no_input_hashes_cb = QCheckBox(
+            self._("gate_no_input_hashes"))
+        for cb in (self.gate_no_redact_cb, self.gate_no_paths_cb,
+                   self.gate_no_input_hashes_cb):
+            layout.addWidget(cb)
+
+        row = QHBoxLayout()
+        self.gate_run_button = QPushButton(self._("gate_run_button"))
+        self.gate_run_button.clicked.connect(self.run_gate)
+        self.gate_open_report_button = QPushButton(
+            self._("gate_open_report_button"))
+        self.gate_open_report_button.clicked.connect(self.open_report)
+        self.gate_open_handoff_button = QPushButton(
+            self._("gate_open_handoff_button"))
+        self.gate_open_handoff_button.clicked.connect(self.open_handoff)
+        self.gate_verify_button = QPushButton(
+            self._("gate_verify_button"))
+        self.gate_verify_button.clicked.connect(self.verify_receipt)
+        self.gate_selfcheck_button = QPushButton(
+            self._("gate_selfcheck_button"))
+        self.gate_selfcheck_button.clicked.connect(self.run_self_check)
+        for b in (self.gate_run_button, self.gate_open_report_button,
+                  self.gate_open_handoff_button, self.gate_verify_button,
+                  self.gate_selfcheck_button):
+            row.addWidget(b)
+        layout.addLayout(row)
+
+        self.gate_log = QPlainTextEdit()
+        self.gate_log.setReadOnly(True)
+        layout.addWidget(self.gate_log, stretch=1)
+        self._gate_out = None
+
+    def choose_input(self):
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(self,
+                                             self._("gate_input_label"))
+        if d:
+            self.gate_input_edit.setText(d)
+
+    def choose_output(self):
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(self,
+                                             self._("gate_output_label"))
+        if d:
+            self.gate_output_edit.setText(d)
+
+    def run_gate(self):
+        from sieve_tray import run_gate
+        inp = self.gate_input_edit.text()
+        out = self.gate_output_edit.text()
+        if not inp or not out:
+            return
+        try:
+            receipt = run_gate(
+                Path(inp), Path(out),
+                progress=lambda m: self.gate_log.appendPlainText(m),
+                no_redact=self.gate_no_redact_cb.isChecked(),
+                include_paths=not self.gate_no_paths_cb.isChecked(),
+                include_input_hashes=(not
+                                      self.gate_no_input_hashes_cb
+                                      .isChecked()))
+            self.gate_log.appendPlainText(self._(
+                "gate_done", items=receipt["summary"]["items"],
+                produced=receipt["summary"]["produced"],
+                not_produced=receipt["summary"]["not_produced"]))
+            self._gate_out = Path(out)
+        except Exception as e:  # noqa: BLE001
+            self.gate_log.appendPlainText(
+                f"{type(e).__name__}: {e}")
+
+    def open_report(self):
+        if self._gate_out is None:
+            return
+        from sieve_tray import open_report_gate
+        open_report_gate(self._gate_out / "local" / "gate-report.html")
+
+    def open_handoff(self):
+        if self._gate_out is None:
+            return
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl.fromLocalFile(
+            str(self._gate_out / "handoff")))
+
+    def verify_receipt(self):
+        from sieve_tray import verify_gate
+        if self._gate_out is None:
+            return
+        try:
+            result = verify_gate(
+                self._gate_out / "handoff" / "gate-receipt.json",
+                input_dir=(Path(self.gate_input_edit.text())
+                           if self.gate_input_edit.text() else None))
+            self.gate_log.appendPlainText(self._(
+                "gate_verify_done", overall=result["overall"],
+                scope=result["scope"]))
+        except Exception as e:  # noqa: BLE001
+            self.gate_log.appendPlainText(
+                f"{type(e).__name__}: {e}")
+
+    def run_self_check(self):
+        from sieve_tray import gate_self_check
+        result = gate_self_check()
+        self.show_selfcheck_result(result)
+
+    def show_selfcheck_result(self, result: dict) -> None:
+        if "error" in result:
+            self.gate_log.appendPlainText(self._(
+                "gate_selfcheck_unavailable", detail=result["detail"]))
+            return
+        self.gate_log.appendPlainText(self._(
+            "gate_selfcheck_done", matching=result["matching"],
+            expected=result["expected"]))
+        for d in result.get("differences", []):
+            self.gate_log.appendPlainText(
+                "  {file}: {field} expected={expected!r} "
+                "actual={actual!r}".format(**d))
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, storage: Storage | None = None):
+    def __init__(self, storage: Storage | None = None, lang=None):
         super().__init__()
         self.storage = storage if storage is not None else Storage()
-        self.lang = normalize_language(self.storage.get_setting("language"))
+        # v2.0.0: optional explicit language override (tests pass it;
+        # the default stays the stored setting).
+        self.lang = (normalize_language(lang)
+                     if lang else normalize_language(
+                         self.storage.get_setting("language")))
         self._ = lambda key, **kw: tr(self.lang, key, **kw)
 
         self.setWindowTitle(self._("window_title"))
@@ -1077,6 +1233,11 @@ class MainWindow(QMainWindow):
 
         self._crowd_tab_index = self.tabs.addTab(crowd_page,
                                                  self._("crowd_tab"))
+
+        # v2.0.0 (M1 Gate): the Gate tab (request §3.6).
+        self.gate_page = GatePage(self.lang)
+        self._gate_tab_index = self.tabs.addTab(self.gate_page,
+                                                self._("gate_tab"))
 
         layout.addWidget(self.tabs, stretch=3)
 

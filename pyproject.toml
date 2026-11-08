@@ -16,7 +16,11 @@ requires-python = ">=3.10"
 # 0.20.2 is the first release carrying all 13 refusal codes Tray's
 # classification (KNOWN_REFUSAL_CODES) maps to detail labels, including
 # unsupported_namespace.
-dependencies = ["sieve-lens>=0.20.2", "sieve-scope>=1.3.0", "sieve-referee>=1.3.0"]
+# v2.0.0 (M1 Gate): bumped sieve-lens from >=0.20.2 to >=0.22.0 - Gate
+# consumes visible_text (and the charset diagnostics shape added in
+# 0.22.0); 0.22.0 is published and its UTF-8 results are byte-identical
+# to 0.21.2, so the scan molds are unaffected.
+dependencies = ["sieve-lens>=0.22.0", "sieve-scope>=1.3.0", "sieve-referee>=1.3.0"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -43,7 +47,7 @@ sieve-tray = "sieve_tray:main"
 sieve-tray-gui = "sieve_tray_gui:main"
 
 [tool.setuptools]
-packages = ["sieve_crowd"]
+packages = ["sieve_crowd", "sieve_order"]
 py-modules = ["sieve_tray", "sieve_tray_gui", "sieve_tray_storage", "sieve_tray_i18n", "sieve_redact"]
 # v1.1.0 (design doc §3.8-F): the vendored sieve_crowd may carry data files
 # (.json etc.) in a future vendor update (v1.2.0). Declaring the patterns

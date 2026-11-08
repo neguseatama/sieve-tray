@@ -256,6 +256,26 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "crowd_filter_json": "JSON Files (*.json);;All Files (*)",
         "crowd_filter_text": "Text Files (*.txt);;All Files (*)",
         "about_license": "MIT License \u00a9 2026 Kai IWASAKI",
+        # v2.0.0 (M1 Gate): the Gate tab wording (§3.6).  The texts
+        # describe the actual behavior: sequential per-occurrence
+        # labels ([REDACTED]1, [REDACTED]2, ...) - the "same value,
+        # same symbol" replacement is NOT in Redact 0.11.0 (§7).
+        "gate_tab": "Gate",
+        "gate_input_label": "Input folder",
+        "gate_output_label": "Output folder",
+        "gate_run_button": "Run Gate",
+        "gate_verify_button": "Verify receipt",
+        "gate_selfcheck_button": "Self-check",
+        "gate_open_report_button": "Open report",
+        "gate_open_handoff_button": "Open handoff",
+        "gate_redact_label": "Redact: built-in email / phone-jp / postal-jp, label mode (sequential per-occurrence labels)",
+        "gate_no_paths": "Do not include paths (sequential numbering)",
+        "gate_no_input_hashes": "Do not include input hashes",
+        "gate_no_redact": "Skip the anonymization",
+        "gate_done": "Gate finished. Items {items}, produced {produced}, not produced {not_produced}.",
+        "gate_verify_done": "Verification: {overall} (scope {scope}).",
+        "gate_selfcheck_done": "Self-check: {matching} / {expected} items matched the expected observations.",
+        "gate_selfcheck_unavailable": "Self-check needs the sample pack, which is not part of this installation ({detail}). Run the self-check from the repository tree.",
     },
     "ja": {
         "window_title": "Sieve Tray",
@@ -486,6 +506,25 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "crowd_filter_json": "JSON ファイル (*.json);;すべてのファイル (*)",
         "crowd_filter_text": "テキストファイル (*.txt);;すべてのファイル (*)",
         "about_license": "MIT License \u00a9 2026 Kai IWASAKI",
+        # v2.0.0 (M1 Gate): Gate タブの文言（§3.6）。実際の挙動
+        # （出現順の連番 [REDACTED]1、[REDACTED]2...）を記述する。
+        # 「同じ値を同じ記号にする」置換は Redact 0.11.0 には無い（§7）。
+        "gate_tab": "Gate",
+        "gate_input_label": "入力フォルダ",
+        "gate_output_label": "出力先",
+        "gate_run_button": "Gate を実行",
+        "gate_verify_button": "受領書を検証",
+        "gate_selfcheck_button": "動作確認",
+        "gate_open_report_button": "報告を開く",
+        "gate_open_handoff_button": "渡す物を開く",
+        "gate_redact_label": "匿名化: builtin email / phone-jp / postal-jp・label モード（出現順の連番）",
+        "gate_no_paths": "パスを載せない（連番で識別）",
+        "gate_no_input_hashes": "入力のハッシュを載せない",
+        "gate_no_redact": "匿名化を行わない",
+        "gate_done": "Gate が完了しました。項目 {items}（produced {produced}／not produced {not_produced}）。",
+        "gate_verify_done": "検証: {overall}（範囲 {scope}）。",
+        "gate_selfcheck_done": "動作確認: 期待どおり {matching} / {expected} 件。",
+        "gate_selfcheck_unavailable": "動作確認にはサンプルパックが必要です。このインストールには含まれていません（{detail}）。リポジトリツリーから実行してください。",
     },
 }
 

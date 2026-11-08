@@ -1,0 +1,191 @@
+{
+ "items": [
+  {
+   "expect": {
+    "hidden_count": 1,
+    "kind": "document",
+    "not_produced_reason": null,
+    "order_axes": {
+     "H2": 1,
+     "H3": 2,
+     "H4": 1,
+     "H7": 1
+    },
+    "order_observed": 1,
+    "redact_spans": 0,
+    "status": "flagged",
+    "treatment": "produced"
+   },
+   "file": "hidden_vanish.docx",
+   "sha256": "540ffd045c9c70f88e0950659dece4f23fcec8620216ce9aab9c7039f34dc498"
+  },
+  {
+   "expect": {
+    "hidden_count": 1,
+    "kind": "document",
+    "not_produced_reason": null,
+    "order_axes": {},
+    "order_observed": 1,
+    "redact_spans": 0,
+    "status": "flagged",
+    "treatment": "produced"
+   },
+   "file": "hidden_tinyfont.docx",
+   "sha256": "53cceb0a35d66867224ab34433067256d6d0c85415ab956339dbf4747bf8bd90"
+  },
+  {
+   "expect": {
+    "hidden_count": 1,
+    "kind": "document",
+    "not_produced_reason": null,
+    "order_axes": {},
+    "order_observed": 1,
+    "redact_spans": 0,
+    "status": "flagged",
+    "treatment": "produced"
+   },
+   "file": "hidden_tracked.docx",
+   "sha256": "c459e3e65ee3fb348b40087f858b1c06e9a550107184c5ae728595e8c51cd3b3"
+  },
+  {
+   "expect": {
+    "hidden_count": 2,
+    "kind": "document",
+    "not_produced_reason": null,
+    "order_axes": {},
+    "order_observed": 2,
+    "redact_spans": 0,
+    "status": "flagged",
+    "treatment": "produced"
+   },
+   "file": "html_inline_style.html",
+   "sha256": "23bf0438a9e3de2ab69246279b7f2ce3dcae3ae5843816b1ab18c6006d1c8f00"
+  },
+  {
+   "expect": {
+    "hidden_count": 1,
+    "kind": "document",
+    "not_produced_reason": "engine_refused",
+    "order_axes": {},
+    "order_observed": 0,
+    "redact_spans": 0,
+    "status": "flagged",
+    "treatment": "not_produced"
+   },
+   "file": "html_style_block.html",
+   "sha256": "5305f513f350b467cd5f7215a5fe0ead2faf7c5e96acc603f45e24bf9be42905"
+  },
+  {
+   "expect": {
+    "hidden_count": 2,
+    "kind": "document",
+    "not_produced_reason": null,
+    "order_axes": {},
+    "order_observed": 2,
+    "redact_spans": 0,
+    "status": "flagged",
+    "treatment": "produced"
+   },
+   "file": "html_hidden_attr.html",
+   "sha256": "3542549dee78e2e7384c763758a5fa3d34279978510bf3ac9e53e0ffaf21d2ed"
+  },
+  {
+   "expect": {
+    "hidden_count": 0,
+    "kind": "document",
+    "not_produced_reason": null,
+    "order_axes": {},
+    "order_observed": 0,
+    "redact_spans": 0,
+    "status": "flagged",
+    "treatment": "produced"
+   },
+   "file": "invisible_chars.txt",
+   "sha256": "82987fdbd7c8eedcfb341bdae6e4c9f91988a6157f9363240e9cf7b61aac314b"
+  },
+  {
+   "expect": {
+    "hidden_count": 0,
+    "kind": "document",
+    "not_produced_reason": null,
+    "order_axes": {},
+    "order_observed": 0,
+    "redact_spans": 0,
+    "status": "clean",
+    "treatment": "produced"
+   },
+   "file": "plain.txt",
+   "sha256": "021ac432d5415e5445592e635cfe48c6a163961515f4f5c7da1bd789811d6410"
+  },
+  {
+   "expect": {
+    "hidden_count": 0,
+    "kind": "document",
+    "not_produced_reason": null,
+    "order_axes": {},
+    "order_observed": 0,
+    "redact_spans": 3,
+    "status": "clean",
+    "treatment": "produced"
+   },
+   "file": "contacts.txt",
+   "sha256": "f2725e7abb16919f9b983faecb0ffe5ae3e1bebf88628963e16c774bad0894c6"
+  },
+  {
+   "expect": {
+    "hidden_count": 0,
+    "kind": "document",
+    "not_produced_reason": null,
+    "order_axes": {},
+    "order_observed": 0,
+    "redact_spans": 0,
+    "status": "clean",
+    "treatment": "produced"
+   },
+   "file": "cp932.txt",
+   "sha256": "0304f3640f293973ffcf9e318c769c161bca8f12bad5205cbdcc3dcc25ac8860"
+  },
+  {
+   "expect": {
+    "hidden_count": 0,
+    "kind": "table",
+    "not_produced_reason": "needs_settings",
+    "order_axes": {},
+    "order_observed": 0,
+    "redact_spans": 0,
+    "status": null,
+    "treatment": "not_produced"
+   },
+   "file": "table.csv",
+   "sha256": "624ba773463a49d822612ce684a1037eb3d4952ba92fbdfdafe1ba132c1dafb6"
+  },
+  {
+   "expect": {
+    "hidden_count": 0,
+    "kind": "other",
+    "not_produced_reason": "not_applicable",
+    "order_axes": {},
+    "order_observed": 0,
+    "redact_spans": 0,
+    "status": null,
+    "treatment": "not_produced"
+   },
+   "file": "unknown.xyz",
+   "sha256": "ae5dd435c9c392190d400a9b47298ac2f0d47bf12259dd96677f3b7e564afc77"
+  },
+  {
+   "expect": {
+    "hidden_count": 0,
+    "kind": "document",
+    "not_produced_reason": "unobserved",
+    "order_axes": {},
+    "order_observed": 0,
+    "redact_spans": 0,
+    "status": "unobserved",
+    "treatment": "not_produced"
+   },
+   "file": "broken.docx",
+   "sha256": "c293caa41f8ba3882f04e2337e656622f57872405399ab1498df5c0ae07244bd"
+  }
+ ]
+}

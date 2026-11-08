@@ -44,6 +44,7 @@ jobs:
           --name SieveTray --collect-all PySide6
           --icon assets/icon.ico
           --add-data "assets/icon.png;assets"
+          --add-data "samples/gate;samples/gate"
           sieve_tray_gui.py
 
       - name: Build with PyInstaller (macOS)
@@ -52,6 +53,7 @@ jobs:
           pyinstaller --noconfirm --windowed
           --name SieveTray --icon=assets/icon.icns --collect-all PySide6
           --add-data "assets/icon.png:assets"
+          --add-data "samples/gate:samples/gate"
           sieve_tray_gui.py
 
       - name: Package artifact (Windows)

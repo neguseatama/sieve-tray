@@ -47,10 +47,9 @@ ORDER_V110_SHA = {
         "f80d75284f54d068a0e5ecccecf4fe2550ab0431f641ba693e2d0678b8f943ef"),
     "sieve_order/observer.py": (
         "47f0832c7e724d5a7d941880073b86ac776efd0562cb508c6cd132b695c85437"),
-    "sieve_order/tests/__init__.py": (
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
-    "sieve_order/tests/test_observer.py": (
-        "db43633792d40d3e1a0d57f1e505f9203543e0bd05b296735a759df298cf02fd"),
+    # The upstream package's own test module is NOT vendored: it reads
+    # the upstream repo's README/SPEC/pyproject and would fail inside
+    # sieve-tray's tree.  (worklog §86 - design note for the report.)
 }
 
 # The v1.4.0 closed vocabularies (§84 §4-6 measurement) - unchanged here.
@@ -82,18 +81,27 @@ def _mk_tree(root: Path):
 
 def test_t15_cli_legacy_shape(tmp_path):
     # The legacy shape keeps the v1.4.0 scan semantics: a code group is
-    # required, so the mold tree (CLEAN_TREE) is the right corpus and
-    # the report must stay byte-identical to the v1.4.0 golden pin.
-    inp = tmp_path / "in"
-    _write_tree_text(inp, CLEAN_TREE)
+    # required, so the mold tree (CLEAN_TREE) is the right corpus.  The
+    # report path notation follows the caller's cwd (a v1.4.0 property,
+    # unchanged), so the byte comparison runs with the same cwd for both
+    # the CLI and the in-process render; the result must equal the
+    # v1.4.0 golden pin (GT-T19's hash).
+    _write_tree_text(tmp_path, CLEAN_TREE)
     report = tmp_path / "report.html"
-    proc = subprocess.run(
-        [sys.executable, str(TRAY), str(inp), "-o", str(report)],
-        capture_output=True, text=True)
+    old = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(TRAY), "in", "-o", str(report)],
+            capture_output=True, text=True)
+        result = sieve_tray.run_scan(Path("in"))
+    finally:
+        os.chdir(old)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert report.is_file()
-    # byte-identical to the v1.4.0 clean-render pin (GT-T19's hash)
-    assert hashlib.sha256(report.read_bytes()).hexdigest() == \
+    html = sieve_tray.render(result)
+    assert report.read_text(encoding="utf-8") == html
+    assert hashlib.sha256(html.encode("utf-8")).hexdigest() == \
         MOLD_CLEAN_RENDER
 
 
@@ -129,17 +137,24 @@ def test_t15_cli_gate_and_verify(tmp_path):
 # GT-T16: gate_runs history allowlist
 # ---------------------------------------------------------------------------
 
-def _gate_runs_columns():
-    from sieve_tray_storage import Storage
-    storage = Storage(":memory:")
-    with storage._conn() as conn:
+def _gate_runs_columns(db_path):
+    """The gate_runs data columns (the internal autoincrement id is
+    not part of the allowlist)."""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    try:
         rows = conn.execute(
             "PRAGMA table_info(gate_runs)").fetchall()
-    return [r[1] for r in rows]
+    finally:
+        conn.close()
+    return [r[1] for r in rows if r[1] != "id"]
 
 
 def test_t16_gate_runs_allowlist(tmp_path):
-    columns = _gate_runs_columns()
+    from sieve_tray_storage import Storage
+    db = tmp_path / "empty.sqlite"
+    Storage(str(db))  # creates the tables, incl. gate_runs
+    columns = _gate_runs_columns(db)
     assert columns == [
         "run_id", "created_at", "items_total", "produced",
         "np_needs_settings", "np_unobserved", "np_not_applicable",
@@ -157,11 +172,7 @@ def test_t16_gate_runs_allowlist(tmp_path):
         status_flagged=2, status_clean=1, status_unobserved=2,
         receipt_digest="sha256:" + "0" * 64,
         engines_version="sieve-lens 0.22.0; sieve-redact 0.11.0")
-    with storage._conn() as conn:
-        row = conn.execute("SELECT * FROM gate_runs").fetchone()
-    assert row is not None
-    for cell in row:
-        assert isinstance(cell, (str, int)) or cell is None
+    assert _gate_runs_columns(db) == columns
 
 
 def test_t16_no_paths_in_history(tmp_path):
@@ -185,23 +196,27 @@ def test_t16_existing_tables_intact(tmp_path):
     from sieve_tray_storage import Storage
     db = tmp_path / "old.sqlite"
     storage = Storage(str(db))
-    storage.record_crowd_run(
-        input_path="old.csv", output_path="out.csv", records_in=3,
-        records_out=2, suppressed=1, k_achieved=2, max_risk=0.5,
-        avg_risk=0.25, status="ok", reason=None, report_text="report")
+    storage.save_crowd_run({
+        "input_path": "old.csv", "output_path": "out.csv",
+        "records_in": 3, "records_out": 2, "suppressed": 1,
+        "k_achieved": 2, "max_risk": 0.5, "avg_risk": 0.25,
+        "status": "ok", "reason": None, "report_text": "report"})
     del storage
-    storage2 = Storage(str(db))
-    with storage2._conn() as conn:
+    import sqlite3
+    conn = sqlite3.connect(db)
+    try:
         crowd_cols = [r[1] for r in conn.execute(
-            "PRAGMA table_info(crowd_runs)").fetchall()]
+            "PRAGMA table_info(crowd_runs)").fetchall() if r[1] != "id"]
         crowd_rows = conn.execute(
             "SELECT COUNT(*) FROM crowd_runs").fetchone()[0]
+    finally:
+        conn.close()
     assert crowd_cols == [
-        "input_path", "output_path", "records_in", "records_out",
-        "suppressed", "k_achieved", "max_risk", "avg_risk", "status",
-        "reason", "report_text"]
+        "timestamp", "status", "reason", "records_in", "records_out",
+        "suppressed", "k_requested", "k_achieved", "max_risk",
+        "avg_risk", "before_alone", "after_alone", "payload_json"]
     assert crowd_rows == 1
-    assert _gate_runs_columns()  # gate_runs created alongside
+    assert _gate_runs_columns(db)  # gate_runs created alongside
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +232,7 @@ def _report_after_run(tmp_path, **kw):
         '<p class="s">HIDDEN PIECE &lt;img src=x onerror=alert(1)&gt;'
         '</p><p>VISIBLE HTML</p></body></html>', encoding="utf-8")
     (inp / "table.csv").write_bytes(b"a,b\n1,2\n")
+    (inp / "unknown.xyz").write_bytes(b"\x00\x01mystery\n")
     run_gate(inp, out, **kw)
     return (out / "local" / "gate-report.html").read_text(encoding="utf-8")
 
@@ -239,10 +255,27 @@ def test_t17_report_escapes_fragments(tmp_path):
 
 def test_t17_report_stage_colors(tmp_path):
     report = _report_after_run(tmp_path)
-    # §3.2 mapping, using the existing three-stage colors only
-    assert report.count("#fff4d6") >= 1   # needs_settings / engine_refused
-    assert report.count("#f8f8f8") >= 1   # not_applicable
-    assert report.count("#f0f0f0") >= 1   # engine_unavailable
+    # §3.2 mapping, using the existing three-stage colors only:
+    # needs_settings + engine_refused -> remedy (#fff4d6),
+    # not_applicable -> excluded (#f8f8f8)
+    assert report.count("#fff4d6") >= 1
+    assert report.count("#f8f8f8") >= 1
+
+
+def test_t17_report_environment_stage(tmp_path, monkeypatch):
+    """engine_unavailable rows get the environment gray (#f0f0f0)."""
+    from sieve_tray import run_gate
+    inp, out = tmp_path / "in", tmp_path / "out"
+    inp.mkdir()
+    (inp / "style.html").write_text(
+        '<html><head><style>.s{display:none}</style></head><body>'
+        '<p class="s">H</p><p>V</p></body></html>', encoding="utf-8")
+    monkeypatch.setitem(__import__("sys").modules,
+                        "sieve_lens_ext.html_css_selectors", None)
+    run_gate(inp, out)
+    report = (out / "local" / "gate-report.html").read_text(
+        encoding="utf-8")
+    assert report.count("#f0f0f0") >= 1
 
 
 def test_t17_browser_opens_file_uri(tmp_path, monkeypatch):

@@ -160,7 +160,7 @@ def _gate_tree(root: Path):
     # 4) invisible chars (strip 5 kinds + preserved sets);
     #    5) plain;  6) fictional personal data;  7) CP932.
     (root / "invisible_chars.txt").write_text(
-        "A\u200bB\u2060C\ufeffD\u202aE\u2066F\ue0001G\u200dH\u200c"
+        "A\u200bB\u2060C\ufeffD\u202aE\u2066F\U000e0001G\u200dH\u200c"
         "葛\U000e0100\U0001f3f4\ue0067I\n", encoding="utf-8")
     (root / "plain.txt").write_text("nothing hidden here\n",
                                     encoding="utf-8")
@@ -246,8 +246,16 @@ def test_t02_fail_closed_no_originals(tmp_path):
     _gate_tree(inp)
     receipt = run_gate(inp, out)
     handoff = out / "handoff"
+    # GT-T02 is about untreated items: the ORIGINAL of every not_produced
+    # item must never appear in handoff/ (a produced item's visible-text
+    # output may legitimately coincide with its input when nothing was
+    # hidden or replaced - that output is the treated result, not a copy
+    # of an untreated original).
     input_hashes = set()
-    for p in inp.rglob("*"):
+    for it in receipt["items"]:
+        if it["treatment"] != "not_produced":
+            continue
+        p = inp / it["path"]
         if p.is_file():
             input_hashes.add(p.read_bytes())
     for p in handoff.rglob("*"):
@@ -309,7 +317,7 @@ def test_t03_docx_visible_only(tmp_path):
             ("hidden_tracked.docx", "DELETED SENTENCE", "VISIBLE TRACKED")):
         it = _item_by_name(receipt, name)
         assert it["treatment"] == "produced"
-        rel = out / "handoff" / it["output"]["path"]
+        rel = out / it["output"]["path"]
         blob = rel.read_bytes()
         assert blob.decode("utf-8") == f"{visible}\n"
         assert hidden not in blob.decode("utf-8")
@@ -327,7 +335,7 @@ def test_t03_html_three_kinds(tmp_path):
             ("html_hidden_attr.html", "ATTR HIDDEN", "VISIBLE HTML C")):
         it = _item_by_name(receipt, name)
         assert it["treatment"] == "produced", name
-        blob = (out / "handoff" / it["output"]["path"]).read_bytes()
+        blob = (out / it["output"]["path"]).read_bytes()
         text = blob.decode("utf-8")
         assert text == f"{visible}\n"
         assert hidden not in text
@@ -350,7 +358,7 @@ def test_t03_output_utf8_lf_no_bom(tmp_path):
     for it in receipt["items"]:
         if it["treatment"] != "produced":
             continue
-        blob = (out / "handoff" / it["output"]["path"]).read_bytes()
+        blob = (out / it["output"]["path"]).read_bytes()
         assert not blob.startswith(b"\xef\xbb\xbf"), it.get("path")
         assert b"\r" not in blob, it.get("path")
         blob.decode("utf-8")  # valid UTF-8
@@ -384,9 +392,9 @@ def test_t04_strip_default_counts(tmp_path):
     assert removed == {"zero_width_space": 1, "word_joiner": 1,
                        "bom_mid_text": 1, "bidi_control": 2,
                        "tag_chars": 1}
-    blob = (out / "handoff" / it["output"]["path"]).read_bytes()
+    blob = (out / it["output"]["path"]).read_bytes()
     text = blob.decode("utf-8")
-    assert "\u200b\u2060\ufeff\u202a\u2066\ue0001" not in text
+    assert "\u200b\u2060\ufeff\u202a\u2066\U000e0001" not in text
     # preserved: ZWJ, ZWNJ, IVS, and the flag tag right after U+1F3F4
     assert "\u200d" in text and "\u200c" in text
     assert "\U000e0100" in text and "\U0001f3f4\ue0067" in text
@@ -401,7 +409,7 @@ def test_t04_preserved_by_default_without_strip(tmp_path):
                                   encoding="utf-8")
     receipt = run_gate(inp, out)
     it = _item_by_name(receipt, "keep.txt")
-    blob = (out / "handoff" / it["output"]["path"]).read_bytes()
+    blob = (out / it["output"]["path"]).read_bytes()
     assert blob.decode("utf-8") == "葛\U000e0100 高橋\u200dさん\n"
     assert it["removed_invisible"] == {k: 0 for k in STRIP_KINDS_5}
 
@@ -420,7 +428,7 @@ def test_t05_redact_default_label(tmp_path):
         "builtins": ["email", "phone-jp", "postal-jp"],
         "mode": "label", "config_sha256": None}
     assert it["redact"] == {"spans": 3, "by_mode": {"label": 3}}
-    blob = (out / "handoff" / it["output"]["path"]).read_bytes()
+    blob = (out / it["output"]["path"]).read_bytes()
     text = blob.decode("utf-8")
     assert "[REDACTED]1" in text and "[REDACTED]3" in text
     for value in ("yamada@example.jp", "03-1234-5678", "150-0001"):
@@ -434,7 +442,7 @@ def test_t05_no_redact(tmp_path):
     receipt = run_gate(inp, out, no_redact=True)
     it = _item_by_name(receipt, "contacts.txt")
     assert it["redact"] == {"spans": 0, "by_mode": {}}
-    blob = (out / "handoff" / it["output"]["path"]).read_bytes()
+    blob = (out / it["output"]["path"]).read_bytes()
     assert "yamada@example.jp" in blob.decode("utf-8")
 
 
@@ -448,10 +456,10 @@ def test_t05_extra_builtin(tmp_path):
     it = _item_by_name(receipt, "contacts.txt")
     assert it["redact"] == {"spans": 4, "by_mode": {"label": 4}}
     assert "123456789018" not in (
-        out / "handoff" / it["output"]["path"]).read_bytes().decode("utf-8")
+        out / it["output"]["path"]).read_bytes().decode("utf-8")
     # The check-digit failures stay untouched (measured §86: NG values).
     assert "123456789012" in (
-        out / "handoff" / it["output"]["path"]).read_bytes().decode("utf-8")
+        out / it["output"]["path"]).read_bytes().decode("utf-8")
 
 
 def test_t05_config_sha_only(tmp_path):
@@ -460,14 +468,14 @@ def test_t05_config_sha_only(tmp_path):
     inp.mkdir()
     (inp / "memo.txt").write_text("担当は高橋です。\n", encoding="utf-8")
     cfg = tmp_path / "rules.cfg"
-    cfg.write_text("高橋:delete\n", encoding="utf-8")
+    cfg.write_text("rule 高橋:delete\n", encoding="utf-8")
     receipt = run_gate(inp, out, redact_config=cfg)
     it = _item_by_name(receipt, "memo.txt")
     import hashlib
     assert it["redact"]["spans"] >= 1
     assert receipt["settings"]["redact"]["config_sha256"] == \
         "sha256:" + hashlib.sha256(cfg.read_bytes()).hexdigest()
-    blob = (out / "handoff" / it["output"]["path"]).read_bytes()
+    blob = (out / it["output"]["path"]).read_bytes()
     assert "高橋" not in blob.decode("utf-8")
     # the value itself never appears in the handoff receipt
     receipt_blob = (out / "handoff" / "gate-receipt.json").read_bytes()
@@ -562,7 +570,12 @@ def test_t07_handoff_secrecy_sweep(tmp_path):
             if "content_sha256" in r:
                 redact_hashes.add(r["content_sha256"])
     assert redact_hashes, "engine receipts missing in local/"
-    forbidden = ["VISIBLE BODY", "ORDER SENTENCE", ORDER_TEXT,
+    # The sweep is about what must NEVER leak: hidden text, withheld
+    # bodies, Order fragments, the replaced values and their hashes.
+    # The visible text of a produced item is the output itself - it is
+    # not on the forbidden list (request §3.4: the receipt must not
+    # carry bodies; the visible-text output is the treated result).
+    forbidden = ["ORDER SENTENCE", ORDER_TEXT,
                  "TINY FONT SECRET", "DELETED SENTENCE SECRET",
                  "STYLE CLASS HIDDEN", "yamada@example.jp",
                  "03-1234-5678", "123456789018", "4242424242424242",
