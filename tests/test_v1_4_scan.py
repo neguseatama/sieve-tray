@@ -495,7 +495,7 @@ def test_t13_readme_first_launch_section_en_ja():
 
 def test_t14_dependency_floors_are_published_versions():
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"sieve-lens>=0.20.2"' in text
+    assert '"sieve-lens>=0.22.0"' in text
     assert '"sieve-scope>=1.3.0"' in text
     assert '"sieve-referee>=1.3.0"' in text
 
@@ -576,18 +576,19 @@ def test_t15_golden_mold_v130_unchanged():
 
 
 # ---------------------------------------------------------------------------
-# TR4-T16: version 1.4.0 everywhere
+# TR4-T16: version pin (refreshed at 2.0.0 - the M1 Gate lane; the
+# 1.4.0 section stays in the CHANGELOG)
 # ---------------------------------------------------------------------------
 
 def test_t16_version_pins():
-    assert sieve_tray.__version__ == "1.4.0"
+    assert sieve_tray.__version__ == "2.0.0"
     # pyproject keeps the single-source wiring (dynamic version read
     # from sieve_tray.__version__)
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'dynamic = ["version"]' in text
     assert 'version = { attr = "sieve_tray.__version__" }' in text
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert "## [1.4.0]" in changelog
+    assert "## [2.0.0]" in changelog
 
 
 # ---------------------------------------------------------------------------

@@ -249,12 +249,10 @@ class TestDefaultModifierVocabPath(unittest.TestCase):
 class TestVersionBump(unittest.TestCase):
     """Version marker - guards against accidental version revert."""
 
-    def test_version_is_1_4_0(self):
-        # v1.4.0: bumped for the table observation (scan), the
-        # three-stage unobserved coloring, the input-notes shape and
-        # the distribution verification means. Expectation follows the
-        # version bump, not a behavior change.
-        self.assertEqual(sieve_tray.__version__, "1.4.0")
+    def test_version_is_2_0_0(self):
+        # v2.0.0: bumped for the M1 Gate lane. Expectation follows
+        # the version bump, not a behavior change.
+        self.assertEqual(sieve_tray.__version__, "2.0.0")
 
 
 class TestRunScanGroupsArgument(unittest.TestCase):

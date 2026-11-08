@@ -3,7 +3,8 @@
 The pins below were measured against the upstream repositories before
 implementation:
   - Crowd upstream main def0053 (v0.9.0), tree a06c92a6105d9a06932c534aca831b5f306f9d10
-  - Redact upstream tag v0.10.0 (1fb012da96a5d47c97f1562458fe59aa52daaa7f)
+  - Redact upstream tag v0.11.0 (ddde4bd) — pin refreshed for the M1
+    Gate lane's re-vendoring
 Pins refreshed at the v1.3.0 vendor update; the golden molds (TR2-T04/T05)
 are unchanged and keep their pre-import values.
 TR2-T09 (test_flagged_sentence_is_surfaced follows the upstream vocab) is
@@ -54,8 +55,8 @@ BUILTIN_PACK_SHA = "1fae5827a7048ca1e4b92c7d12792a755f5b21e63d6392bc2a1fbdb4e3dc
 TEMPLATE_SHA2 = "0d5c35d82dc54004ad7f34b80be69103a80a0d20dccc4dae22f7e6412ba6c657"
 RUN_TABLE_SHA = "b58249febc35c4feb6f6bfe1632aab92ca802c611759d31138d8ae040061500e"
 
-REDACT_UPSTREAM_VERSION = "0.10.0"
-REDACT_0100_SHA256 = "61096b78a64a9273a722170d1591dede5edd8b03b2956e498deb1bf2f0c4c397"
+REDACT_UPSTREAM_VERSION = "0.11.0"
+REDACT_0100_SHA256 = "9203c7476fbac1eb0f25e75c6f31ea48732b4928b43ad2f641c5f5902c94e836"
 
 FIXTURE_PINS = {
     "people.csv": "cf32626e9b45317efad3a35a8ff3721bd3b3dfe876422034a124d18774a289e9",
@@ -636,9 +637,11 @@ class TR2_T11_DependencyFloors(unittest.TestCase):
     (lens floor fixed by the design doc; referee floor verified by the
     suite run against 1.3.0; scope has only 1.3.0 published)."""
 
-    def test_lens_floor_is_0202(self):
+    def test_lens_floor_is_0220(self):
+        # v2.0.0 (M1 Gate): raised to the published 0.22.0 (Gate
+        # consumes visible_text; UTF-8 results stay byte-identical).
         deps = _load_pyproject()["project"]["dependencies"]
-        self.assertIn("sieve-lens>=0.20.2", deps)
+        self.assertIn("sieve-lens>=0.22.0", deps)
 
     def test_other_floors_match_measurement(self):
         deps = _load_pyproject()["project"]["dependencies"]
@@ -648,10 +651,10 @@ class TR2_T11_DependencyFloors(unittest.TestCase):
 
 class TR2_T12_Version140(unittest.TestCase):
     """TR2-T12: version across __version__, pyproject and the
-    CHANGELOG (pin refreshed at the v1.4.0 lane)."""
+    CHANGELOG (pin refreshed for the 2.0.0 Gate lane)."""
 
-    def test_version_is_1_4_0(self):
-        self.assertEqual(sieve_tray.__version__, "1.4.0")
+    def test_version_is_2_0_0(self):
+        self.assertEqual(sieve_tray.__version__, "2.0.0")
 
     def test_pyproject_reads_version_from_module(self):
         text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -659,7 +662,7 @@ class TR2_T12_Version140(unittest.TestCase):
 
     def test_changelog_has_140_section(self):
         text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertIn("## [1.4.0]", text)
+        self.assertIn("## [2.0.0]", text)
 
 
 if __name__ == "__main__":
