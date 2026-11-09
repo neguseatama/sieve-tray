@@ -83,6 +83,28 @@ next sequential label (`[REDACTED]1`, `[REDACTED]2`, ...).
 
 ---
 
+## 👥 Cohort
+
+Cohort (2.1.0) compares the submissions of a folder side by side:
+documents go through the same Lens/Referee lanes as Gate, `.py` files
+through Scope, and the remaining source languages through the generic
+lane. The output splits the same way - `handoff/` carries the receipt
+only, `local/` keeps the full report.
+
+1. CLI: `python3 sieve_tray.py cohort <input folder> -o <output folder>`
+2. Hand over the `handoff/` folder; keep `local/` for yourself.
+3. Re-check later: `python3 sieve_tray.py verify <handoff>/cohort-receipt.json`
+
+The generic lane flags a pair when either side reaches 700 ‰ (either
+side, so that a small file contained in a larger one is not missed);
+the recorded `match_per_mille` is the higher of the two sides. The
+flagged pairs are an observation, not a judgment. `verify` keeps the
+M1 vocabulary unchanged: a Cohort receipt whose summary counts do not
+hold together is reported with the existing `receipt_unreadable` word,
+like any receipt that cannot be read as a record.
+
+---
+
 ## 🧩 The Sieve Series
 
 Sieve is a family of deterministic, zero-dependency engines that share

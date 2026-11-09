@@ -2892,7 +2892,8 @@ COHORT_REPORT_TEXTS = {
         "generic_rule": "The generic lane flags a pair when either "
                         "side reaches {per_mille} ‰ (either side, so "
                         "that a small file contained in a larger one "
-                        "is not missed).",
+                        "is not missed).  The recorded match_per_mille "
+                        "is the higher of the two sides.",
         "spans_heading": "Matched spans",
         "graph_heading": "Flagged pairs graph",
         "graph_note": "The regions are the connected components of "
@@ -2935,7 +2936,8 @@ COHORT_REPORT_TEXTS = {
         "pairs_heading": "組の一覧",
         "generic_rule": "汎用レーンは、いずれか一方の側でも {per_mille} ‰ "
                         "に達した組を要確認にします（小さなファイルが大きな"
-                        "ファイルにそのまま含まれる場合を見落とさないため）。",
+                        "ファイルにそのまま含まれる場合を見落とさないため）。"
+                        "記録される一致率は、高い側の値です。",
         "spans_heading": "一致箇所",
         "graph_heading": "要確認の組の図",
         "graph_note": "図の領域は、要確認の組の連結成分と孤立した提出物 "
@@ -3684,10 +3686,15 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
     A Cohort receipt (kind sieve-cohort, request §3.7) is verified in
     the same vocabulary: handoff/ carries the receipt only, so with no
     folders given the scope defaults to outputs_only; the summary
-    arithmetic (the GREEN 照合) is cross-checked in every scope; the
-    base files given via base_paths are hashed against the recorded
-    settings (a mismatch is settings_unavailable); the replay re-runs
-    run_cohort with the recorded settings and compares the digests."""
+    arithmetic (the GREEN 照合) is cross-checked in every scope - a
+    record whose numbers do not hold together is reported with the
+    existing receipt_unreadable word (the 2026-11-10 ruling: the
+    verify vocabulary is the published M1 contract and stays closed,
+    request §2-7; the distinction is carried by the human-readable
+    wording, not by a new vocabulary word); the base files given via
+    base_paths are hashed against the recorded settings (a mismatch is
+    settings_unavailable); the replay re-runs run_cohort with the
+    recorded settings and compares the digests."""
     receipt_path = Path(receipt_path)
     result = {"scope": None, "overall": None, "items": [],
               "not_verifiable_reason": None}
@@ -3726,12 +3733,17 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
             # itself
             scope = "outputs_only"
         else:
+            # the 2026-11-10 ruling: the error wording is for the user
             raise ValueError(
-                "verify needs an output folder, an input folder, or an "
-                "explicit scope")
+                "verify cannot tell what to check: pass the run's "
+                "output folder (--output), the original input folder, "
+                "or an explicit --scope (outputs_only / "
+                "inputs_and_outputs / replay)")
         result["scope"] = scope
     elif scope not in ("outputs_only", "inputs_and_outputs", "replay"):
-        raise ValueError("unknown scope: %r" % (scope,))
+        raise ValueError(
+            "unknown scope: %r (the scopes are outputs_only, "
+            "inputs_and_outputs, replay)" % (scope,))
 
     # the Cohort pre-checks (§3.7): the summary arithmetic and the base
     # files.  Both run in every scope - they are properties of the
@@ -3740,8 +3752,14 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
     recorded_bases: list = []
     if is_cohort:
         if not _cohort_summary_consistent(obj):
+            # the 2026-11-10 ruling: the verify vocabulary is the M1
+            # published contract and stays closed (request §2-7), so a
+            # record whose summary arithmetic does not hold together is
+            # reported with the existing word receipt_unreadable - the
+            # distinction is carried by the human-readable wording
+            # (README / report), not by a new vocabulary word
             result["overall"] = "not_verifiable"
-            result["not_verifiable_reason"] = "summary_inconsistent"
+            result["not_verifiable_reason"] = "receipt_unreadable"
             return result
         base_settings = (obj.get("settings") or {}).get("base") or {}
         recorded_bases = list(base_settings.get("sha256") or [])

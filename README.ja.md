@@ -77,6 +77,24 @@ Gate は M1 の検疫レーンです。フォルダを選ぶと、1 回で文書
 
 ---
 
+## 👥 Cohort
+
+Cohort（2.1.0）は、フォルダ内の提出物を並べて比較します。文書は Gate と同じ
+Lens／Referee のレーン、`.py` は Scope、残りのソース言語は汎用レーンで観測し、
+出力は Gate と同じく `handoff/`（受領書のみ）と `local/`（報告一式）に分けます。
+
+1. CLI: `python3 sieve_tray.py cohort <入力フォルダ> -o <出力先>`
+2. `handoff/` を渡し、`local/` は手元に残す。
+3. あとで確かめる: `python3 sieve_tray.py verify <handoff>/cohort-receipt.json`
+
+汎用レーンは、いずれか一方の側でも 700 ‰ に達した組を要確認にします（小さな
+ファイルが大きなファイルにそのまま含まれる場合を見落とさないため）。記録される
+`match_per_mille` は、高い側の値です。要確認の組は観測であり、結論ではありません。
+`verify` の語彙は M1 のままで変更しません。要約の件数の辻褄が合わない Cohort の
+受領書は、記録として読み取れない受領書と同じ `receipt_unreadable` で報告されます。
+
+---
+
 ## 🧩 Sieve シリーズ
 
 Sieve は、決定的・ゼロ依存・完全ローカルという共通の設計原則を共有する

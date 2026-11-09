@@ -396,11 +396,15 @@ def test_ch_t05_report_generic_rule_and_graph_note(tmp_path):
     report = _report_path(out).read_text(encoding="utf-8")
     assert "either side" in report
     assert "700" in report
+    # the 2026-11-10 ruling: the recorded match_per_mille is the
+    # higher of the two sides (stated in the report and the README)
+    assert "higher of the two sides" in report
     assert "connected components" in report
     out2 = tmp_path / "out2"
     _run_cohort(inp, out2, lang="ja")
     report2 = _report_path(out2).read_text(encoding="utf-8")
     assert "いずれか一方の側" in report2
+    assert "高い側の値" in report2
     assert "連結成分" in report2
 
 
@@ -652,12 +656,17 @@ def test_ch_t10_verify_base_replay_match(tmp_path):
     assert obj["scope"] == "replay" and obj["overall"] == "match"
 
 
-def test_ch_t10_verify_summary_inconsistent(tmp_path):
+def test_ch_t10_verify_summary_arithmetic_broken(tmp_path):
     # the GREEN 照合 (the 2026-11-10 ruling): the receipt lists the
     # flagged pairs only, so verify cross-checks the summary arithmetic
     # (flagged == listed pairs, per-lane counts, GREEN == total - RED
     # - YELLOW).  A receipt whose numbers do not hold together is not
     # a verifiable record - even when its self-digest is consistent.
+    # The 2026-11-10 ruling keeps the verify vocabulary closed (the M1
+    # published contract, request §2-7): the broken summary is reported
+    # with the existing receipt_unreadable word; the distinction is
+    # carried by the human-readable wording (README / report), not by
+    # a new vocabulary word.
     inp = tmp_path / "in"
     _cohort_tree(inp)
     out = tmp_path / "out"
@@ -676,7 +685,7 @@ def test_ch_t10_verify_summary_inconsistent(tmp_path):
     assert proc.returncode == 2, proc.stdout + proc.stderr
     o = json.loads(proc.stdout)
     assert o["overall"] == "not_verifiable"
-    assert o["not_verifiable_reason"] == "summary_inconsistent"
+    assert o["not_verifiable_reason"] == "receipt_unreadable"
 
 
 # ---------------------------------------------------------------------------
