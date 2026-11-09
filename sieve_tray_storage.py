@@ -37,6 +37,16 @@ CROWD_PAYLOAD_ALLOWLIST = frozenset({
 # v1.1.0: one-time settings flag for the payload scrub migration (§3.7 (2)).
 _CROWD_SCRUB_FLAG = "crowd_payload_scrub_v1_1_0"
 
+# v2.1.0 (M2 Cohort, request §3.7): the cohort_runs allowlist - the same
+# discipline as gate_runs.  Counts, the receipt digest and the engine
+# versions only; no paths, file names, bodies or fragments are ever
+# stored.  The flagged pairs are listed inside the receipt (kept by the
+# caller), never here.
+COHORT_RUN_ALLOWLIST = frozenset({
+    "run_id", "ts_utc", "items", "compared", "not_compared",
+    "pairs_flagged", "removed_total", "receipt_digest", "engines",
+})
+
 DEFAULT_SETTINGS = {
     "export_dir": str(Path.home()),
     "history_retention": "50",
@@ -171,6 +181,28 @@ class Storage:
                     status_unobserved INTEGER NOT NULL,
                     receipt_digest TEXT NOT NULL,
                     engines_version TEXT NOT NULL
+                )
+                """
+            )
+            # v2.1.0 (M2 Cohort): a dedicated Cohort history table with
+            # its own allowlist (COHORT_RUN_ALLOWLIST) - counts, the
+            # receipt digest and the engine versions.  No paths, bodies
+            # or fragments (request doc §3.7); existing tables stay
+            # untouched.  Optional counts stay nullable so partial
+            # records can never break the insert.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cohort_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    ts_utc TEXT NOT NULL,
+                    items INTEGER,
+                    compared INTEGER,
+                    not_compared INTEGER,
+                    pairs_flagged INTEGER,
+                    removed_total INTEGER,
+                    receipt_digest TEXT,
+                    engines TEXT
                 )
                 """
             )
@@ -435,6 +467,51 @@ class Storage:
                 "np_engine_unavailable", "np_engine_refused",
                 "np_write_failed", "status_flagged", "status_clean",
                 "status_unobserved", "receipt_digest", "engines_version"]
+        return [dict(zip(keys, row)) for row in rows]
+
+    # ------------------------------------------------------------------
+    # v2.1.0 (M2 Cohort): the cohort_runs allowlist table
+    # ------------------------------------------------------------------
+
+    def record_cohort_run(self, record: dict) -> int:
+        """Persist one Cohort run's allowlisted summary; returns the row
+        id.  Only COHORT_RUN_ALLOWLIST keys are read - any other key of
+        the record dict is structurally dropped, so paths, bodies and
+        fragments can never reach the table."""
+        rec = {k: record.get(k) for k in sorted(COHORT_RUN_ALLOWLIST)}
+        for k in ("items", "compared", "not_compared", "pairs_flagged",
+                  "removed_total"):
+            if rec[k] is not None:
+                rec[k] = int(rec[k])
+        for k in ("run_id", "ts_utc", "receipt_digest", "engines"):
+            if rec[k] is not None:
+                rec[k] = str(rec[k])
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute(
+                "INSERT INTO cohort_runs (run_id, ts_utc, items,"
+                " compared, not_compared, pairs_flagged, removed_total,"
+                " receipt_digest, engines)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (rec["run_id"], rec["ts_utc"], rec["items"],
+                 rec["compared"], rec["not_compared"],
+                 rec["pairs_flagged"], rec["removed_total"],
+                 rec["receipt_digest"], rec["engines"]))
+            row_id = cur.lastrowid
+        return row_id
+
+    def load_cohort_runs(self, limit: int = 20) -> list:
+        """Return stored Cohort run dicts, newest first.  The keys are
+        exactly the allowlist (no row id), so the caller sees only what
+        the §3.7 discipline allows."""
+        keys = ["run_id", "ts_utc", "items", "compared", "not_compared",
+                "pairs_flagged", "removed_total", "receipt_digest",
+                "engines"]
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT run_id, ts_utc, items, compared, not_compared,"
+                " pairs_flagged, removed_total, receipt_digest, engines"
+                " FROM cohort_runs ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
         return [dict(zip(keys, row)) for row in rows]
 
     def _scrub_crowd_payloads(self, conn) -> None:

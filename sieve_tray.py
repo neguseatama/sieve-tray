@@ -3133,8 +3133,10 @@ def run_cohort(input_dir: Path, output_dir: Path, *,
     it (ValueError); a base file that is missing, empty or undecodable
     is also a ValueError.
 
-    storage_path is accepted for the §3.7 history wiring (the
-    cohort_runs record is connected with that commit)."""
+    storage_path is accepted for the §3.7 history: when given, one
+    allowlisted cohort_runs record (counts, the receipt digest, the
+    engine versions - no paths, no bodies) is appended; a broken
+    storage never fails the run itself."""
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
     if progress is None:
@@ -3401,6 +3403,33 @@ def run_cohort(input_dir: Path, output_dir: Path, *,
     blob = _gate_norm_json(receipt)
     _gate_write_atomic(handoff / "cohort-receipt.json",
                        blob.encode("utf-8"))
+
+    # --- history (§3.7): allowlisted counts only, no paths, no bodies;
+    # a broken storage never fails the run itself (the gate rule)
+    if storage_path is not None:
+        try:
+            from sieve_tray_storage import Storage
+            storage = Storage(str(storage_path))
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            removed_total = 0
+            for it in items:
+                for rep in (it.get("removed") or {}).values():
+                    removed_total += int(rep.get("length", 0))
+            storage.record_cohort_run({
+                "run_id": "cohort-" + now.replace(":", "")
+                                       .replace("-", ""),
+                "ts_utc": now,
+                "items": len(items),
+                "compared": compared_n,
+                "not_compared": not_compared_n,
+                "pairs_flagged": len(pairs),
+                "removed_total": removed_total,
+                "receipt_digest": receipt["digest"],
+                "engines": _gate_engines_version(),
+            })
+        except Exception:
+            progress("Cohort: history record skipped")
     return receipt
 
 
@@ -3607,12 +3636,58 @@ def _render_cohort_report(receipt: dict, fragments: List[dict], *,
     return "\n".join(parts)
 
 
+def _cohort_summary_consistent(obj: dict) -> bool:
+    """The GREEN 照合 (the 2026-11-10 ruling): the receipt lists the
+    flagged pairs only, so the summary counts are cross-checked against
+    the pairs list and against each other - GREEN has no individual
+    entries and lives in the summary alone, so the arithmetic must hold
+    for the record to be verifiable."""
+    summary = obj.get("summary") or {}
+    pairs = obj.get("pairs") or []
+    if summary.get("flagged") != len(pairs):
+        return False
+    n_ref = n_scope = n_gen = 0
+    for p in pairs:
+        lanes = sum(1 for k in ("referee", "scope", "generic") if k in p)
+        if lanes != 1:
+            return False
+        if "referee" in p:
+            n_ref += 1
+        elif "scope" in p:
+            n_scope += 1
+        else:
+            n_gen += 1
+    ref = summary.get("referee") or {}
+    if ref:
+        if ref.get("RED", 0) + ref.get("YELLOW", 0) != n_ref:
+            return False
+        if ref.get("GREEN", 0) != (ref.get("total", 0)
+                                   - ref.get("RED", 0)
+                                   - ref.get("YELLOW", 0)):
+            return False
+    sc = summary.get("scope") or {}
+    if sc and sc.get("pairs", 0) != n_scope:
+        return False
+    gen = summary.get("generic") or {}
+    if gen and gen.get("pairs", 0) != n_gen:
+        return False
+    return True
+
+
 def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
-                scope=None, redact_config=None) -> dict:
+                scope=None, redact_config=None, base_paths=None) -> dict:
     """Re-check a run (request §3.4).  scope is always reported:
     outputs_only / inputs_and_outputs / replay.  overall is
     match / differs / not_verifiable; the CLI maps it to exit codes
-    0 / 1 / 2.  The words of judgment ("pass" etc.) are never used."""
+    0 / 1 / 2.  The words of judgment ("pass" etc.) are never used.
+
+    A Cohort receipt (kind sieve-cohort, request §3.7) is verified in
+    the same vocabulary: handoff/ carries the receipt only, so with no
+    folders given the scope defaults to outputs_only; the summary
+    arithmetic (the GREEN 照合) is cross-checked in every scope; the
+    base files given via base_paths are hashed against the recorded
+    settings (a mismatch is settings_unavailable); the replay re-runs
+    run_cohort with the recorded settings and compares the digests."""
     receipt_path = Path(receipt_path)
     result = {"scope": None, "overall": None, "items": [],
               "not_verifiable_reason": None}
@@ -3629,6 +3704,7 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
         result["not_verifiable_reason"] = "receipt_unreadable"
         return result
     result["scope"] = scope
+    is_cohort = obj.get("kind") == COHORT_KIND
     if obj.get("receipt_version") != GATE_RECEIPT_VERSION:
         result["overall"] = "not_verifiable"
         result["not_verifiable_reason"] = "receipt_version_unsupported"
@@ -3644,6 +3720,11 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
             scope = "outputs_only"
         elif input_dir is not None:
             scope = "replay"
+        elif is_cohort:
+            # the Cohort handoff carries the receipt only (§3.1), so
+            # with nothing else given the outputs scope is the receipt
+            # itself
+            scope = "outputs_only"
         else:
             raise ValueError(
                 "verify needs an output folder, an input folder, or an "
@@ -3651,6 +3732,33 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
         result["scope"] = scope
     elif scope not in ("outputs_only", "inputs_and_outputs", "replay"):
         raise ValueError("unknown scope: %r" % (scope,))
+
+    # the Cohort pre-checks (§3.7): the summary arithmetic and the base
+    # files.  Both run in every scope - they are properties of the
+    # record itself, not of the folders.
+    bases: List[Path] = []
+    recorded_bases: list = []
+    if is_cohort:
+        if not _cohort_summary_consistent(obj):
+            result["overall"] = "not_verifiable"
+            result["not_verifiable_reason"] = "summary_inconsistent"
+            return result
+        base_settings = (obj.get("settings") or {}).get("base") or {}
+        recorded_bases = list(base_settings.get("sha256") or [])
+        for raw in (base_paths or ()):  # missing base is fail-closed
+            p = Path(raw)
+            if not p.is_file():
+                result["overall"] = "not_verifiable"
+                result["not_verifiable_reason"] = "settings_unavailable"
+                return result
+            bases.append(p)
+        if recorded_bases and bases:
+            got = ["sha256:" + hashlib.sha256(b.read_bytes()).hexdigest()
+                   for b in bases]
+            if got != recorded_bases:
+                result["overall"] = "not_verifiable"
+                result["not_verifiable_reason"] = "settings_unavailable"
+                return result
 
     # engine version drift is reported but never stops the comparison
     current = {e["name"]: e["version"] for e in _gate_engine_table()}
@@ -3709,7 +3817,33 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
             if rel not in seen:
                 reasons.append({"path": rel, "reason": "item_added"})
 
-    if scope == "replay":
+    if scope == "replay" and is_cohort:
+        # the Cohort replay (§3.7): re-run the comparison with the
+        # recorded settings; the reproduced receipt must be
+        # byte-identical, which also covers the summary counts the
+        # receipt does not list individually (the GREEN 照合)
+        if recorded_bases and not bases:
+            # the exclusion cannot be reproduced without the base files
+            result["overall"] = "not_verifiable"
+            result["not_verifiable_reason"] = "settings_unavailable"
+            return result
+        csettings = obj.get("settings") or {}
+        with tempfile.TemporaryDirectory() as td:
+            receipt2 = run_cohort(
+                Path(input_dir), Path(td) / "out",
+                base_paths=bases or None,
+                exclude_quotes=bool(csettings.get("exclude_quotes")),
+                exclude_bibliography=bool(
+                    csettings.get("exclude_bibliography")),
+                include_paths=bool(csettings.get("include_paths", True)),
+                include_input_hashes=bool(
+                    csettings.get("include_input_hashes", True)))
+        if receipt2["digest"] != obj.get("digest"):
+            for it2 in receipt2["items"]:
+                ident = _gate_verify_item_ident(it2)
+                ident["reason"] = "replay_differs"
+                reasons.append(ident)
+    elif scope == "replay":
         settings = obj.get("settings", {})
         config_sha = settings.get("redact", {}).get("config_sha256")
         if config_sha is not None:
@@ -3821,7 +3955,6 @@ def gate_self_check(progress: ProgressCallback = _silent) -> dict:
             "differences": diffs}
 
 
-
 def _gate_main(argv: List[str]) -> int:
     """The `gate` / `verify` shapes (request §3.6).  Only entered when
     sys.argv[1] is exactly one of those words, so the legacy
@@ -3839,12 +3972,15 @@ def _gate_main(argv: List[str]) -> int:
     g.add_argument("--no-paths", action="store_true")
     g.add_argument("--no-input-hashes", action="store_true")
     g.add_argument("--self-check", action="store_true")
-    v = sub.add_parser("verify", help="verify a Gate receipt")
+    v = sub.add_parser("verify", help="verify a Gate/Cohort receipt")
     v.add_argument("receipt", type=Path)
     v.add_argument("input_dir", nargs="?", type=Path, default=None)
     v.add_argument("--output", "-o", type=Path, default=None)
     v.add_argument("--scope", default=None)
     v.add_argument("--redact-config", type=Path, default=None)
+    # §3.7: the Cohort base files for the settings check and the replay
+    v.add_argument("--base", action="append", default=None,
+                   metavar="PATH")
     # v2.1.0 (M2 Cohort): the cohort subcommand joins gate and verify;
     # the legacy shape and the M1 shapes stay byte-identical.
     c = sub.add_parser("cohort", help="compare the submissions of a "
@@ -3861,6 +3997,23 @@ def _gate_main(argv: List[str]) -> int:
                    help="the report language (default: en)")
     args = parser.parse_args(argv)
 
+    if args.cmd == "cohort":
+        if args.input_dir is None or args.output is None:
+            parser.error("cohort needs an input folder and -o/--output")
+        receipt = run_cohort(
+            args.input_dir, args.output, progress=print,
+            base_paths=[Path(p) for p in args.base]
+            if args.base else None,
+            exclude_quotes=args.exclude_quotes,
+            exclude_bibliography=args.exclude_bibliography,
+            include_paths=not args.no_paths,
+            include_input_hashes=not args.no_input_hashes,
+            lang=args.lang)
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Handoff: %s" % (args.output / "handoff"))
+        print("Report:  %s" % (args.output / "local"
+                               / "cohort-report.html"))
+        return 0
     if args.cmd == "gate":
         if args.self_check:
             result = gate_self_check(progress=print)
@@ -3882,26 +4035,10 @@ def _gate_main(argv: List[str]) -> int:
         print("Handoff: %s" % (args.output / "handoff"))
         print("Report:  %s" % (args.output / "local" / "gate-report.html"))
         return 0
-    if args.cmd == "cohort":
-        if args.input_dir is None or args.output is None:
-            parser.error("cohort needs an input folder and -o/--output")
-        receipt = run_cohort(
-            args.input_dir, args.output, progress=print,
-            base_paths=[Path(p) for p in args.base]
-            if args.base else None,
-            exclude_quotes=args.exclude_quotes,
-            exclude_bibliography=args.exclude_bibliography,
-            include_paths=not args.no_paths,
-            include_input_hashes=not args.no_input_hashes,
-            lang=args.lang)
-        print("Receipt digest: %s" % receipt["digest"])
-        print("Handoff: %s" % (args.output / "handoff"))
-        print("Report:  %s" % (args.output / "local"
-                               / "cohort-report.html"))
-        return 0
     result = verify_gate(
         args.receipt, input_dir=args.input_dir, output_dir=args.output,
-        scope=args.scope, redact_config=args.redact_config)
+        scope=args.scope, redact_config=args.redact_config,
+        base_paths=args.base)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return {"match": 0, "differs": 1,
             "not_verifiable": 2}[result["overall"]]

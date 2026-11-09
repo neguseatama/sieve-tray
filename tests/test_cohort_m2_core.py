@@ -623,6 +623,62 @@ def test_ch_t10_verify_base_hash_mismatch(tmp_path):
     assert obj["not_verifiable_reason"] == "settings_unavailable"
 
 
+def test_ch_t10_verify_replay_match(tmp_path):
+    # the replay re-runs the whole comparison; the reproduced receipt
+    # must be byte-identical - the digest covers the summary counts, so
+    # the GREEN counts (summary-only, no individual GREEN pairs in the
+    # receipt) are included in the 照合 by construction
+    inp = tmp_path / "in"
+    _cohort_tree(inp)
+    out = tmp_path / "out"
+    _run_cohort(inp, out)
+    proc = _verify(_receipt_path(out), input_dir=inp)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    obj = json.loads(proc.stdout)
+    assert obj["scope"] == "replay" and obj["overall"] == "match"
+
+
+def test_ch_t10_verify_base_replay_match(tmp_path):
+    # replay with the recorded base files reproduces the receipt too
+    inp = tmp_path / "in"
+    _cohort_tree(inp)
+    base = _base_file(tmp_path)
+    out = tmp_path / "out"
+    _run_cohort(inp, out, base_paths=[base])
+    proc = _verify(_receipt_path(out), ["--base", str(base)],
+                   input_dir=inp)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    obj = json.loads(proc.stdout)
+    assert obj["scope"] == "replay" and obj["overall"] == "match"
+
+
+def test_ch_t10_verify_summary_inconsistent(tmp_path):
+    # the GREEN 照合 (the 2026-11-10 ruling): the receipt lists the
+    # flagged pairs only, so verify cross-checks the summary arithmetic
+    # (flagged == listed pairs, per-lane counts, GREEN == total - RED
+    # - YELLOW).  A receipt whose numbers do not hold together is not
+    # a verifiable record - even when its self-digest is consistent.
+    inp = tmp_path / "in"
+    _cohort_tree(inp)
+    out = tmp_path / "out"
+    _run_cohort(inp, out)
+    obj = json.loads(_receipt_path(out).read_text(encoding="utf-8"))
+    assert obj["pairs"], "the §3.1 tree must flag at least one pair"
+    obj["pairs"] = obj["pairs"][1:]  # drop one flagged pair
+    from sieve_tray import _gate_digest
+    obj["digest"] = _gate_digest(obj)
+    tampered = tmp_path / "tampered.json"
+    tampered.write_text(json.dumps(obj, ensure_ascii=False,
+                                   sort_keys=True,
+                                   separators=(",", ":")),
+                        encoding="utf-8")
+    proc = _verify(tampered)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    o = json.loads(proc.stdout)
+    assert o["overall"] == "not_verifiable"
+    assert o["not_verifiable_reason"] == "summary_inconsistent"
+
+
 # ---------------------------------------------------------------------------
 # CH-T11: the sample pack and the self-check (expected observations,
 # never a digest).
@@ -774,6 +830,41 @@ def test_ch_t13_existing_tables_intact(tmp_path):
     con.close()
     assert {"runs", "sanitizations", "settings", "crowd_runs",
             "gate_runs"} <= tables
+
+
+def test_ch_t13_storage_wired_into_run_cohort(tmp_path):
+    # the §3.7 wiring: run_cohort(storage_path=...) records one
+    # allowlisted cohort_runs row per run, newest first
+    from sieve_tray_storage import Storage
+    inp = tmp_path / "in"
+    _cohort_tree(inp)
+    out = tmp_path / "out"
+    db = tmp_path / "h.db"
+    receipt = _run_cohort(inp, out, storage_path=db)
+    rows = Storage(str(db)).load_cohort_runs()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["run_id"].startswith("cohort-")
+    assert row["receipt_digest"] == receipt["digest"]
+    assert row["items"] == receipt["summary"]["items"]
+    assert row["compared"] == receipt["summary"]["compared"]
+    assert row["not_compared"] == receipt["summary"]["not_compared"]
+    assert row["pairs_flagged"] == receipt["summary"]["flagged"]
+    allowed = {"run_id", "ts_utc", "items", "compared", "not_compared",
+               "pairs_flagged", "removed_total", "receipt_digest",
+               "engines"}
+    assert set(row.keys()) <= allowed
+    # a second run appends and loads newest-first; a broken storage
+    # path never fails the run itself (the gate rule)
+    out2 = tmp_path / "out2"
+    receipt2 = _run_cohort(inp, out2, storage_path=db)
+    rows = Storage(str(db)).load_cohort_runs()
+    assert [r["receipt_digest"] for r in rows] == \
+        [receipt2["digest"], receipt["digest"]]
+    out3 = tmp_path / "out3"
+    receipt3 = _run_cohort(inp, out3,
+                           storage_path=tmp_path / "no" / "dir" / "x.db")
+    assert receipt3["digest"] == receipt2["digest"]
 
 
 # ---------------------------------------------------------------------------
