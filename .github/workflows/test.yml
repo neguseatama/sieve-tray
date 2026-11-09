@@ -32,7 +32,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install ".[gui]"
-          pip install pytest
+          pip install pytest pypdf tinycss2 cssselect2
 
       - name: Verify vendored sieve_redact matches the published release
         run: |
@@ -42,4 +42,4 @@ jobs:
           echo "$PIN  /tmp/upstream_redact.py" | sha256sum -c -
           echo "$PIN  sieve_redact.py" | sha256sum -c -
       - name: Run tests
-        run: pytest -v
+        run: python -m pytest -v

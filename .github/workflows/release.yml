@@ -34,7 +34,7 @@ jobs:
       - name: Install sieve-tray, GUI deps, and PyInstaller
         run: |
           python -m pip install --upgrade pip
-          pip install ".[gui]"
+          pip install ".[gui]" pypdf tinycss2 cssselect2
           pip install pyinstaller
 
       - name: Build with PyInstaller (Windows)
@@ -42,6 +42,7 @@ jobs:
         run: >
           pyinstaller --noconfirm --onefile --windowed
           --name SieveTray --collect-all PySide6
+          --collect-all sieve_lens_ext
           --icon assets/icon.ico
           --add-data "assets/icon.png;assets"
           --add-data "samples/gate;samples/gate"
@@ -52,6 +53,7 @@ jobs:
         run: >
           pyinstaller --noconfirm --windowed
           --name SieveTray --icon=assets/icon.icns --collect-all PySide6
+          --collect-all sieve_lens_ext
           --add-data "assets/icon.png:assets"
           --add-data "samples/gate:samples/gate"
           sieve_tray_gui.py
