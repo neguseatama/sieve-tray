@@ -3973,6 +3973,125 @@ def gate_self_check(progress: ProgressCallback = _silent) -> dict:
             "differences": diffs}
 
 
+def cohort_self_check(progress: ProgressCallback = _silent) -> dict:
+    """The self-check (request §3.8): run the sample pack through the
+    Cohort in a temp folder and compare the expected observations -
+    the pair colors, the excluded-length ranges, the span presence,
+    the hidden-text presence - never a digest.  Returns {"expected":
+    n, "matching": n, "differences": [...]}.
+
+    The manifest's role "base" entries are passed via --base, never
+    copied into the comparison folder; the run config (the exclusions)
+    comes from the manifest's "run" block, so the pack exercises the
+    same configuration its expectations were measured with."""
+    manifest_path = REPO_ROOT / "samples" / "cohort" / "MANIFEST.json"
+    if not manifest_path.is_file():
+        # the pack is a repository resource (see gate_self_check):
+        # installed wheels and frozen bundles do not carry it
+        return {"error": "sample_pack_not_available",
+                "detail": str(REPO_ROOT / "samples" / "cohort")}
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    import shutil as _shutil
+    run_cfg = manifest.get("run") or {}
+    subs, bases = [], []
+    for entry in manifest["items"]:
+        (bases if entry.get("role") == "base" else subs).append(entry)
+    with tempfile.TemporaryDirectory() as td:
+        inp = Path(td) / "in"
+        inp.mkdir()
+        out = Path(td) / "out"
+        for entry in subs:
+            _shutil.copyfile(
+                REPO_ROOT / "samples" / "cohort" / entry["file"],
+                inp / entry["file"])
+        receipt = run_cohort(
+            inp, out, progress=progress,
+            base_paths=[REPO_ROOT / "samples" / "cohort" / b["file"]
+                        for b in bases] or None,
+            exclude_quotes=bool(run_cfg.get("exclude_quotes")),
+            exclude_bibliography=bool(run_cfg.get("exclude_bibliography")))
+    by_name = {it.get("path", str(it.get("index"))): it
+               for it in receipt["items"]}
+    diffs = []
+    for entry in subs:
+        it = by_name.get(entry["file"])
+        if it is None:
+            diffs.append({"file": entry["file"], "field": "presence",
+                          "expected": True, "actual": None})
+            continue
+        expect = entry.get("expect") or {}
+        for field in ("kind", "status"):
+            if field in expect and it[field] != expect[field]:
+                diffs.append({"file": entry["file"], "field": field,
+                              "expected": expect[field],
+                              "actual": it[field]})
+        hm = expect.get("hidden_count_min")
+        if hm is not None and it["hidden_segments"]["count"] < hm:
+            diffs.append({"file": entry["file"], "field": "hidden_count",
+                          "expected": ">= %d" % hm,
+                          "actual": it["hidden_segments"]["count"]})
+        for key, rng in (expect.get("removed") or {}).items():
+            val = ((it.get("removed") or {}).get(key)
+                   or {}).get("length", 0)
+            if val < rng.get("min", 0) or val > rng.get("max", val):
+                diffs.append({"file": entry["file"],
+                              "field": "removed.%s" % key,
+                              "expected": rng, "actual": val})
+    pair_index = {}
+    for p in receipt["pairs"]:
+        pair_index[(p["a"], p["b"])] = p
+        pair_index[(p["b"], p["a"])] = p
+    n_expect = len(subs) + len(manifest.get("pairs") or [])
+    for entry in manifest.get("pairs") or []:
+        key = (entry["a"], entry["b"])
+        expect = entry.get("expect") or {}
+        p = pair_index.get(key)
+        if expect.get("flagged"):
+            if p is None:
+                diffs.append({"pair": "%s vs %s" % key,
+                              "field": "flagged",
+                              "expected": True, "actual": False})
+                continue
+            lane = expect.get("lane")
+            if lane and lane not in p:
+                diffs.append({"pair": "%s vs %s" % key, "field": "lane",
+                              "expected": lane, "actual": None})
+            cls = expect.get("class")
+            if cls and (p.get("referee") or {}).get("class") != cls:
+                diffs.append({"pair": "%s vs %s" % key, "field": "class",
+                              "expected": cls,
+                              "actual": (p.get("referee") or {})
+                              .get("class")})
+            pm = expect.get("per_mille_min")
+            if pm is not None:
+                got = (p.get("generic") or {}).get("match_per_mille", 0)
+                if got < pm:
+                    diffs.append({"pair": "%s vs %s" % key,
+                                  "field": "match_per_mille",
+                                  "expected": ">= %d" % pm, "actual": got})
+            sm = expect.get("spans_min")
+            if sm is not None:
+                got = (p.get("spans") or {}).get("count", 0)
+                if got < sm:
+                    diffs.append({"pair": "%s vs %s" % key,
+                                  "field": "spans",
+                                  "expected": ">= %d" % sm, "actual": got})
+            sl = expect.get("spans_length_min")
+            if sl is not None:
+                got = (p.get("spans") or {}).get("total_length", 0)
+                if got < sl:
+                    diffs.append({"pair": "%s vs %s" % key,
+                                  "field": "spans_total_length",
+                                  "expected": ">= %d" % sl,
+                                  "actual": got})
+        elif p is not None:
+            diffs.append({"pair": "%s vs %s" % key, "field": "flagged",
+                          "expected": False, "actual": True})
+    return {"expected": n_expect,
+            "matching": n_expect - len(diffs),
+            "differences": diffs}
+
+
 def _gate_main(argv: List[str]) -> int:
     """The `gate` / `verify` shapes (request §3.6).  Only entered when
     sys.argv[1] is exactly one of those words, so the legacy
@@ -4011,11 +4130,23 @@ def _gate_main(argv: List[str]) -> int:
     c.add_argument("--exclude-bibliography", action="store_true")
     c.add_argument("--no-paths", action="store_true")
     c.add_argument("--no-input-hashes", action="store_true")
+    # §3.8: run the sample pack and compare the expected observations
+    c.add_argument("--self-check", action="store_true")
     c.add_argument("--lang", default="en", choices=("en", "ja"),
                    help="the report language (default: en)")
     args = parser.parse_args(argv)
 
     if args.cmd == "cohort":
+        if args.self_check:
+            # the exit codes (the 2026-11-10 ruling): 0 = the expected
+            # observations matched, 1 = a difference, 2 = the self-check
+            # could not run; the machine-readable result carries
+            # expected / matching either way
+            result = cohort_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
         if args.input_dir is None or args.output is None:
             parser.error("cohort needs an input folder and -o/--output")
         receipt = run_cohort(
