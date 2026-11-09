@@ -2736,9 +2736,12 @@ def _cohort_generic_pairs(generic_map: Dict[str, str],
     base-matched token spans BEFORE the comparison (the 2026-11-09
     ruling: the starter-code base must not make every submission look
     alike), and a submission emptied by the removal leaves the
-    comparison as empty_input.  Returns (flagged pairs, all pairs for
-    the report listing, per-item base removal report, emptied
-    names)."""
+    comparison as empty_input.  A pair is flagged when EITHER side
+    reaches COHORT_GENERIC_FLAG_PER_MILLE (the 2026-11-10 ruling: a
+    small file contained in a larger one must not be missed); the
+    recorded match_per_mille is the triggering (higher) side.
+    Returns (flagged pairs, all pairs for the report listing, per-item
+    base removal report, emptied names)."""
     try:
         import sieve_scope
     except ImportError:
@@ -2769,9 +2772,11 @@ def _cohort_generic_pairs(generic_map: Dict[str, str],
             res = sieve_scope.language_agnostic_pair(
                 compare_map[a], compare_map[b])
             pm = res.get("match_per_mille") or {}
-            pmv = int(pm.get("b", 0))
-            flagged = max(pm.get("a", 0), pm.get("b", 0)) >= \
-                COHORT_GENERIC_FLAG_PER_MILLE
+            # the either-side rule (2026-11-10 ruling): the flagged
+            # value is the triggering (higher) side, so the receipt and
+            # the report show the number that justified the flag
+            pmv = int(max(pm.get("a", 0), pm.get("b", 0)))
+            flagged = pmv >= COHORT_GENERIC_FLAG_PER_MILLE
             all_pairs.append({"a": a, "b": b, "lane": "generic",
                               "label": pmv, "flagged": flagged})
             if flagged:
@@ -2884,8 +2889,16 @@ COHORT_REPORT_TEXTS = {
         "not_compared_reasons": "not compared by reason",
         "items_heading": "Submissions",
         "pairs_heading": "Pairs",
+        "generic_rule": "The generic lane flags a pair when either "
+                        "side reaches {per_mille} ‰ (either side, so "
+                        "that a small file contained in a larger one "
+                        "is not missed).",
         "spans_heading": "Matched spans",
         "graph_heading": "Flagged pairs graph",
+        "graph_note": "The regions are the connected components of "
+                      "the flagged pairs plus the isolated submissions "
+                      "(Referee publishes no cluster API, so the "
+                      "engine's clusters are not used here).",
         "hidden_heading": "Hidden text observed by Order (local only)",
         "omitted": "{n} characters omitted",
         "pairs_shown": "{shown} of {total} pairs shown",
@@ -2920,8 +2933,14 @@ COHORT_REPORT_TEXTS = {
         "not_compared_reasons": "比較に入らなかった理由別の件数",
         "items_heading": "提出物",
         "pairs_heading": "組の一覧",
+        "generic_rule": "汎用レーンは、いずれか一方の側でも {per_mille} ‰ "
+                        "に達した組を要確認にします（小さなファイルが大きな"
+                        "ファイルにそのまま含まれる場合を見落とさないため）。",
         "spans_heading": "一致箇所",
         "graph_heading": "要確認の組の図",
+        "graph_note": "図の領域は、要確認の組の連結成分と孤立した提出物 "
+                      "です（Referee には公開のクラスタ API がないため、"
+                      "エンジンのクラスタはここでは使いません）。",
         "hidden_heading": "Order が観測した隠れた文章（手元用）",
         "omitted": "残り {n} 文字を省略",
         "pairs_shown": "{total} 組のうち {shown} 組を表示",
@@ -3359,6 +3378,12 @@ def run_cohort(input_dir: Path, output_dir: Path, *,
     # the too_large threshold is Gate's own read limit (the ruling:
     # reuse it and write it into the report)
     receipt["settings"]["too_large_bytes"] = TRAY_READ_LIMIT_BYTES
+    # the generic flag rule is written into the settings and the
+    # report (the 2026-11-10 ruling: either side at/over the
+    # threshold, so an inclusion is not missed)
+    receipt["settings"]["generic_flag_per_mille"] = \
+        COHORT_GENERIC_FLAG_PER_MILLE
+    receipt["settings"]["generic_flag_side"] = "either"
 
     # the report goes first, the receipt is written last (CH-T01)
     report_texts = dict(doc_texts)
@@ -3508,6 +3533,10 @@ def _render_cohort_report(receipt: dict, fragments: List[dict], *,
     # --- the pair listing (all pairs, existing vocabulary and colors)
     parts.append("<h2>%s</h2>" % html.escape(
         _cohort_tr(lang, "pairs_heading")))
+    # the generic flag rule stated in the report (2026-11-10 ruling)
+    parts.append("<p>%s</p>" % html.escape(_cohort_tr(
+        lang, "generic_rule",
+        per_mille=COHORT_GENERIC_FLAG_PER_MILLE)))
     parts.append("<table><tr><th>%s</th><th>%s</th><th>%s</th></tr>"
                  % (html.escape(_cohort_tr(lang, "pair_of")),
                     html.escape(_cohort_tr(lang, "lane")),
@@ -3561,6 +3590,9 @@ def _render_cohort_report(receipt: dict, fragments: List[dict], *,
     svg = _cohort_svg_graph(all_pairs, node_names)
     parts.append("<h2>%s</h2>" % html.escape(
         _cohort_tr(lang, "graph_heading")))
+    # the change from the design plan is stated in the report (the
+    # 2026-11-10 ruling)
+    parts.append("<p>%s</p>" % html.escape(_cohort_tr(lang, "graph_note")))
     parts.append(svg)
     if fragments:
         parts.append("<h2>%s</h2>" % html.escape(

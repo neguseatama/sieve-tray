@@ -242,6 +242,41 @@ def test_ch_t03_status_vocabulary(tmp_path):
         "not_applicable"
 
 
+def test_ch_t03_generic_flag_either_side():
+    # The 2026-11-10 ruling: the generic lane flags a pair when EITHER
+    # side reaches the threshold (700 per mille, provisional) - a small
+    # file contained in a larger one must not be missed.  The recorded
+    # match_per_mille is the triggering (higher) side.
+    import sieve_scope
+    from sieve_tray import _cohort_generic_pairs
+    small = ("function calc(x) { return x * 2; }\n"
+             "function add(y) { return y + 1; }\n")
+    big = ("function alpha() { let seed = 1; for (let i = 0; i < 10; "
+           "i++) { seed = (seed * 31 + i) % 9973; } return seed; }\n"
+           "function beta(q) { return q.map(function (v) { return "
+           "v * v; }).filter(function (v) { return v > 3; }); }\n") * 6 \
+          + small + "function gamma(a, b) { var t = a; a = b; b = t; "\
+                    "return [a, b]; }\n" * 3
+    # the precondition: exactly one side reaches the threshold
+    pm = (sieve_scope.language_agnostic_pair(small, big)
+          .get("match_per_mille") or {})
+    assert max(pm.get("a", 0), pm.get("b", 0)) >= 700
+    assert min(pm.get("a", 0), pm.get("b", 0)) < 700
+    pairs, all_pairs, _removal, _emptied = _cohort_generic_pairs(
+        {"s_small.js": small, "t_big.js": big}, None, lambda m: None)
+    assert len(pairs) == 1
+    entry = pairs[0]
+    assert entry["a"] == "s_small.js" and entry["b"] == "t_big.js"
+    assert entry["generic"]["match_per_mille"] >= 700
+    # the counter-case: two unrelated files stay unflagged
+    c1 = "function one() { return 1; }" * 3
+    c2 = "class Box { constructor(w) { this.w = w; } area() { return " \
+         "this.w * this.w; } }" * 3
+    pairs2, all2, _r2, _e2 = _cohort_generic_pairs(
+        {"u_one.js": c1, "v_two.js": c2}, None, lambda m: None)
+    assert pairs2 == [] and all2[0]["flagged"] is False
+
+
 # ---------------------------------------------------------------------------
 # CH-T04: exclusion counts (base / quotes / bibliography) appear in the
 # report and the receipt only when a selection was made.
@@ -277,6 +312,17 @@ def test_ch_t04_no_selection_no_fields(tmp_path):
     assert "removed" not in json.dumps(receipt, ensure_ascii=False)
     report = _report_path(out).read_text(encoding="utf-8")
     assert "removed" not in report.lower()
+
+
+def test_ch_t04_generic_rule_recorded(tmp_path):
+    # the 2026-11-10 ruling: the flag threshold and the side rule are
+    # written into the receipt settings
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    receipt = _run_cohort(inp, out)
+    settings = receipt["settings"]
+    assert settings["generic_flag_per_mille"] == 700
+    assert settings["generic_flag_side"] == "either"
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +383,25 @@ def test_ch_t05_report_no_external_requests(tmp_path):
     report2 = _report_path(out2).read_text(encoding="utf-8")
     assert ("結論ではない" in report2
             or "要確認" in report)
+
+
+def test_ch_t05_report_generic_rule_and_graph_note(tmp_path):
+    # the 2026-11-10 rulings: the generic flag rule (either side, 700
+    # per mille) is stated in the report, and the graph carries the
+    # reason its regions are connected components (no public cluster
+    # API in Referee)
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    _run_cohort(inp, out)
+    report = _report_path(out).read_text(encoding="utf-8")
+    assert "either side" in report
+    assert "700" in report
+    assert "connected components" in report
+    out2 = tmp_path / "out2"
+    _run_cohort(inp, out2, lang="ja")
+    report2 = _report_path(out2).read_text(encoding="utf-8")
+    assert "いずれか一方の側" in report2
+    assert "連結成分" in report2
 
 
 # ---------------------------------------------------------------------------
