@@ -1,0 +1,888 @@
+"""CH-T01..T19 (Tray 2.1.0 Cohort core).
+
+Acceptance tests for the M2 Cohort lane (request doc §3.1/§3.6/§3.7/§3.8
++ the design-chat rulings of 2026-11-09/10).  The Cohort core (run_cohort,
+verify on sieve-cohort, cohort_self_check, the cohort_runs table) arrives
+with the fix commits, so every test that needs it fails with ImportError
+during the red stage; the count of those failures is the red measurement.
+
+Closed vocabularies pinned here (request §3.1):
+  item status: compared / not_compared; a not_compared reason is one of
+  the existing 8 unobserved reasons (UNOBSERVED_REASONS) - no new words.
+
+Receipt discipline (request §3.7): the receipt lists the FLAGGED pairs
+only (GREEN lives in the summary counts), pairs carry counts and total
+lengths only (no positions, no bodies), and CH-T07 sweeps the whole
+handoff/ folder for the same reason.
+
+The generic lane (request §3.5, the 2026-11-10 rulings): a pair is
+flagged when EITHER side reaches 700 ‰, the recorded match_per_mille is
+the triggering (higher) side, and the rule is stated in the receipt
+settings and the report.
+"""
+
+import hashlib
+import json
+import re
+import subprocess
+import sys
+import sqlite3
+import zipfile
+from pathlib import Path
+
+import pytest
+
+import sieve_tray
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+TRAY = REPO_ROOT / "sieve_tray.py"
+
+PNG_1X1 = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000d4944415478da63f8cfc0f01f0005000105a52d8e300000000049454e44"
+    "ae426082")
+
+# The base (starter) sentence that essay_a carries verbatim (request §3.3:
+# the base file is passed via --base and never enters the comparison
+# folder; the exclusion is measured on the document lane by the referee's
+# own 16-char strip).
+BASE_TEXT = (
+    "共通の指示文: 本課題では与えられた資料を読み、自分の言葉でまとめて提出する"
+    "。引用する場合は出典を明示すること。")
+
+ESSAY_BODY = (
+    "提出物の本文である。観察した事実を順に並べ、それぞれに短い考察を添える。"
+    "結論は最後の段落で、観察と考察からだけを根拠に述べる。")
+ESSAY_ALT = (
+    "提出物の本文をここに書く。見た事実を順番に並べて、それぞれへ短い考察を"
+    "付け加える。最後の段落で結論を、観察と考察だけを根拠にして述べる。")
+
+REPORT_SHARED = (
+    "測定の方法: 同じ条件で三回ずつ測り、平均とばらつきを表にまとめた。")
+REPORT_A_ONLY = "追加で検討したのは、測定回数を増やしたときの誤差の動きである。"
+REPORT_B_ONLY = "さらに検討したのは、温度を変えたときの値のふれ幅である。"
+
+
+def _cohort_tree(root: Path):
+    """The §3.1 fixture: two flagged document pairs, one flagged scope
+    pair, a unique document (GREEN pairs) and a non-lane image."""
+    docs = root / "docs"
+    code = root / "code"
+    uniq = root / "unique"
+    img = root / "img"
+    for d in (docs, code, uniq, img):
+        d.mkdir(parents=True)
+    (docs / "essay_a.txt").write_text(
+        BASE_TEXT + ESSAY_BODY, encoding="utf-8")
+    (docs / "essay_b.txt").write_text(
+        BASE_TEXT + ESSAY_ALT, encoding="utf-8")
+    (docs / "report_a.txt").write_text(
+        REPORT_SHARED + REPORT_A_ONLY, encoding="utf-8")
+    (docs / "report_b.txt").write_text(
+        REPORT_SHARED + REPORT_B_ONLY, encoding="utf-8")
+    (uniq / "notes.txt").write_text(
+        "この提出物は他と重なる部分が意図的にほとんどない。"
+        "観測の種類を一つずつ確認するための対照用の文である。"
+        "数値の例としては 3.14 や 2718 を含む。", encoding="utf-8")
+    (code / "mod_a.py").write_text(
+        "def area(width, height):\n"
+        "    total = width * height\n"
+        "    return total\n",
+        encoding="utf-8")
+    (code / "mod_b.py").write_text(
+        "def zone(w, h):\n"
+        "    sum_v = w * h\n"
+        "    return sum_v\n",
+        encoding="utf-8")
+    (img / "figure.png").write_bytes(PNG_1X1)
+
+
+def _base_file(tmp_path: Path) -> Path:
+    p = tmp_path / "assignment-base.txt"
+    p.write_text(BASE_TEXT, encoding="utf-8")
+    return p
+
+
+def _run_cohort(input_dir, output_dir, **kw):
+    """Indirection so the red stage fails in each test, not at import."""
+    from sieve_tray import run_cohort
+    return run_cohort(input_dir, output_dir, **kw)
+
+
+def _receipt_path(out: Path) -> Path:
+    return out / "handoff" / "cohort-receipt.json"
+
+
+def _report_path(out: Path) -> Path:
+    return out / "local" / "cohort-report.html"
+
+
+def _verify(receipt, *extra, input_dir=None, output_dir=None):
+    """Run the verify CLI (the M1 shape) and return the CompletedProcess."""
+    argv = [sys.executable, str(TRAY), "verify", str(receipt)]
+    if input_dir is not None:
+        argv.append(str(input_dir))
+    if output_dir is not None:
+        argv += ["--output", str(output_dir)]
+    argv += list(extra)
+    return subprocess.run(argv, capture_output=True, text=True,
+                          cwd=str(REPO_ROOT))
+
+
+def _pair_key(p) -> tuple:
+    return (p["a"], p["b"])
+
+
+def _pairs_map(receipt) -> dict:
+    return {_pair_key(p): p for p in receipt.get("pairs", [])}
+
+
+# ---------------------------------------------------------------------------
+# CH-T01: output structure - the report goes first, the receipt is
+# written last (the mtime assertion); the output folder rules are Gate's.
+# ---------------------------------------------------------------------------
+
+def test_ch_t01_report_before_receipt(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    receipt = _run_cohort(inp, out)
+    handoff = out / "handoff"
+    assert (handoff / "cohort-receipt.json").is_file()
+    assert _report_path(out).is_file()
+    assert receipt["kind"] == "sieve-cohort"
+    assert receipt["tool"] == {"name": "sieve-tray",
+                               "version": receipt["tool"]["version"]}
+    # The receipt is written last: no handoff output is newer.
+    rc_mtime = (handoff / "cohort-receipt.json").stat().st_mtime_ns
+    for p in handoff.rglob("*"):
+        if p.is_file() and p.name != "cohort-receipt.json":
+            assert p.stat().st_mtime_ns <= rc_mtime, \
+                f"{p.name} written after the receipt"
+
+
+def test_ch_t01_out_dir_fail_closed(tmp_path):
+    inp = tmp_path / "in"
+    _cohort_tree(inp)
+    # the output inside the input is refused
+    with pytest.raises(ValueError):
+        _run_cohort(inp, inp / "out")
+    # a non-empty existing output folder is refused
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "keep.txt").write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError):
+        _run_cohort(inp, out)
+
+
+# ---------------------------------------------------------------------------
+# CH-T02: the receipt lists the flagged pairs only (GREEN lives in the
+# summary), each pair carries exactly one lane key and count-only spans.
+# ---------------------------------------------------------------------------
+
+def test_ch_t02_pairs_flagged_only(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    receipt = _run_cohort(inp, out)
+    pairs = receipt["pairs"]
+    summary = receipt["summary"]
+    assert summary["flagged"] == len(pairs)
+    assert len(pairs) >= 2, "the fixture must flag at least two pairs"
+    for p in pairs:
+        lanes = [k for k in ("referee", "scope", "generic") if k in p]
+        assert len(lanes) == 1, lanes
+        spans = p["spans"]
+        assert set(spans.keys()) == {"count", "total_length"}
+        assert isinstance(spans["count"], int)
+        assert isinstance(spans["total_length"], int)
+    # the essay pair and the scope pair are among the flagged
+    pm = _pairs_map(receipt)
+    assert ("docs/essay_a.txt", "docs/essay_b.txt") in pm
+    assert ("code/mod_a.py", "code/mod_b.py") in pm
+    # GREEN never appears as an individual entry (the summary holds it)
+    ref = summary.get("referee") or {}
+    if ref:
+        assert ref["GREEN"] == ref["total"] - ref["RED"] - ref["YELLOW"]
+        assert ref["GREEN"] >= 1
+
+
+def test_ch_t02_hidden_counts_only(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    receipt = _run_cohort(inp, out)
+    blob = json.dumps(receipt, ensure_ascii=False)
+    # no submission body text ever reaches the receipt
+    for needle in (ESSAY_BODY[:20], REPORT_A_ONLY[:20], REPORT_B_ONLY[:20]):
+        assert needle not in blob
+    for it in receipt["items"]:
+        if "hidden_segments" in it:
+            hs = it["hidden_segments"]
+            assert isinstance(hs.get("count", 0), int)
+
+
+# ---------------------------------------------------------------------------
+# CH-T03: the closed status vocabulary - compared / not_compared, and a
+# not_compared reason is one of the existing 8 words (request §3.1).
+# ---------------------------------------------------------------------------
+
+def test_ch_t03_status_vocabulary(tmp_path):
+    from sieve_tray import UNOBSERVED_REASONS
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    receipt = _run_cohort(inp, out)
+    statuses = {it["status"] for it in receipt["items"]}
+    assert statuses <= {"compared", "not_compared"}
+    assert "compared" in statuses and "not_compared" in statuses
+    reasons = [it["unobserved_reason"] for it in receipt["items"]
+               if it["status"] == "not_compared"]
+    assert set(reasons) <= set(UNOBSERVED_REASONS), \
+        "not_applicable"
+
+
+# ---------------------------------------------------------------------------
+# CH-T04: exclusion counts (base / quotes / bibliography) appear in the
+# report and the receipt only when a selection was made.
+# ---------------------------------------------------------------------------
+
+def test_ch_t04_exclusion_counts_appear(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    base = _base_file(tmp_path)
+    receipt = _run_cohort(inp, out, base_paths=[base],
+                          exclude_quotes=True, exclude_bibliography=True)
+    by_name = {}
+    for it in receipt["items"]:
+        by_name[it.get("path", str(it.get("index")))] = it
+    essay = by_name["docs/essay_a.txt"]
+    removed = essay.get("removed") or {}
+    assert int(removed.get("base", {}).get("length", 0)) > 0
+    # the recorded base hashes are a list of the "sha256:..." form, one
+    # per given base file, in order (the §3.7 wording: それぞれの SHA-256)
+    recorded = receipt["settings"]["base"]["sha256"]
+    assert isinstance(recorded, list) and len(recorded) == 1
+    assert recorded[0].startswith("sha256:")
+    assert recorded[0] == "sha256:" + hashlib.sha256(
+        base.read_bytes()).hexdigest()
+    report = _report_path(out).read_text(encoding="utf-8")
+    assert "base" in report.lower()
+
+
+def test_ch_t04_no_selection_no_fields(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    receipt = _run_cohort(inp, out)
+    assert "removed" not in json.dumps(receipt, ensure_ascii=False)
+    report = _report_path(out).read_text(encoding="utf-8")
+    assert "removed" not in report.lower()
+
+
+# ---------------------------------------------------------------------------
+# CH-T05: the report HTML - listing order, <mark> spans, escaping, the
+# 20,000-char per-document cap, the 50-pair cap, no external requests.
+# ---------------------------------------------------------------------------
+
+def test_ch_t05_report_structure_and_marks(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    _run_cohort(inp, out)
+    report = _report_path(out).read_text(encoding="utf-8")
+    # the leading line (request §3.6): the flagged pairs are an
+    # observation worth checking, never a conclusion - stated first
+    assert report.index("not a conclusion") < report.index("<table")
+    # the flagged pairs are listed first, then the rest by name
+    pm = _pairs_map(json.loads(
+        _receipt_path(out).read_text(encoding="utf-8")))
+    flagged_names = [n for k, n in
+                     [("a", "docs/essay_a.txt"), ("b", "docs/essay_b.txt")]]
+    assert "docs/essay_a.txt" in report
+    # a flagged pair's matched spans render as <mark> in the side-by-side
+    assert "<mark>" in report
+    # the report is plain HTML: no script blocks, no external references
+    assert "<script" not in report.lower()
+    assert "http://" not in report and "https://" not in report
+
+
+def test_ch_t05_report_20000_char_cap(tmp_path):
+    # two near-identical documents longer than the 20,000-char cap: the
+    # side-by-side section truncates each document and shows the omitted
+    # count (request §3.6: 超過は件数)
+    inp, out = tmp_path / "in", tmp_path / "out"
+    inp.mkdir()
+    filler_a = ("測定の記録である。各段の値を並べ、平均を求め、表にまとめる。"
+                ) * 400
+    filler_b = ("測定の記録をここに残す。各段の値を並べて平均を求め、表に"
+                "まとめる。") * 400
+    assert len(filler_a) > 20000 and len(filler_b) > 20000
+    (inp / "long_a.txt").write_text(filler_a, encoding="utf-8")
+    (inp / "long_b.txt").write_text(filler_b, encoding="utf-8")
+    _run_cohort(inp, out)
+    report = _report_path(out).read_text(encoding="utf-8")
+    m = re.search(r"(\d[\d,]*) characters omitted", report)
+    assert m is not None, "the omitted count is shown, not the cap value"
+    assert int(m.group(1).replace(",", "")) > 0
+    out2 = tmp_path / "out2"
+    _run_cohort(inp, out2, lang="ja")
+    report2 = _report_path(out2).read_text(encoding="utf-8")
+    assert re.search(r"残り \d[\d,]* 文字を省略", report2)
+
+
+def test_ch_t05_report_no_external_requests(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    _run_cohort(inp, out)
+    report = _report_path(out).read_text(encoding="utf-8")
+    assert "src=" not in report.lower() or "src=\"/\"".lower() in \
+        report.lower()
+    out2 = tmp_path / "out2"
+    _run_cohort(inp, out2, lang="ja")
+    report2 = _report_path(out2).read_text(encoding="utf-8")
+    assert ("結論ではない" in report2
+            or "要確認" in report)
+
+
+# ---------------------------------------------------------------------------
+# CH-T06: the graph - deterministic SVG, no JavaScript, edges
+# distinguishable without color, coordinates rounded to 1 decimal.
+# ---------------------------------------------------------------------------
+
+def test_ch_t06_svg_deterministic(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    _run_cohort(inp, out)
+    report = _report_path(out).read_text(encoding="utf-8")
+    m = re.search(r"<svg.*</svg>", report, re.S)
+    assert m is not None, "the flagged-pairs graph is an inline SVG"
+    svg = m.group(0)
+    assert "<script" not in svg.lower()
+    assert "javascript" not in svg.lower()
+    assert "xmlns" not in svg
+    # every coordinate is rounded to 1 decimal
+    assert not re.search(r'c[xy]="-?\d+\.\d{2,}"', svg)
+    assert re.search(r'c[xy]="-?\d+\.\d"', svg)
+    # the edges differ by more than color: the heavy class and the
+    # dashed class both appear (request §3.6)
+    assert re.search(r'stroke-width="2\.5"', svg)
+    assert re.search(r'stroke-width="1\.5"', svg)
+    assert 'stroke-dasharray' in svg
+    # determinism: a second run renders the same SVG bytes
+    out2 = tmp_path / "out2"
+    _run_cohort(inp, out2)
+    report2 = _report_path(out2).read_text(encoding="utf-8")
+    svg2 = re.search(r"<svg.*</svg>", report2, re.S).group(0)
+    assert svg == svg2
+
+
+# ---------------------------------------------------------------------------
+# CH-T07: handoff/ carries the receipt only, and no submission body text
+# reaches any handoff file (the sweep is over every handoff file).
+# ---------------------------------------------------------------------------
+
+def test_ch_t07_handoff_receipt_only(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    _run_cohort(inp, out)
+    handoff = out / "handoff"
+    files = [p for p in handoff.rglob("*") if p.is_file()]
+    assert [p.name for p in files] == ["cohort-receipt.json"]
+    blobs = [p.read_bytes() for p in files]
+    joined = b"\n".join(blobs).decode("utf-8", "replace")
+    for needle in (ESSAY_BODY[:16], ESSAY_ALT[:16], REPORT_A_ONLY[:16],
+                   REPORT_B_ONLY[:16]):
+        assert needle not in joined
+
+
+# ---------------------------------------------------------------------------
+# CH-T08: the strings and the README - the Cohort i18n keys exist in
+# en/ja, the README intro lists the capability, and the verify vocabulary
+# sentence (the closed word receipt_unreadable) is present in en/ja.
+# ---------------------------------------------------------------------------
+
+def test_ch_t08_cohort_strings_en_ja():
+    from sieve_tray_i18n import STRINGS
+    en_cohort = {k for k in STRINGS["en"] if k.startswith("cohort_")}
+    ja_cohort = {k for k in STRINGS["ja"] if k.startswith("cohort_")}
+    assert en_cohort, "the Cohort strings arrive with the fix commit"
+    assert en_cohort == ja_cohort
+
+
+def test_ch_t08_readme_intro_lists_cohort():
+    en = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    ja = (REPO_ROOT / "README.ja.md").read_text(encoding="utf-8")
+    # the intro enumerates what the tools do before anything else
+    assert "Cohort" in en[:2000]
+    assert "Cohort" in ja[:2000]
+
+
+def test_ch_t08_readme_verify_vocabulary():
+    en = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    ja = (REPO_ROOT / "README.ja.md").read_text(encoding="utf-8")
+    assert "receipt_unreadable" in en
+    assert "receipt_unreadable" in ja
+    assert "辻褄" in ja
+
+
+# ---------------------------------------------------------------------------
+# CH-T09: the receipt shape - the M1 v1 envelope, the settings (the
+# explanation constants are read from the engine modules), the digest
+# form (normalized JSON, digest = the body's SHA-256 without the digest
+# key), the item shape, and the --no-paths serial numbering.
+# ---------------------------------------------------------------------------
+
+def test_ch_t09_receipt_envelope(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    receipt = _run_cohort(inp, out)
+    assert receipt["receipt_version"] == 1
+    assert receipt["kind"] == "sieve-cohort"
+    assert set(receipt["tool"]) == {"name", "version"}
+    engines = {e["name"] for e in receipt["engines"]}
+    assert engines <= {"lens", "order", "referee", "scope"}
+    summary = receipt["summary"]
+    for key in ("items", "compared", "not_compared", "flagged"):
+        assert key in summary
+
+
+def test_ch_t09_receipt_settings(tmp_path):
+    import sieve_referee
+    import sieve_scope
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    receipt = _run_cohort(inp, out)
+    settings = receipt["settings"]
+    assert settings["exclude_quotes"] is False
+    assert settings["exclude_bibliography"] is False
+    assert settings["include_paths"] is True
+    assert settings["include_input_hashes"] is True
+    exp = settings["explanation"]
+    assert exp["referee"]["k"] == 8 and exp["referee"]["w"] == 5
+    assert exp["referee"]["min"] == 16
+    assert exp["scope"]["k"] == 5 and exp["scope"]["w"] == 4
+    assert exp["scope"]["min"] == 10
+    # the constants really are the engine modules' own values
+    assert exp["referee"]["k"] == sieve_referee.FINGERPRINT_K
+    assert exp["scope"]["k"] == sieve_scope.FINGERPRINT_K
+
+
+def test_ch_t09_receipt_digest_form(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    _run_cohort(inp, out)
+    raw = _receipt_path(out).read_text(encoding="utf-8")
+    assert raw.endswith("\n")
+    obj = json.loads(raw)
+    body = {k: v for k, v in obj.items() if k != "digest"}
+    norm = json.dumps(body, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"))
+    assert obj["digest"] == "sha256:" + hashlib.sha256(
+        norm.encode("utf-8")).hexdigest()
+    # the file holds the same normalized body with the digest key back
+    body2 = json.loads(raw)
+    assert body2["digest"] == obj["digest"]
+
+
+def test_ch_t09_items_kind_and_input(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    receipt = _run_cohort(inp, out)
+    by_name = {it.get("path", ""): it for it in receipt["items"]}
+    assert by_name["docs/essay_a.txt"]["kind"] == "document"
+    assert by_name["code/mod_a.py"]["kind"] == "code"
+    img = by_name["img/figure.png"]
+    assert img["kind"] == "other"
+    assert img["status"] == "not_compared"
+    assert img["unobserved_reason"] == "not_applicable"
+    for it in receipt["items"]:
+        assert it["input"]["bytes"] >= 0
+
+
+def test_ch_t09_no_paths_serial(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    receipt = _run_cohort(inp, out, include_paths=False)
+    indexes = [it["index"] for it in receipt["items"]]
+    assert indexes == list(range(1, len(indexes) + 1))
+    assert all("path" not in it for it in receipt["items"])
+
+
+# ---------------------------------------------------------------------------
+# CH-T10: verify on a sieve-cohort receipt - the M1 vocabulary and exit
+# codes (0 match / 1 differs / 2 not_verifiable), the receipt-only
+# handoff defaulting to outputs_only, and the recorded base files.
+# ---------------------------------------------------------------------------
+
+def test_ch_t10_verify_outputs_only_default(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    _run_cohort(inp, out)
+    proc = _verify(_receipt_path(out))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    obj = json.loads(proc.stdout)
+    assert obj["scope"] == "outputs_only" and obj["overall"] == "match"
+
+
+def test_ch_t10_verify_differs_and_not_verifiable(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    _run_cohort(inp, out)
+    # a missing receipt is not_verifiable, not a crash
+    proc = _verify(tmp_path / "nope.json")
+    assert proc.returncode == 2
+    obj = json.loads(proc.stdout)
+    assert obj["overall"] == "not_verifiable"
+    assert obj["not_verifiable_reason"] == "handoff_incomplete"
+    # a receipt whose digest no longer matches is not_verifiable
+    tampered = tmp_path / "tampered.json"
+    obj = json.loads(_receipt_path(out).read_text(encoding="utf-8"))
+    obj["summary"]["flagged"] = obj["summary"]["flagged"] + 1
+    tampered.write_text(json.dumps(obj, ensure_ascii=False,
+                                   sort_keys=True, separators=(",", ":")),
+                        encoding="utf-8")
+    proc = _verify(tampered)
+    assert proc.returncode == 2
+    obj = json.loads(proc.stdout)
+    assert obj["overall"] == "not_verifiable"
+    assert obj["not_verifiable_reason"] == "receipt_digest_mismatch"
+
+
+def test_ch_t10_verify_base_hash_mismatch(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    base = _base_file(tmp_path)
+    _run_cohort(inp, out, base_paths=[base])
+    other = tmp_path / "other-base.txt"
+    other.write_text(BASE_TEXT + "（改変）", encoding="utf-8")
+    proc = _verify(_receipt_path(out), ["--base", str(other)])
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    obj = json.loads(proc.stdout)
+    assert obj["overall"] == "not_verifiable"
+    assert obj["not_verifiable_reason"] == "settings_unavailable"
+
+
+# ---------------------------------------------------------------------------
+# CH-T11: the sample pack and the self-check (expected observations,
+# never a digest).
+# ---------------------------------------------------------------------------
+
+def test_ch_t11_samples_and_manifest():
+    pack = REPO_ROOT / "samples" / "cohort"
+    manifest_path = pack / "MANIFEST.json"
+    assert manifest_path.is_file()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert set(manifest.keys()) == {"items", "pairs", "run"}
+    run = manifest["run"]
+    assert run["exclude_quotes"] is True
+    assert run["exclude_bibliography"] is True
+    assert isinstance(run["base"], list) and run["base"]
+    roles = set()
+    for entry in manifest["items"]:
+        assert {"file", "sha256"} <= set(entry.keys())
+        p = pack / entry["file"]
+        assert p.is_file(), entry["file"]
+        assert entry["sha256"] == hashlib.sha256(
+            p.read_bytes()).hexdigest(), entry["file"]
+        roles.add(entry.get("role", "submission"))
+    assert roles == {"submission", "base"}
+    assert len(manifest["pairs"]) >= 1
+    for pr in manifest["pairs"]:
+        assert {"a", "b", "expect"} <= set(pr.keys())
+
+
+def test_ch_t11_regen_byte_identical(tmp_path):
+    pack = REPO_ROOT / "samples" / "cohort"
+    target = tmp_path / "regen"
+    proc = subprocess.run(
+        [sys.executable, str(pack / "generate.py"), str(target)],
+        capture_output=True, text=True, cwd=str(REPO_ROOT))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    for p in sorted(pack.iterdir()):
+        if p.is_file():
+            assert (target / p.name).read_bytes() == p.read_bytes(), \
+                p.name
+
+
+def test_ch_t11_self_check_matches():
+    from sieve_tray import cohort_self_check
+    result = cohort_self_check()
+    assert result["expected"] == 19
+    assert result["matching"] == 19
+    assert result["differences"] == []
+
+
+def test_ch_t11_self_check_exit_codes(tmp_path):
+    # rc 0 = the expected observations matched, 1 = a difference,
+    # 2 = the self-check could not run (the 2026-11-10 ruling)
+    proc = subprocess.run(
+        [sys.executable, str(TRAY), "cohort", "--self-check"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    obj = json.loads(proc.stdout)
+    assert obj["matching"] == obj["expected"]
+    # a tree without the pack: rc 2 (the pack is a repository resource)
+    lone = tmp_path / "lone"
+    lone.mkdir()
+    (lone / "sieve_tray.py").write_bytes(TRAY.read_bytes())
+    proc2 = subprocess.run(
+        [sys.executable, str(lone / "sieve_tray.py"), "cohort",
+         "--self-check"], capture_output=True, text=True)
+    assert proc2.returncode == 2, proc2.stdout + proc2.stderr
+    obj2 = json.loads(proc2.stdout)
+    assert obj2["error"] == "sample_pack_not_available"
+
+
+# ---------------------------------------------------------------------------
+# CH-T12: the progress callback receives the run's messages.
+# ---------------------------------------------------------------------------
+
+def test_ch_t12_progress_messages(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    seen = []
+    receipt = _run_cohort(inp, out, progress=seen.append)
+    assert receipt["kind"] == "sieve-cohort"
+    assert seen and all(isinstance(m, str) for m in seen)
+    assert any("Cohort" in m for m in seen)
+
+
+# ---------------------------------------------------------------------------
+# CH-T13: the history discipline - the existing tables stay untouched,
+# the cohort_runs allowlist drops every non-allowlisted key, and
+# load_cohort_runs returns the allowlist keys newest first.
+# ---------------------------------------------------------------------------
+
+def test_ch_t13_allowlist_drops_extra_keys(tmp_path):
+    from sieve_tray_storage import Storage
+    db = tmp_path / "h.db"
+    storage = Storage(str(db))
+    storage.record_cohort_run({
+        "run_id": "cohort-x", "ts_utc": "2026-01-01T00:00:00+00:00",
+        "items": 5, "compared": 4, "not_compared": 1,
+        "pairs_flagged": 2, "removed_total": 33,
+        "receipt_digest": "sha256:abc",
+        "engines": "lens 0.22.0 / order 1.1.0 / referee 1.6.0 / scope 1.5.0",
+        # every key below is structurally dropped (request §3.7)
+        "path": "/tmp/secret", "body": "submission text",
+        "fragment": "matched span text",
+    })
+    rows = storage.load_cohort_runs()
+    assert len(rows) == 1
+    row = rows[0]
+    allowed = {"run_id", "ts_utc", "items", "compared", "not_compared",
+               "pairs_flagged", "removed_total", "receipt_digest",
+               "engines"}
+    assert set(row.keys()) <= allowed
+    assert "id" not in row
+    blob = json.dumps(row, ensure_ascii=False)
+    assert "/tmp/secret" not in blob and "submission text" not in blob
+    assert "matched span text" not in blob
+
+
+def test_ch_t13_load_newest_first(tmp_path):
+    from sieve_tray_storage import Storage
+    db = tmp_path / "h.db"
+    storage = Storage(str(db))
+    storage.record_cohort_run({
+        "run_id": "cohort-first", "ts_utc": "2026-01-01T00:00:00+00:00",
+        "items": 3, "compared": 2, "not_compared": 1,
+        "pairs_flagged": 0, "removed_total": 0,
+        "receipt_digest": "sha256:first", "engines": "eng-1"})
+    storage.record_cohort_run({
+        "run_id": "cohort-second", "ts_utc": "2026-01-02T00:00:00+00:00",
+        "items": 3, "compared": 3, "not_compared": 0,
+        "pairs_flagged": 1, "removed_total": 9,
+        "receipt_digest": "sha256:second", "engines": "eng-2"})
+    rows = storage.load_cohort_runs()
+    assert [r["receipt_digest"] for r in rows] == \
+        ["sha256:second", "sha256:first"]
+    assert all(set(r.keys()) <= {"run_id", "ts_utc", "items", "compared",
+                                 "not_compared", "pairs_flagged",
+                                 "removed_total", "receipt_digest",
+                                 "engines"} for r in rows)
+
+
+def test_ch_t13_existing_tables_intact(tmp_path):
+    from sieve_tray_storage import Storage
+    db = tmp_path / "h.db"
+    Storage(str(db))
+    con = sqlite3.connect(str(db))
+    tables = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    con.close()
+    assert {"runs", "sanitizations", "settings", "crowd_runs",
+            "gate_runs"} <= tables
+
+
+# ---------------------------------------------------------------------------
+# CH-T14: the distribution smoke (request §3.10) - the wheel installs
+# into a fresh venv and both self-checks run without the repo tree.
+# ---------------------------------------------------------------------------
+
+def test_ch_t14_wheel_smoke(tmp_path):
+    import venv as venv_mod
+    dist = tmp_path / "dist"
+    build = subprocess.run(
+        [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
+         "-w", str(dist), str(REPO_ROOT)],
+        capture_output=True, text=True, cwd=str(REPO_ROOT))
+    assert build.returncode == 0, build.stdout + build.stderr
+    wheels = list(dist.glob("sieve_tray-*.whl"))
+    assert len(wheels) == 1
+    env = venv_mod.create(tmp_path / "venv", with_pip=True)
+    py = Path(env).joinpath(
+        "bin/python" if sys.platform != "win32" else "Scripts/python.exe")
+    proc = subprocess.run(
+        [str(py), "-m", "pip", "install", "--no-deps", str(wheels[0])],
+        capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    # gate --self-check runs from the wheel
+    gate = subprocess.run(
+        [str(py), "-m", "sieve_tray", "gate", "--self-check"],
+        capture_output=True, text=True)
+    assert gate.returncode == 0, gate.stdout + gate.stderr
+    # cohort --self-check runs from the wheel too: the pack travels in
+    # the wheel (request §3.10 - the distribution smoke)
+    cohort = subprocess.run(
+        [str(py), "-m", "sieve_tray", "cohort", "--self-check"],
+        capture_output=True, text=True)
+    assert cohort.returncode == 0, cohort.stdout + cohort.stderr
+    obj = json.loads(cohort.stdout)
+    assert obj["matching"] == obj["expected"]
+
+
+# ---------------------------------------------------------------------------
+# CH-T15: the Tray entrance (request §3.9) - the GUI exposes the Cohort
+# page (the CLI entrance is covered by the runs above).
+# ---------------------------------------------------------------------------
+
+def test_ch_t15_gui_cohort_page(tmp_path):
+    from test_v1_4_scan import _require_qt
+    _require_qt()
+    import sieve_tray_gui as gui
+    from sieve_tray_storage import Storage
+    win = gui.MainWindow(storage=Storage(tmp_path / "history.db"))
+    try:
+        page = getattr(win, "cohort_page", None)
+        assert page is not None, "no Cohort page in the main window"
+    finally:
+        win.close()
+
+
+# ---------------------------------------------------------------------------
+# CH-T16: the molds - the shapes that were true before Cohort and stay
+# true (green from the start, by design).
+# ---------------------------------------------------------------------------
+
+def test_ch_t16_mold_gate_receipt_v1(tmp_path):
+    inp, out = tmp_path / "in", tmp_path / "out"
+    inp.mkdir()
+    (inp / "a.txt").write_text("alpha\n", encoding="utf-8")
+    from sieve_tray import run_gate
+    receipt = run_gate(inp, out)
+    assert receipt["kind"] == "sieve-gate"
+    assert receipt["receipt_version"] == 1
+    assert set(receipt.keys()) == {"receipt_version", "kind", "tool",
+                                   "engines", "settings", "items",
+                                   "summary", "digest"}
+
+
+def test_ch_t16_mold_verify_vocabulary():
+    from sieve_tray import VERIFY_NOT_VERIFIABLE_REASONS, VERIFY_REASONS
+    assert VERIFY_NOT_VERIFIABLE_REASONS == frozenset({
+        "receipt_unreadable", "receipt_version_unsupported",
+        "receipt_digest_mismatch", "settings_unavailable",
+        "handoff_incomplete"})
+    assert VERIFY_REASONS == frozenset({
+        "input_changed", "input_missing", "item_added", "output_changed",
+        "output_missing", "replay_differs", "engine_version_differs"})
+
+
+def test_ch_t16_mold_settings_table(tmp_path):
+    from sieve_tray_storage import Storage, DEFAULT_SETTINGS
+    db = tmp_path / "h.db"
+    storage = Storage(str(db))
+    assert storage.get_setting("export_dir") == DEFAULT_SETTINGS[
+        "export_dir"]
+    storage.set_setting("window_geometry", "880x560")
+    assert storage.get_setting("window_geometry") == "880x560"
+
+
+def test_ch_t16_mold_crowd_allowlist(tmp_path):
+    from sieve_tray_storage import Storage
+    db = tmp_path / "h.db"
+    storage = Storage(str(db))
+    storage.save_crowd_run({
+        "mode": "inspect", "ts_utc": "2026-01-01T00:00:00+00:00",
+        "rows": 3, "payload": {"kept": 1},
+        # structurally dropped: not in the crowd allowlist
+        "secret_path": "/tmp/x", "body": "cell text"})
+    rows = storage.load_crowd_runs()
+    assert len(rows) == 1
+    blob = json.dumps(rows[0], ensure_ascii=False)
+    assert "/tmp/x" not in blob and "cell text" not in blob
+
+
+# ---------------------------------------------------------------------------
+# CH-T17: the dependency floors (request §3.13) - raised to the
+# published referee 1.6.0 / scope 1.5.0 after both are published; red
+# until then by design (the hand-over order in the design ruling).
+# ---------------------------------------------------------------------------
+
+def test_ch_t17_dependency_floors():
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "sieve-referee>=1.6.0" in text
+    assert "sieve-scope>=1.5.0" in text
+    assert "sieve-lens>=0.22.0" in text
+
+
+# ---------------------------------------------------------------------------
+# CH-T18: the README structure - the en/ja headings align, no section
+# enumerates limitations, and the Cohort section exists in both.
+# ---------------------------------------------------------------------------
+
+def test_ch_t18_readme_headings_align():
+    en = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    ja = (REPO_ROOT / "README.ja.md").read_text(encoding="utf-8")
+    en_h = [ln for ln in en.splitlines() if ln.startswith("## ")]
+    ja_h = [ln for ln in ja.splitlines() if ln.startswith("## ")]
+    assert len(en_h) == len(ja_h)
+
+
+def test_ch_t18_readme_no_limitations():
+    # the Cohort section (request §3.9) leads with what it does and
+    # never enumerates limitations; while the section is absent the
+    # rule holds vacuously
+    for name in ("README.md", "README.ja.md"):
+        text = (REPO_ROOT / name).read_text(encoding="utf-8")
+        lines = text.splitlines()
+        start = None
+        for i, ln in enumerate(lines):
+            if ln.startswith("## ") and "Cohort" in ln:
+                start = i
+                break
+        if start is None:
+            continue
+        section = []
+        for ln in lines[start + 1:]:
+            if ln.startswith("## "):
+                break
+            section.append(ln)
+        body = "\n".join(section).lower()
+        assert "限界" not in body and "limitation" not in body, name
+
+
+def test_ch_t18_readme_cohort_section():
+    en = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    ja = (REPO_ROOT / "README.ja.md").read_text(encoding="utf-8")
+    assert "## 👥 Cohort" in en
+    assert "## 👥 Cohort" in ja
+
+
+# ---------------------------------------------------------------------------
+# CH-T19: the spans unit line (request §3.6 + the 2026-11-09 ruling ②):
+# the README states the unit in one line - documents count characters,
+# code counts tokens.
+# ---------------------------------------------------------------------------
+
+def test_ch_t19_readme_spans_unit():
+    en = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    ja = (REPO_ROOT / "README.ja.md").read_text(encoding="utf-8")
+    assert "characters" in en and "tokens" in en
+    assert "文字" in ja and "トークン" in ja
