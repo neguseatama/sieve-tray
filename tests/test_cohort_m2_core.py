@@ -1073,8 +1073,9 @@ def test_ch_t16_mold_crowd_allowlist(tmp_path):
 
 # ---------------------------------------------------------------------------
 # CH-T17: the dependency floors (request §3.13) - raised to the
-# published referee 1.6.0 / scope 1.5.0 after both are published; red
-# until then by design (the hand-over order in the design ruling).
+# published referee 1.6.0 / scope 1.5.0 after both are published
+# (the hand-over order in the design ruling; the intentional red
+# ended with the floors commit - PyPI measured 2026-11-10).
 # ---------------------------------------------------------------------------
 
 def test_ch_t17_dependency_floors():

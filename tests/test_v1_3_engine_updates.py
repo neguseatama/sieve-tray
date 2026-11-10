@@ -1069,10 +1069,12 @@ class TR3_T18_DependencyFloorsStayPublished(unittest.TestCase):
         import tomllib
         with open(REPO_ROOT / "pyproject.toml", "rb") as fh:
             proj = tomllib.load(fh)["project"]
+        # v2.1.0 (M2, request §3.13): the floors are the published
+        # engines (scope 1.5.0 / referee 1.6.0 on PyPI at the raise).
         self.assertEqual(
             proj["dependencies"],
-            ["sieve-lens>=0.22.0", "sieve-scope>=1.3.0",
-             "sieve-referee>=1.3.0"])
+            ["sieve-lens>=0.22.0", "sieve-scope>=1.5.0",
+             "sieve-referee>=1.6.0"])
         gui = proj["optional-dependencies"]["gui"]
         self.assertIn("Pillow>=10.0", gui)
 

@@ -495,9 +495,10 @@ def test_t13_readme_first_launch_section_en_ja():
 
 def test_t14_dependency_floors_are_published_versions():
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    # v2.1.0 (M2, request §3.13): refreshed to the published engines.
     assert '"sieve-lens>=0.22.0"' in text
-    assert '"sieve-scope>=1.3.0"' in text
-    assert '"sieve-referee>=1.3.0"' in text
+    assert '"sieve-scope>=1.5.0"' in text
+    assert '"sieve-referee>=1.6.0"' in text
 
 
 # ---------------------------------------------------------------------------
