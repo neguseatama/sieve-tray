@@ -3389,6 +3389,23 @@ def run_cohort(input_dir: Path, output_dir: Path, *,
         too_large_note=too_large_note, lang=lang)
     _gate_write_atomic(local / "cohort-report.html",
                        html_doc.encode("utf-8"))
+    if not include_paths:
+        # the 2026-11-10 receipt ruling (request §2-5): a record
+        # without paths identifies items by sequence number - the
+        # flagged pairs carry the submission file names, which is
+        # where the personal names live, so the pairs take the same
+        # numbers.  The report above has already rendered with the
+        # names (it is local-only and never leaves this machine).
+        seq_of = {rel: seq for seq, rel in enumerate(rels, start=1)}
+        try:
+            for p in receipt["pairs"]:
+                p["a"] = seq_of[p["a"]]
+                p["b"] = seq_of[p["b"]]
+        except KeyError as exc:
+            raise ValueError(
+                "pair references an unknown item: %s" % (exc,))
+        receipt["pairs"] = sorted(
+            receipt["pairs"], key=lambda p: (p["a"], p["b"]))
     receipt["digest"] = _gate_digest(receipt)
     pairs = receipt["pairs"]
     blob = _gate_norm_json(receipt)

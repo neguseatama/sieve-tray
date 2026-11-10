@@ -1252,7 +1252,7 @@ class CohortPage(QScrollArea):
             base_paths=self._cohort_base_paths,
             exclude_quotes=self.cohort_quotes_cb.isChecked(),
             exclude_bibliography=self.cohort_bib_cb.isChecked(),
-            include_paths=True, include_input_hashes=True,
+            include_paths=False, include_input_hashes=True,
             storage_path=(self.storage.db_path
                           if self.storage is not None else None),
             lang=self.lang)

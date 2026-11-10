@@ -95,6 +95,8 @@ only, `local/` keeps the full report.
 2. Hand over the `handoff/` folder; keep `local/` for yourself.
 3. Re-check later: `python3 sieve_tray.py verify <handoff>/cohort-receipt.json`
 
+If the submission file names carry personal names, pass `--no-paths` (the record identifies items by sequence number).
+
 The generic lane flags a pair when either side reaches 700 ‰ (either
 side, so that a small file contained in a larger one is not missed);
 the recorded `match_per_mille` is the higher of the two sides. The
