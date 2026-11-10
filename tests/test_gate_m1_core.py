@@ -202,7 +202,7 @@ def test_t01_output_structure(tmp_path):
     assert (out / "local" / "gate-report.html").is_file()
     assert (out / "local" / "engine-receipts").is_dir()
     assert receipt["kind"] == "sieve-gate"
-    assert receipt["tool"] == {"name": "sieve-tray", "version": "2.0.0"}
+    assert receipt["tool"] == {"name": "sieve-tray", "version": "2.1.0"}
     # The receipt is written last: no handoff output is newer.
     rc_mtime = (handoff / "gate-receipt.json").stat().st_mtime_ns
     for p in handoff.rglob("*"):

@@ -250,9 +250,9 @@ class TestVersionBump(unittest.TestCase):
     """Version marker - guards against accidental version revert."""
 
     def test_version_is_2_0_0(self):
-        # v2.0.0: bumped for the M1 Gate lane. Expectation follows
+        # v2.1.0: bumped for the M2 Cohort lane. Expectation follows
         # the version bump, not a behavior change.
-        self.assertEqual(sieve_tray.__version__, "2.0.0")
+        self.assertEqual(sieve_tray.__version__, "2.1.0")
 
 
 class TestRunScanGroupsArgument(unittest.TestCase):

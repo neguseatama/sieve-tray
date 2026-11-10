@@ -1080,13 +1080,14 @@ class TR3_T18_DependencyFloorsStayPublished(unittest.TestCase):
 
 
 class TR3_T19_Version140(unittest.TestCase):
-    """TR3-T19: __version__ and pyproject agree on 2.0.0 and the
-    CHANGELOG carries a [2.0.0] section (pin refreshed for the M1
-    Gate lane; the scope/referee floors are unchanged)."""
+    """TR3-T19: __version__ and pyproject agree on 2.1.0 and the
+    CHANGELOG carries a [2.1.0] section (pin refreshed for the M2
+    Cohort lane; the floors are the published scope 1.5.0 /
+    referee 1.6.0)."""
 
     def test_version_is_140(self):
-        self.assertEqual(sieve_tray.__version__, "2.0.0")
+        self.assertEqual(sieve_tray.__version__, "2.1.0")
 
     def test_changelog_has_140(self):
         text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertIn("## [2.0.0]", text)
+        self.assertIn("## [2.1.0]", text)
