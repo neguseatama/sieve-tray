@@ -480,9 +480,9 @@ def test_gu_t14_minsize_render(tmp_path):
         mh = win.centralWidget().layout().minimumSize().height()
         assert mh <= 560, mh
         # every page listed by addendum 2 §3 renders uncut at the
-        # minimum size (documents / crowd / gate now; the Cohort page
-        # joins with request §3.9)
-        for key in ("doc", "crowd", "gate"):
+        # minimum size - the Cohort page joins the loop with the §3.9
+        # commit (the addendum's minimum page list includes it)
+        for key in ("doc", "crowd", "gate", "cohort"):
             win._select_page(key)
             win.repaint()
             QApplication.processEvents()

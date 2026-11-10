@@ -33,10 +33,10 @@ from PySide6.QtWidgets import (
     QTabWidget, QPlainTextEdit, QFileDialog, QMessageBox, QHeaderView,
     QDialog, QFormLayout, QGridLayout, QSpinBox, QDialogButtonBox, QCheckBox,
     QComboBox, QListWidget, QListWidgetItem, QScrollArea, QSizePolicy,
-    QStackedWidget,
+    QStackedWidget, QProgressBar,
 )
 from PySide6.QtGui import (QColor, QIcon, QAction, QPainter, QPixmap,
-                           QFontDatabase, QShortcut, QKeySequence)
+                           QFontDatabase, QShortcut, QKeySequence, QPalette)
 
 from PySide6 import QtCore
 
@@ -224,6 +224,52 @@ class CrowdWorker(QObject):
             self.finished.emit(summary)
         except Exception as e:
             self.failed.emit(f"{type(e).__name__}: {e}")
+
+class CohortWorker(QObject):
+    """Runs run_cohort() on a background thread (the same pattern as
+    ScanWorker / SanitizeWorker / CrowdWorker; the §3.9 ruling: the
+    Cohort run leaves the UI thread, so a big comparison never freezes
+    the window).  The run's arguments are captured at start - the
+    worker reads none of the widgets."""
+
+    progress = Signal(str)
+    finished = Signal(object)   # cohort receipt dict
+    failed = Signal(str)
+
+    def __init__(self, input_dir: Path, output_dir: Path, *,
+                 base_paths=None, exclude_quotes: bool = False,
+                 exclude_bibliography: bool = False,
+                 include_paths: bool = True,
+                 include_input_hashes: bool = True,
+                 storage_path=None, lang: str = "en"):
+        super().__init__()
+        self.input_dir = input_dir
+        self.output_dir = output_dir
+        self.base_paths = list(base_paths or [])
+        self.exclude_quotes = exclude_quotes
+        self.exclude_bibliography = exclude_bibliography
+        self.include_paths = include_paths
+        self.include_input_hashes = include_input_hashes
+        self.storage_path = storage_path
+        self.lang = lang
+
+    def run(self):
+        try:
+            from sieve_tray import run_cohort
+            receipt = run_cohort(
+                Path(self.input_dir), Path(self.output_dir),
+                base_paths=[Path(p) for p in self.base_paths] or None,
+                exclude_quotes=self.exclude_quotes,
+                exclude_bibliography=self.exclude_bibliography,
+                include_paths=self.include_paths,
+                include_input_hashes=self.include_input_hashes,
+                storage_path=self.storage_path,
+                lang=self.lang,
+                progress=self.progress.emit)
+            self.finished.emit(receipt)
+        except Exception as e:
+            self.failed.emit(f"{type(e).__name__}: {e}")
+
 
 def normalize_rect(x1, y1, x2, y2):
     """Normalize two drag endpoints into an x/y/w/h dict (direction-
@@ -884,6 +930,9 @@ class GatePage(QScrollArea):
         grid.addWidget(QLabel(self._("gate_input_label")), 0, 0)
         self.gate_input_edit = QLineEdit()
         self.gate_input_edit.setReadOnly(True)
+        # v2.1.0 (addendum §3.3): the tooltips say what happens and
+        # where it goes; the four must-have points ride verbatim.
+        self.gate_input_edit.setToolTip(self._("gate_input_tooltip"))
         gate_browse = QPushButton(self._("browse_folder"))
         gate_browse.clicked.connect(self.choose_input)
         grid.addWidget(self.gate_input_edit, 0, 1)
@@ -891,6 +940,7 @@ class GatePage(QScrollArea):
         grid.addWidget(QLabel(self._("gate_output_label")), 1, 0)
         self.gate_output_edit = QLineEdit()
         self.gate_output_edit.setReadOnly(True)
+        self.gate_output_edit.setToolTip(self._("gate_output_tooltip"))
         gate_browse_out = QPushButton(self._("browse_folder"))
         gate_browse_out.clicked.connect(self.choose_output)
         grid.addWidget(self.gate_output_edit, 1, 1)
@@ -898,34 +948,52 @@ class GatePage(QScrollArea):
         layout.addLayout(grid)
 
         self.redact_label = QLabel(self._("gate_redact_label"))
+        self.redact_label.setWordWrap(True)
         layout.addWidget(self.redact_label)
         self.gate_no_redact_cb = QCheckBox(self._("gate_no_redact"))
+        self.gate_no_redact_cb.setToolTip(self._("gate_no_redact_tooltip"))
         self.gate_no_paths_cb = QCheckBox(self._("gate_no_paths"))
+        self.gate_no_paths_cb.setToolTip(self._("gate_no_paths_tooltip"))
         self.gate_no_input_hashes_cb = QCheckBox(
             self._("gate_no_input_hashes"))
+        self.gate_no_input_hashes_cb.setToolTip(
+            self._("gate_no_input_hashes_tooltip"))
         for cb in (self.gate_no_redact_cb, self.gate_no_paths_cb,
                    self.gate_no_input_hashes_cb):
             layout.addWidget(cb)
 
-        row = QHBoxLayout()
+        row = QGridLayout()
         self.gate_run_button = QPushButton(self._("gate_run_button"))
+        self.gate_run_button.setToolTip(self._("gate_run_tooltip"))
         self.gate_run_button.clicked.connect(self.run_gate)
         self.gate_open_report_button = QPushButton(
             self._("gate_open_report_button"))
+        self.gate_open_report_button.setToolTip(self._("gate_report_tooltip"))
         self.gate_open_report_button.clicked.connect(self.open_report)
         self.gate_open_handoff_button = QPushButton(
             self._("gate_open_handoff_button"))
+        self.gate_open_handoff_button.setToolTip(
+            self._("gate_receipt_tooltip"))
         self.gate_open_handoff_button.clicked.connect(self.open_handoff)
         self.gate_verify_button = QPushButton(
             self._("gate_verify_button"))
+        self.gate_verify_button.setToolTip(self._("gate_verify_tooltip"))
         self.gate_verify_button.clicked.connect(self.verify_receipt)
         self.gate_selfcheck_button = QPushButton(
             self._("gate_selfcheck_button"))
+        self.gate_selfcheck_button.setToolTip(
+            self._("gate_selfcheck_tooltip"))
         self.gate_selfcheck_button.clicked.connect(self.run_self_check)
-        for b in (self.gate_run_button, self.gate_open_report_button,
-                  self.gate_open_handoff_button, self.gate_verify_button,
-                  self.gate_selfcheck_button):
-            row.addWidget(b)
+        # v2.1.0 (addendum 2 §1.2): the page is narrower by the
+        # sidebar's width, so the five buttons wrap into a 2x3 grid -
+        # the button row must not overflow horizontally at the minimum
+        # size (measured 2026-11-10: the one-row layout overflowed the
+        # 682px page viewport by 38px)
+        row.addWidget(self.gate_run_button, 0, 0)
+        row.addWidget(self.gate_open_report_button, 0, 1)
+        row.addWidget(self.gate_open_handoff_button, 0, 2)
+        row.addWidget(self.gate_verify_button, 1, 0)
+        row.addWidget(self.gate_selfcheck_button, 1, 1)
         layout.addLayout(row)
 
         self.gate_log = QPlainTextEdit()
@@ -967,6 +1035,10 @@ class GatePage(QScrollArea):
                 "gate_done", items=receipt["summary"]["items"],
                 produced=receipt["summary"]["produced"],
                 not_produced=receipt["summary"]["not_produced"]))
+            # the receipt is named on the screen (addendum §3.2: 受領書
+            # is the 書き出し記録)
+            self.gate_log.appendPlainText(self._(
+                "gate_receipt_label") + ": handoff/gate-receipt.json")
             self._gate_out = Path(out)
         except Exception as e:  # noqa: BLE001
             self.gate_log.appendPlainText(
@@ -1017,6 +1089,268 @@ class GatePage(QScrollArea):
             expected=result["expected"]))
         for d in result.get("differences", []):
             self.gate_log.appendPlainText(
+                "  {file}: {field} expected={expected!r} "
+                "actual={actual!r}".format(**d))
+
+
+class CohortPage(QScrollArea):
+    """The v2.1.0 Cohort tab (request §3.9): pick a submissions folder,
+    an output folder and optional base documents, choose the
+    exclusions, run the comparison outside the UI thread with a
+    progress display, then open the report / the record folder, verify
+    the comparison record, run the self-check.  The texts speak the
+    operation (addendum §3.2) and every control carries a tooltip
+    (§3.3); the empty result area shows the §3.4 placeholder until the
+    first run replaces it."""
+
+    def __init__(self, lang: str, storage=None, parent=None):
+        super().__init__(parent)
+        self.lang = lang
+        self._ = lambda key, **kw: tr(lang, key, **kw)
+        self.storage = storage
+        # the same page shape as GatePage (§3.1 ruling ③b + addendum 2
+        # §1.2): the page itself is a scroll area with the Ignored
+        # policy so the layout's minimum height stays at/under 560 and
+        # the sidebar's width can be reclaimed by the page.
+        self.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.setWidgetResizable(True)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel(self._("cohort_input_label")), 0, 0)
+        self.cohort_input_edit = QLineEdit()
+        self.cohort_input_edit.setReadOnly(True)
+        self.cohort_input_edit.setPlaceholderText(
+            self._("cohort_input_placeholder"))
+        self.cohort_input_edit.setToolTip(self._("cohort_input_tooltip"))
+        cohort_browse = QPushButton(self._("browse_folder"))
+        cohort_browse.clicked.connect(self.choose_input)
+        grid.addWidget(self.cohort_input_edit, 0, 1)
+        grid.addWidget(cohort_browse, 0, 2)
+        grid.addWidget(QLabel(self._("cohort_output_label")), 1, 0)
+        self.cohort_output_edit = QLineEdit()
+        self.cohort_output_edit.setReadOnly(True)
+        self.cohort_output_edit.setToolTip(self._("cohort_output_tooltip"))
+        cohort_browse_out = QPushButton(self._("browse_folder"))
+        cohort_browse_out.clicked.connect(self.choose_output)
+        grid.addWidget(self.cohort_output_edit, 1, 1)
+        grid.addWidget(cohort_browse_out, 1, 2)
+        grid.addWidget(QLabel(self._("cohort_base_label")), 2, 0)
+        self.cohort_base_edit = QLineEdit()
+        self.cohort_base_edit.setReadOnly(True)
+        self.cohort_base_edit.setToolTip(self._("cohort_base_tooltip"))
+        cohort_browse_base = QPushButton(self._("browse_folder"))
+        cohort_browse_base.clicked.connect(self.choose_base)
+        grid.addWidget(self.cohort_base_edit, 2, 1)
+        grid.addWidget(cohort_browse_base, 2, 2)
+        layout.addLayout(grid)
+
+        self.cohort_quotes_cb = QCheckBox(self._("cohort_quotes_cb"))
+        self.cohort_quotes_cb.setToolTip(self._("cohort_quotes_tooltip"))
+        self.cohort_bib_cb = QCheckBox(self._("cohort_bib_cb"))
+        self.cohort_bib_cb.setToolTip(self._("cohort_bib_tooltip"))
+        layout.addWidget(self.cohort_quotes_cb)
+        layout.addWidget(self.cohort_bib_cb)
+
+        row = QGridLayout()
+        self.cohort_run_button = QPushButton(self._("cohort_run_button"))
+        self.cohort_run_button.setToolTip(self._("cohort_run_tooltip"))
+        self.cohort_run_button.clicked.connect(self.run_cohort)
+        self.cohort_open_report_button = QPushButton(
+            self._("cohort_open_report_button"))
+        self.cohort_open_report_button.setToolTip(
+            self._("cohort_report_tooltip"))
+        self.cohort_open_report_button.clicked.connect(self.open_report)
+        self.cohort_open_local_button = QPushButton(
+            self._("cohort_open_local_button"))
+        self.cohort_open_local_button.setToolTip(
+            self._("cohort_local_tooltip"))
+        self.cohort_open_local_button.clicked.connect(self.open_local)
+        self.cohort_verify_button = QPushButton(
+            self._("cohort_verify_button"))
+        self.cohort_verify_button.setToolTip(self._("cohort_verify_tooltip"))
+        self.cohort_verify_button.clicked.connect(self.verify_record)
+        self.cohort_selfcheck_button = QPushButton(
+            self._("cohort_selfcheck_button"))
+        self.cohort_selfcheck_button.setToolTip(
+            self._("cohort_selfcheck_tooltip"))
+        self.cohort_selfcheck_button.clicked.connect(self.run_self_check)
+        # the same 2x3 wrap as the Gate page (addendum 2 §1.2: no
+        # horizontal overflow at the minimum size)
+        row.addWidget(self.cohort_run_button, 0, 0)
+        row.addWidget(self.cohort_open_report_button, 0, 1)
+        row.addWidget(self.cohort_open_local_button, 0, 2)
+        row.addWidget(self.cohort_verify_button, 1, 0)
+        row.addWidget(self.cohort_selfcheck_button, 1, 1)
+        layout.addLayout(row)
+
+        # the progress display (the §3.9 ruling): a busy bar plus the
+        # live messages - the engine reports the item count up front
+        # and the phases as they happen, and no percentage is invented
+        self.cohort_progress = QProgressBar()
+        self.cohort_progress.setRange(0, 0)  # busy: the engine gives no %
+        self.cohort_progress.setVisible(False)
+        layout.addWidget(self.cohort_progress)
+
+        self.summary_label = QLabel(self._("cohort_summary_placeholder"))
+        self.summary_label.setWordWrap(True)
+        # the §3.4 placeholder colour rides the palette's own
+        # placeholder role, so it stays readable under an OS dark
+        # palette too (the same rule as the sidebar's fixed colours)
+        self.summary_label.setForegroundRole(
+            QPalette.ColorRole.PlaceholderText)
+        layout.addWidget(self.summary_label)
+
+        self.cohort_log = QPlainTextEdit()
+        self.cohort_log.setReadOnly(True)
+        layout.addWidget(self.cohort_log, stretch=1)
+
+        self._cohort_out = None
+        self._cohort_base_paths = []
+        self._cohort_thread: QThread | None = None
+        self._cohort_worker: CohortWorker | None = None
+        self.setWidget(content)
+
+    # -- folder pickers ------------------------------------------------
+
+    def choose_input(self):
+        d = QFileDialog.getExistingDirectory(
+            self, self._("cohort_input_label"))
+        if d:
+            self.cohort_input_edit.setText(d)
+
+    def choose_output(self):
+        d = QFileDialog.getExistingDirectory(
+            self, self._("cohort_output_label"))
+        if d:
+            self.cohort_output_edit.setText(d)
+
+    def choose_base(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, self._("cohort_base_label"))
+        if files:
+            self._cohort_base_paths = files
+            self.cohort_base_edit.setText(", ".join(
+                str(Path(f).name) for f in files))
+
+    # -- the run (outside the UI thread, §3.9 ruling) -------------------
+
+    def run_cohort(self):
+        inp = self.cohort_input_edit.text()
+        out = self.cohort_output_edit.text()
+        if not inp or not out:
+            return
+        if self._cohort_thread is not None and \
+                self._cohort_thread.isRunning():
+            return
+        self._cohort_set_running(True)
+        self._cohort_thread = QThread(self)
+        self._cohort_worker = CohortWorker(
+            Path(inp), Path(out),
+            base_paths=self._cohort_base_paths,
+            exclude_quotes=self.cohort_quotes_cb.isChecked(),
+            exclude_bibliography=self.cohort_bib_cb.isChecked(),
+            include_paths=True, include_input_hashes=True,
+            storage_path=(self.storage.db_path
+                          if self.storage is not None else None),
+            lang=self.lang)
+        self._cohort_worker.moveToThread(self._cohort_thread)
+        self._cohort_thread.started.connect(self._cohort_worker.run)
+        self._cohort_worker.progress.connect(
+            self.cohort_log.appendPlainText)
+        self._cohort_worker.finished.connect(
+            self._on_cohort_finished)
+        self._cohort_worker.failed.connect(self._on_cohort_failed)
+        self._cohort_worker.finished.connect(self._cohort_thread.quit)
+        self._cohort_worker.failed.connect(self._cohort_thread.quit)
+        self._cohort_thread.finished.connect(self._cohort_thread.deleteLater)
+        self._cohort_thread.start()
+
+    def _cohort_set_running(self, running: bool):
+        self.cohort_run_button.setEnabled(not running)
+        self.cohort_progress.setVisible(running)
+
+    def _on_cohort_finished(self, receipt: dict):
+        self._cohort_set_running(False)
+        s = receipt.get("summary") or {}
+        self.cohort_log.appendPlainText(self._(
+            "cohort_record_label") + ": handoff/cohort-receipt.json")
+        self.cohort_log.appendPlainText(self._(
+            "cohort_done", items=s.get("items", 0),
+            compared=s.get("compared", 0),
+            not_compared=s.get("not_compared", 0),
+            flagged=s.get("flagged", 0)))
+        self.summary_label.setText(self._(
+            "cohort_done", items=s.get("items", 0),
+            compared=s.get("compared", 0),
+            not_compared=s.get("not_compared", 0),
+            flagged=s.get("flagged", 0)))
+        self.summary_label.setForegroundRole(QPalette.ColorRole.Text)
+        self._cohort_out = Path(self.cohort_output_edit.text())
+
+    def _on_cohort_failed(self, message: str):
+        self._cohort_set_running(False)
+        self.cohort_log.appendPlainText(message)
+
+    def shutdown_thread(self):
+        """closeEvent help: wind the background comparison down before
+        the window tears the thread reference apart (the same pattern
+        as the scan / sanitize / crowd threads)."""
+        if self._cohort_thread is not None and \
+                self._cohort_thread.isRunning():
+            self._cohort_thread.quit()
+            self._cohort_thread.wait(5000)
+
+    # -- the results ---------------------------------------------------
+
+    def open_report(self):
+        if self._cohort_out is None:
+            return
+        from sieve_tray import open_report_gate
+        open_report_gate(self._cohort_out / "local" / "cohort-report.html")
+
+    def open_local(self):
+        if self._cohort_out is None:
+            return
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl.fromLocalFile(
+            str(self._cohort_out / "local")))
+
+    def verify_record(self):
+        from sieve_tray import verify_gate
+        if self._cohort_out is None:
+            return
+        try:
+            result = verify_gate(
+                self._cohort_out / "handoff" / "cohort-receipt.json",
+                input_dir=(Path(self.cohort_input_edit.text())
+                           if self.cohort_input_edit.text() else None),
+                base_paths=self._cohort_base_paths or None)
+            self.cohort_log.appendPlainText(self._(
+                "cohort_verify_done", overall=result["overall"],
+                scope=result["scope"]))
+        except Exception as e:  # noqa: BLE001
+            self.cohort_log.appendPlainText(
+                f"{type(e).__name__}: {e}")
+
+    def run_self_check(self):
+        from sieve_tray import cohort_self_check
+        result = cohort_self_check()
+        self.show_selfcheck_result(result)
+
+    def show_selfcheck_result(self, result: dict) -> None:
+        if "error" in result:
+            self.cohort_log.appendPlainText(self._(
+                "cohort_selfcheck_unavailable", detail=result["detail"]))
+            return
+        self.cohort_log.appendPlainText(self._(
+            "cohort_selfcheck_done", matching=result["matching"],
+            expected=result["expected"]))
+        for d in result.get("differences", []):
+            self.cohort_log.appendPlainText(
                 "  {file}: {field} expected={expected!r} "
                 "actual={actual!r}".format(**d))
 
@@ -1407,6 +1741,13 @@ class MainWindow(QMainWindow):
         self.gate_page = GatePage(self.lang)
         self._add_page("gate", self.gate_page, "gate_tab")
 
+        # v2.1.0 (request §3.9): the Cohort tab rides the sidebar as the
+        # ninth page (addendum 2 §1.1 order); the run leaves the UI
+        # thread (the §3.9 ruling) and the history rides the existing
+        # storage (§3.7: one allowlisted cohort_runs row per run).
+        self.cohort_page = CohortPage(self.lang, storage=self.storage)
+        self._add_page("cohort", self.cohort_page, "cohort_tab")
+
         # --- the body: the sidebar on the left, the page on the right
         body = QWidget()
         body_layout = QHBoxLayout(body)
@@ -1632,6 +1973,10 @@ class MainWindow(QMainWindow):
         if getattr(self, "_crowd_thread", None) is not None:
             self._crowd_thread.quit()
             self._crowd_thread.wait(5000)
+        # v2.1.0 (request §3.9): the Cohort comparison winds down like
+        # the other background threads.
+        if getattr(self, "cohort_page", None) is not None:
+            self.cohort_page.shutdown_thread()
         super().closeEvent(event)
 
     @staticmethod

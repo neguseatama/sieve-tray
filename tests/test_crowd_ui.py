@@ -101,7 +101,10 @@ def _patch_critical(monkeypatch):
 
 def test_crowd_tab_is_seventh_with_core_widgets(window):
     # v2.1.0 (addendum 2): the Crowd page is the seventh sidebar row
-    assert window.sidebar.count() == 8  # v2.0.0: +1 Gate
+    # (the count moves 8 -> 9 with the §3.9 Cohort page - the same
+    # structure-pin change the addendum 2 §3 ruling permits, reported
+    # with the §3.9 commit)
+    assert window.sidebar.count() == 9  # v2.0.0: +1 Gate, v2.1.0: +1 Cohort
     assert window.sidebar.item(
         window._page_keys.index("crowd")).text() == tr("en", "crowd_tab")
     assert window.crowd_file_btn.isEnabled() is True

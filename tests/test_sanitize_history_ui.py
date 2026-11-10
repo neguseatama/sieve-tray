@@ -71,7 +71,10 @@ def test_sanitize_history_tab_structure(window):
     assert table.columnCount() == 7
     headers = [table.horizontalHeaderItem(c).text() for c in range(7)]
     assert headers == EXPECTED_HEADERS
-    assert window.sidebar.count() == 8  # v0.8.0: +1 Audit, v1.0.0: +1 Crowd, v2.0.0: +1 Gate
+    # the count moves 8 -> 9 with the §3.9 Cohort page (the same
+    # structure-pin change the addendum 2 §3 ruling permits, reported
+    # with the §3.9 commit)
+    assert window.sidebar.count() == 9  # v0.8.0: +1 Audit, v1.0.0: +1 Crowd, v2.0.0: +1 Gate, v2.1.0: +1 Cohort
     label = window.sidebar.item(
         window._page_keys.index("sanitize_history")).text()
     assert label == tr("en", "sanitize_history_tab", n=0), \
