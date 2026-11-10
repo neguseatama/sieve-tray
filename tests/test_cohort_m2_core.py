@@ -573,6 +573,34 @@ def test_ch_t09_no_paths_serial(tmp_path):
     assert all("path" not in it for it in receipt["items"])
 
 
+def test_ch_t09_no_paths_pairs_serial(tmp_path):
+    # the 2026-11-10 receipt ruling (request §2-5): a record without
+    # paths identifies items by sequence number, and the flagged pairs
+    # carry the submission file names - which is where the personal
+    # names live - so the pairs take the same numbers, and no
+    # submission file name reaches the handoff receipt at all.  The
+    # report (local/) keeps the names (it never leaves this machine).
+    inp, out = tmp_path / "in", tmp_path / "out"
+    _cohort_tree(inp)
+    receipt = _run_cohort(inp, out, include_paths=False)
+    n = len(receipt["items"])
+    assert receipt["pairs"], "the fixture flags at least one pair"
+    for p in receipt["pairs"]:
+        assert isinstance(p["a"], int) and 1 <= p["a"] <= n, p
+        assert isinstance(p["b"], int) and 1 <= p["b"] <= n, p
+    raw = json.dumps(receipt, ensure_ascii=False, sort_keys=True)
+    for name in ("docs/essay_a.txt", "docs/essay_b.txt",
+                 "docs/report_a.txt", "docs/report_b.txt",
+                 "code/mod_a.py", "code/mod_b.py",
+                 "unique/notes.txt", "img/figure.png",
+                 "essay_a", "essay_b", "report_a", "report_b",
+                 "mod_a", "mod_b", "notes.txt", "figure.png"):
+        assert name not in raw, name
+    # the report is local-only and keeps the submission names
+    report = _report_path(out).read_text(encoding="utf-8")
+    assert "essay_a" in report and "mod_a" in report
+
+
 # ---------------------------------------------------------------------------
 # CH-T10: verify on a sieve-cohort receipt - the M1 vocabulary and exit
 # codes (0 match / 1 differs / 2 not_verifiable), the receipt-only

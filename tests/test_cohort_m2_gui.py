@@ -632,3 +632,71 @@ def test_gu_t16_nine_pages_fit_and_selected_visible(tmp_path):
             assert "color" in sel, style
         finally:
             win.close()
+
+
+# ---------------------------------------------------------------------------
+# GU-T17 (the 2026-11-10 receipt ruling, request §2-5): the GUI run's
+# sharing record carries no submission file names - the names live in
+# the file names, and the GUI offers no paths/hash toggles, so the GUI
+# runs the comparison with include_paths=False: the items identify by
+# sequence number, the flagged pairs take the same numbers, and no
+# submission name reaches handoff/cohort-receipt.json.  The verify
+# button still reads the record (replay) and reports match.
+# ---------------------------------------------------------------------------
+
+def _cohort_gui_tree(root: Path):
+    root.mkdir(parents=True, exist_ok=True)
+    common = "共通の導入: 本課題では資料を読み、自分の言葉でまとめて提出する。"
+    (root / "山田太郎_レポート.txt").write_text(
+        common + "提出物の本文である。観察した事実を順に並べ、それぞれに"
+        "短い考察を添える。結論は最後の段落で、観察と考察からだけを根拠に"
+        "述べる。", encoding="utf-8")
+    (root / "鈴木花子_レポート.txt").write_text(
+        common + "提出物の本文をここに書く。見た事実を順番に並べて、それぞれへ"
+        "短い考察を付け加える。最後の段落で結論を、観察と考察だけを根拠にして"
+        "述べる。", encoding="utf-8")
+
+
+def test_gu_t17_cohort_gui_record_has_no_names(tmp_path):
+    _require_qt()
+    import json
+    import time
+    import sieve_tray_gui as gui
+    from sieve_tray_storage import Storage
+    from PySide6.QtWidgets import QApplication
+    win = gui.MainWindow(storage=Storage(tmp_path / "history.db"))
+    try:
+        win.show()
+        win._select_page("cohort")
+        page = win.pages.currentWidget()
+        inp, out = tmp_path / "提出物", tmp_path / "out"
+        _cohort_gui_tree(inp)
+        page.cohort_input_edit.setText(str(inp))
+        page.cohort_output_edit.setText(str(out))
+        page.run_cohort()
+        deadline = time.time() + 120
+        while page._cohort_thread is not None and \
+                page._cohort_thread.isRunning() and time.time() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.05)
+        QApplication.processEvents()
+        receipt_path = out / "handoff" / "cohort-receipt.json"
+        assert receipt_path.is_file()
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        # the GUI default is the path-free record (sequential identity)
+        assert receipt["settings"]["include_paths"] is False
+        assert all("path" not in it and "index" in it
+                   for it in receipt["items"])
+        raw = receipt_path.read_text(encoding="utf-8")
+        for name in ("山田太郎", "鈴木花子", "レポート.txt", "提出物"):
+            assert name not in raw, name
+        # the flagged pairs exist and identify by sequence number
+        assert receipt["pairs"], "the two near-identical files flag"
+        for p in receipt["pairs"]:
+            assert isinstance(p["a"], int) and isinstance(p["b"], int), p
+        # the verify button reads the recorded record and reports match
+        page.verify_record()
+        log = page.cohort_log.toPlainText()
+        assert "match" in log and "replay" in log, log
+    finally:
+        win.close()
