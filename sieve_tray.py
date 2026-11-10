@@ -2765,7 +2765,6 @@ def _cohort_generic_pairs(generic_map: Dict[str, str],
         compare_map = dict(generic_map)
     flagged_pairs: list = []
     all_pairs: list = []
-    span_data_out: Dict[tuple, list] = {}
     names = sorted(compare_map)
     for i, a in enumerate(names):
         for b in names[i + 1:]:
@@ -2790,9 +2789,7 @@ def _cohort_generic_pairs(generic_map: Dict[str, str],
                             max(0, int(s.get("a_end", 0))
                                 - int(s.get("a_start", 0)))
                             for s in spans)}})
-                span_data_out[(a, b)] = list(spans)
-    return flagged_pairs, all_pairs, removal_report, emptied, \
-        span_data_out
+    return flagged_pairs, all_pairs, removal_report, emptied
 
 
 def _cohort_scope_pairs(code_map: Dict[str, str],
@@ -2828,7 +2825,6 @@ def _cohort_scope_pairs(code_map: Dict[str, str],
     analysis = analyzer.analyze_corpus(compare_map)
     flagged_pairs: list = []
     all_pairs: list = []
-    span_data_out: Dict[tuple, list] = {}
     for (a, b), pr in sorted(
             (analysis.get("pair_results") or {}).items()):
         if pr.get("short_circuited"):
@@ -2855,9 +2851,7 @@ def _cohort_scope_pairs(code_map: Dict[str, str],
                         max(0, int(s.get("a_end", 0))
                             - int(s.get("a_start", 0)))
                         for s in spans)}})
-            span_data_out.setdefault((a, b), []).extend(spans)
-    return flagged_pairs, all_pairs, removal_report, emptied, \
-        span_data_out
+    return flagged_pairs, all_pairs, removal_report, emptied
 
 
 def _scope_pair_flagged(mask: str) -> bool:
@@ -3307,16 +3301,10 @@ def run_cohort(input_dir: Path, output_dir: Path, *,
             referee_summary = {}
             progress("Cohort: referee unavailable")
 
-    scope_flagged, scope_all, scope_removal, scope_emptied, \
-        scope_spans = _cohort_scope_pairs(
-            code_texts, base_texts or None, progress)
-    for key, spans in scope_spans.items():
-        span_data.setdefault(key, []).extend(spans)
-    generic_flagged, generic_all, generic_removal, generic_emptied, \
-        generic_spans = _cohort_generic_pairs(
-            generic_texts, base_texts or None, progress)
-    for key, spans in generic_spans.items():
-        span_data.setdefault(key, []).extend(spans)
+    scope_flagged, scope_all, scope_removal, scope_emptied = \
+        _cohort_scope_pairs(code_texts, base_texts or None, progress)
+    generic_flagged, generic_all, generic_removal, generic_emptied = \
+        _cohort_generic_pairs(generic_texts, base_texts or None, progress)
     for rel in scope_emptied + generic_emptied:
         it = item_by_rel.get(rel)
         if it is not None:
@@ -3402,6 +3390,7 @@ def run_cohort(input_dir: Path, output_dir: Path, *,
     _gate_write_atomic(local / "cohort-report.html",
                        html_doc.encode("utf-8"))
     receipt["digest"] = _gate_digest(receipt)
+    pairs = receipt["pairs"]
     blob = _gate_norm_json(receipt)
     _gate_write_atomic(handoff / "cohort-receipt.json",
                        blob.encode("utf-8"))

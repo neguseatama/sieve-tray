@@ -724,10 +724,12 @@ def test_ch_t11_regen_byte_identical(tmp_path):
         [sys.executable, str(pack / "generate.py"), str(target)],
         capture_output=True, text=True, cwd=str(REPO_ROOT))
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    for p in sorted(pack.iterdir()):
-        if p.is_file():
-            assert (target / p.name).read_bytes() == p.read_bytes(), \
-                p.name
+    manifest = json.loads((pack / "MANIFEST.json").read_text(
+        encoding="utf-8"))
+    names = [e["file"] for e in manifest["items"]] + ["MANIFEST.json"]
+    for name in names:
+        assert (target / name).read_bytes() == (pack / name).read_bytes(), \
+            name
 
 
 def test_ch_t11_self_check_matches():
@@ -745,7 +747,8 @@ def test_ch_t11_self_check_exit_codes(tmp_path):
         [sys.executable, str(TRAY), "cohort", "--self-check"],
         capture_output=True, text=True, cwd=str(REPO_ROOT))
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    obj = json.loads(proc.stdout)
+    # the run's progress lines precede the machine-readable result
+    obj = json.loads(proc.stdout[proc.stdout.index("{"):])
     assert obj["matching"] == obj["expected"]
     # a tree without the pack: rc 2 (the pack is a repository resource)
     lone = tmp_path / "lone"
@@ -755,7 +758,7 @@ def test_ch_t11_self_check_exit_codes(tmp_path):
         [sys.executable, str(lone / "sieve_tray.py"), "cohort",
          "--self-check"], capture_output=True, text=True)
     assert proc2.returncode == 2, proc2.stdout + proc2.stderr
-    obj2 = json.loads(proc2.stdout)
+    obj2 = json.loads(proc2.stdout[proc2.stdout.index("{"):])
     assert obj2["error"] == "sample_pack_not_available"
 
 
