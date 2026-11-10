@@ -100,8 +100,10 @@ def _patch_critical(monkeypatch):
 
 
 def test_crowd_tab_is_seventh_with_core_widgets(window):
-    assert window.tabs.count() == 8  # v2.0.0: +1 Gate
-    assert window.tabs.tabText(window._crowd_tab_index) == tr("en", "crowd_tab")
+    # v2.1.0 (addendum 2): the Crowd page is the seventh sidebar row
+    assert window.sidebar.count() == 8  # v2.0.0: +1 Gate
+    assert window.sidebar.item(
+        window._page_keys.index("crowd")).text() == tr("en", "crowd_tab")
     assert window.crowd_file_btn.isEnabled() is True
     assert window.crowd_inspect_btn.isEnabled() is False
     assert window.crowd_dry_run_btn.isEnabled() is False

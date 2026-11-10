@@ -410,7 +410,7 @@ def test_t11_input_notes_shape_en_ja(tmp_path):
         # measured on a real Qt (v1.4.0 fix1): QTabWidget hides the
         # non-current pages, so the visibility of the notes only means
         # something once the Crowd tab is the current one
-        win.tabs.setCurrentIndex(win._crowd_tab_index)
+        win._select_page("crowd")
         heading = win.crowd_notes_heading
         notes = win.crowd_notes_label
         assert heading.isVisibleTo(win) and notes.isVisibleTo(win)

@@ -470,12 +470,14 @@ def test_gu_t14_minsize_render(tmp_path):
     _require_qt()
     import sieve_tray_gui as gui
     from sieve_tray_storage import Storage
+    from PySide6.QtCore import QPoint, Qt as QtCore
+    from PySide6.QtWidgets import QApplication
     win = gui.MainWindow(storage=Storage(tmp_path / "history.db"))
     try:
         win.resize(880, 560)
         win.show()
         # the central layout's minimum height stays at or under 560
-        mh = win.centralWidget().layout().minimumSizeHint().height()
+        mh = win.centralWidget().layout().minimumSize().height()
         assert mh <= 560, mh
         # every page listed by addendum 2 §3 renders uncut at the
         # minimum size (documents / crowd / gate now; the Cohort page
@@ -483,9 +485,17 @@ def test_gu_t14_minsize_render(tmp_path):
         for key in ("doc", "crowd", "gate"):
             win._select_page(key)
             win.repaint()
+            QApplication.processEvents()
             page = win.pages.currentWidget()
-            visible = page.visibleRegion().boundingRect()
-            assert visible.width() >= 600, (key, visible)
+            # the page sits fully inside the window (the window never
+            # clips it; the page's own overflow scrolls inside, §1.2)
+            top = page.mapTo(win, QPoint(0, 0))
+            assert top.x() >= 0, (key, top)
+            assert top.x() + page.width() <= win.width() + 1, \
+                (key, top, page.width())
+            assert page.width() >= 600, (key, page.width())
+            rendered = page.grab()
+            assert not rendered.isNull() and rendered.width() >= 600
         out_dir = os.environ.get("M2_RENDER_DIR")
         if out_dir:
             render = win.grab()

@@ -32,10 +32,13 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QTableWidget, QTableWidgetItem,
     QTabWidget, QPlainTextEdit, QFileDialog, QMessageBox, QHeaderView,
     QDialog, QFormLayout, QGridLayout, QSpinBox, QDialogButtonBox, QCheckBox,
-    QComboBox, QListWidget, QScrollArea,
+    QComboBox, QListWidget, QListWidgetItem, QScrollArea, QSizePolicy,
+    QStackedWidget,
 )
 from PySide6.QtGui import (QColor, QIcon, QAction, QPainter, QPixmap,
-                           QFontDatabase)
+                           QFontDatabase, QShortcut, QKeySequence)
+
+from PySide6 import QtCore
 
 from sieve_tray import (
     run_scan,
@@ -870,6 +873,10 @@ class GatePage(QScrollArea):
         # their direct attribute access on the page object).
         self.setFrameShape(QScrollArea.Shape.NoFrame)
         self.setWidgetResizable(True)
+        # addendum 2 §1.2: the page gets narrower by the sidebar's width,
+        # so the layout must be able to shrink the scroll area and let
+        # the content overflow into scrollbars instead
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         content = QWidget(self)
         layout = QVBoxLayout(content)
 
@@ -1088,8 +1095,32 @@ class MainWindow(QMainWindow):
         picker_row.addWidget(settings_btn)
         layout.addLayout(picker_row)
 
-        # --- results / history tabs ---
-        self.tabs = QTabWidget()
+        # --- results / history navigation -----------------------------
+        # v2.1.0 (addendum 2 = §3.15): the tab row becomes a left sidebar
+        # (a QListWidget equivalent) and a right page stack.  The pages
+        # themselves, the top scan row and the log are unchanged (§1.4).
+        self.sidebar = QListWidget()
+        self.sidebar.setObjectName("page_sidebar")
+        self.sidebar.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarAlwaysOff)
+        self.sidebar.setTextElideMode(QtCore.Qt.ElideRight)
+        self.sidebar.setUniformItemSizes(True)
+        self.sidebar.setStyleSheet(
+            "#page_sidebar { background: #f5f6f8; }"
+            "#page_sidebar::item { padding: 6px 8px; }"
+            "#page_sidebar::item:selected { font-weight: bold;"
+            " border-left: 3px solid #334455; }")
+        self.sidebar.setAccessibleName("page navigation")
+        self.sidebar.currentRowChanged.connect(
+            self._on_sidebar_row_changed)
+        self.pages = QStackedWidget()
+        self._page_keys: list = []
+        self._page_name_keys: dict = {}
+        for pos in range(1, 10):
+            shortcut = QShortcut(QKeySequence("Ctrl+%d" % pos), self)
+            shortcut.setContext(QtCore.Qt.ApplicationShortcut)
+            shortcut.activated.connect(
+                lambda pos=pos: self._select_page_at(pos - 1))
 
         self.doc_table = self._make_table(
             [self._("doc_header_file"), self._("doc_header_mask"),
@@ -1100,10 +1131,12 @@ class MainWindow(QMainWindow):
         self.doc_filter_edit.textChanged.connect(self._apply_doc_filter)
         self.doc_flagged_only_cb = QCheckBox(self._("flagged_only"))
         self.doc_flagged_only_cb.stateChanged.connect(self._apply_doc_filter)
-        self._doc_tab_index = self.tabs.addTab(
+        self._add_page(
+            "doc",
             self._make_filterable_tab(
-                self.doc_table, self.doc_filter_edit, self.doc_flagged_only_cb),
-            self._("doc_tab", n=0))
+                self.doc_table, self.doc_filter_edit,
+                self.doc_flagged_only_cb),
+            "doc_tab", n=0)
 
         self.code_table = self._make_table(
             [self._("code_header_a"), self._("code_header_b"),
@@ -1112,9 +1145,11 @@ class MainWindow(QMainWindow):
         self.code_filter_edit = QLineEdit()
         self.code_filter_edit.setPlaceholderText(self._("filter_by_filename"))
         self.code_filter_edit.textChanged.connect(self._apply_code_filter)
-        self._code_tab_index = self.tabs.addTab(
-            self._make_filterable_tab(self.code_table, self.code_filter_edit),
-            self._("code_tab", n=0))
+        self._add_page(
+            "code",
+            self._make_filterable_tab(self.code_table,
+                                      self.code_filter_edit),
+            "code_tab", n=0)
 
         self.text_table = self._make_table(
             [self._("text_header_a"), self._("text_header_b"),
@@ -1123,9 +1158,11 @@ class MainWindow(QMainWindow):
         self.text_filter_edit = QLineEdit()
         self.text_filter_edit.setPlaceholderText(self._("filter_by_filename"))
         self.text_filter_edit.textChanged.connect(self._apply_text_filter)
-        self._text_tab_index = self.tabs.addTab(
-            self._make_filterable_tab(self.text_table, self.text_filter_edit),
-            self._("text_tab", n=0))
+        self._add_page(
+            "text",
+            self._make_filterable_tab(self.text_table,
+                                      self.text_filter_edit),
+            "text_tab", n=0)
 
         # v0.8.0: Quantifier Audit tab. One row per flagged sentence
         # across all scanned .txt/.md files. Double-click opens a
@@ -1139,9 +1176,11 @@ class MainWindow(QMainWindow):
         self.audit_filter_edit = QLineEdit()
         self.audit_filter_edit.setPlaceholderText(self._("filter_by_filename"))
         self.audit_filter_edit.textChanged.connect(self._apply_audit_filter)
-        self._audit_tab_index = self.tabs.addTab(
-            self._make_filterable_tab(self.audit_table, self.audit_filter_edit),
-            self._("audit_tab", n=0))
+        self._add_page(
+            "audit",
+            self._make_filterable_tab(self.audit_table,
+                                      self.audit_filter_edit),
+            "audit_tab", n=0)
 
         self.history_table = self._make_table([
             self._("history_header_timestamp"), self._("history_header_folder"),
@@ -1159,8 +1198,7 @@ class MainWindow(QMainWindow):
         history_layout.setContentsMargins(0, 0, 0, 0)
         history_layout.addWidget(self.history_table, stretch=1)
         history_layout.addWidget(self.history_clear_btn)
-        self._history_tab_index = self.tabs.addTab(
-            history_container, self._("history_tab", n=0))
+        self._add_page("history", history_container, "history_tab", n=0)
         self.sanitize_history_table = self._make_table([
             self._("history_header_timestamp"),
             self._("history_header_folder"),
@@ -1179,9 +1217,8 @@ class MainWindow(QMainWindow):
         sanitize_history_layout.setContentsMargins(0, 0, 0, 0)
         sanitize_history_layout.addWidget(self.sanitize_history_table, stretch=1)
         sanitize_history_layout.addWidget(self.sanitize_history_clear_btn)
-        self._sanitize_history_tab_index = self.tabs.addTab(
-            sanitize_history_container,
-            self._("sanitize_history_tab", n=0))
+        self._add_page("sanitize_history", sanitize_history_container,
+                       "sanitize_history_tab", n=0)
 
         # --- Crowd tab (sieve-crowd integration): select a table,
         # inspect it, edit the k-anonymity config as JSON, measure
@@ -1347,15 +1384,19 @@ class MainWindow(QMainWindow):
         crowd_layout.addWidget(self.crowd_history_table)
 
         crowd_page = self._wrap_scroll(crowd_page)
-        self._crowd_tab_index = self.tabs.addTab(crowd_page,
-                                                 self._("crowd_tab"))
+        self._add_page("crowd", crowd_page, "crowd_tab")
 
         # v2.0.0 (M1 Gate): the Gate tab (request §3.6).
         self.gate_page = GatePage(self.lang)
-        self._gate_tab_index = self.tabs.addTab(self.gate_page,
-                                                self._("gate_tab"))
+        self._add_page("gate", self.gate_page, "gate_tab")
 
-        layout.addWidget(self.tabs, stretch=3)
+        # --- the body: the sidebar on the left, the page on the right
+        body = QWidget()
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.addWidget(self.sidebar)
+        body_layout.addWidget(self.pages, stretch=1)
+        layout.addWidget(body, stretch=3)
 
         # --- log ---
         layout.addWidget(QLabel(self._("log_label")))
@@ -1363,6 +1404,18 @@ class MainWindow(QMainWindow):
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(500)
         layout.addWidget(self.log_view, stretch=1)
+
+        # the last selected page (§1.3): restored from the settings; a
+        # saved key that no longer exists falls back to the first row
+        try:
+            saved = self.storage.get_setting("last_page")
+        except Exception:
+            saved = None
+        if saved in self._page_keys:
+            self.sidebar.setCurrentRow(self._page_keys.index(saved))
+        else:
+            self.sidebar.setCurrentRow(0)
+        self._recalc_sidebar_width()
 
         # --- export row ---
         export_row = QHBoxLayout()
@@ -1391,6 +1444,8 @@ class MainWindow(QMainWindow):
         area = QScrollArea()
         area.setFrameShape(QScrollArea.Shape.NoFrame)
         area.setWidgetResizable(True)
+        # addendum 2 §1.2: shrinkable pages (the overflow scrolls)
+        area.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         area.setWidget(page)
         return area
 
@@ -1459,6 +1514,67 @@ class MainWindow(QMainWindow):
         self._move_for_client_origin(geo)
         self._pending_geometry = None
 
+    # ------------------------------------------------------------------
+    # v2.1.0 (addendum 2 = §3.15): the sidebar navigation.  The pages
+    # register by key; the counted display names, the width recalc and
+    # the last_page restore ride the existing settings store.
+    # ------------------------------------------------------------------
+
+    def _add_page(self, key: str, widget, name_key: str, n=None) -> None:
+        """Register one page in the sidebar order (§1.1).  The item's
+        text is the display name and doubles as the accessible name
+        (Qt's accessibility reads the item text); the tooltip carries
+        the same full text (§1.2)."""
+        name = self._(name_key) if n is None else self._(name_key, n=n)
+        from PySide6.QtGui import QIcon
+        item = QListWidgetItem(name)
+        item.setData(QtCore.Qt.UserRole, key)
+        item.setToolTip(name)
+        self.sidebar.addItem(item)
+        self.pages.addWidget(widget)
+        self._page_keys.append(key)
+        self._page_name_keys[key] = name_key
+
+    def _on_sidebar_row_changed(self, row: int) -> None:
+        if 0 <= row < self.pages.count():
+            self.pages.setCurrentIndex(row)
+
+    def _select_page(self, key: str) -> None:
+        """Select the page by key (the tab-switching calls' successor)."""
+        if key in self._page_keys:
+            self.sidebar.setCurrentRow(self._page_keys.index(key))
+
+    def _select_page_at(self, row: int) -> None:
+        """Ctrl+1..9 (Cmd on macOS): switch by position (§1.3)."""
+        if 0 <= row < self.sidebar.count():
+            self.sidebar.setCurrentRow(row)
+
+    def _set_page_title(self, key: str, n=None) -> None:
+        """The counted display name update (§1.1: 動的に更新する)."""
+        if key not in self._page_name_keys:
+            return
+        name_key = self._page_name_keys[key]
+        name = self._(name_key) if n is None else self._(name_key, n=n)
+        row = self._page_keys.index(key)
+        item = self.sidebar.item(row)
+        if item is not None:
+            item.setText(name)
+            item.setToolTip(name)
+
+    def _recalc_sidebar_width(self) -> None:
+        """The sidebar width (§1.2): the longest item's text width plus
+        padding, held inside 160..240px; the overflow elides and the
+        tooltip carries the full text.  Recalculated when the language
+        changes (each construction picks the new language's names)."""
+        metrics = self.sidebar.fontMetrics()
+        widest = 0
+        for i in range(self.sidebar.count()):
+            widest = max(widest, metrics.horizontalAdvance(
+                self.sidebar.item(i).text()))
+        width = widest + 44
+        width = max(160, min(240, width))
+        self.sidebar.setFixedWidth(width)
+
     def closeEvent(self, event):
         # v1.4.0: the scan temp file is removed at exit (design §3.1).
         if getattr(self, "_scan_temp_path", None) is not None:
@@ -1479,6 +1595,15 @@ class MainWindow(QMainWindow):
             self.storage.set_setting(
                 "window_geometry",
                 "%dx%d%+d%+d" % (g.width(), g.height(), g.x(), g.y()))
+        except Exception:
+            pass
+        # v2.1.0 (addendum 2 §1.3): the last selected page rides the
+        # same settings store; a failure never blocks the close itself.
+        try:
+            row = self.sidebar.currentRow()
+            if 0 <= row < len(self._page_keys):
+                self.storage.set_setting("last_page",
+                                         self._page_keys[row])
         except Exception:
             pass
         if self._scan_running and self._thread is not None:
@@ -1739,10 +1864,10 @@ class MainWindow(QMainWindow):
         self.code_table.setRowCount(0)
         self.text_table.setRowCount(0)
         self.audit_table.setRowCount(0)
-        self.tabs.setTabText(self._doc_tab_index, self._("doc_tab", n=0))
-        self.tabs.setTabText(self._code_tab_index, self._("code_tab", n=0))
-        self.tabs.setTabText(self._text_tab_index, self._("text_tab", n=0))
-        self.tabs.setTabText(self._audit_tab_index, self._("audit_tab", n=0))
+        self._set_page_title("doc", n=0)
+        self._set_page_title("code", n=0)
+        self._set_page_title("text", n=0)
+        self._set_page_title("audit", n=0)
 
     def _on_scan_finished(self, result: ScanResult):
         """Main-thread adapter for the scan worker's finished
@@ -1811,8 +1936,7 @@ class MainWindow(QMainWindow):
             if bg is not None:
                 for col in range(3):
                     self.doc_table.item(row, col).setBackground(bg)
-        self.tabs.setTabText(
-            self._doc_tab_index, self._("doc_tab", n=len(result.doc_results)))
+        self._set_page_title("doc", n=len(result.doc_results))
         self.doc_table.setSortingEnabled(True)
         self._apply_doc_filter()
 
@@ -1826,8 +1950,7 @@ class MainWindow(QMainWindow):
             self.code_table.setItem(row, 2, QTableWidgetItem(p["mask"]))
             for col in range(3):
                 self.code_table.item(row, col).setBackground(FLAGGED_BG)
-        self.tabs.setTabText(
-            self._code_tab_index, self._("code_tab", n=len(result.code_pairs)))
+        self._set_page_title("code", n=len(result.code_pairs))
         self.code_table.setSortingEnabled(True)
         self._apply_code_filter()
 
@@ -1846,8 +1969,7 @@ class MainWindow(QMainWindow):
             fg = SIGNAL_FG.get(p["signal"])
             if fg is not None:
                 self.text_table.item(row, 2).setForeground(fg)
-        self.tabs.setTabText(
-            self._text_tab_index, self._("text_tab", n=len(result.text_pairs)))
+        self._set_page_title("text", n=len(result.text_pairs))
         self.text_table.setSortingEnabled(True)
         self._apply_text_filter()
 
@@ -1876,8 +1998,7 @@ class MainWindow(QMainWindow):
             fg = SIGNAL_FG.get(a["signal"])
             if fg is not None:
                 self.audit_table.item(row, 2).setForeground(fg)
-        self.tabs.setTabText(
-            self._audit_tab_index, self._("audit_tab", n=len(result.audit_results)))
+        self._set_page_title("audit", n=len(result.audit_results))
         self.audit_table.setSortingEnabled(True)
         self._apply_audit_filter()
 
@@ -2082,9 +2203,7 @@ class MainWindow(QMainWindow):
                     str(r["integrity_bad_count"])))
             self.sanitize_history_table.item(row, 0).setData(
                 Qt.UserRole, r["id"])
-        self.tabs.setTabText(
-            self._sanitize_history_tab_index,
-            self._("sanitize_history_tab", n=len(rows)))
+        self._set_page_title("sanitize_history", n=len(rows))
         self.sanitize_history_table.setSortingEnabled(True)
 
     def _refresh_history_table(self):
@@ -2108,8 +2227,7 @@ class MainWindow(QMainWindow):
                 row, 6, QTableWidgetItem(str(r.audit_count)))
             # stash the run id on the row for double-click lookup
             self.history_table.item(row, 0).setData(Qt.UserRole, r.id)
-        self.tabs.setTabText(
-            self._history_tab_index, self._("history_tab", n=len(runs)))
+        self._set_page_title("history", n=len(runs))
         self.history_table.setSortingEnabled(True)
         self._refresh_sanitize_history_table()
 
@@ -2161,7 +2279,7 @@ class MainWindow(QMainWindow):
             pairs=len(result.code_pairs), tpairs=len(result.text_pairs),
             audit=len(result.audit_results)))
         self.export_btn.setEnabled(True)
-        self.tabs.setCurrentIndex(self._doc_tab_index)
+        self._select_page("doc")
 
     # ------------------------------------------------------------------
     # Crowd tab (sieve-crowd integration): select a table, inspect it,
