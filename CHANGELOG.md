@@ -63,7 +63,17 @@
   cohort/*) travel in the wheel as package-data, so `gate --self-check`
   / `cohort --self-check` run from an installed wheel; the distribution
   smoke runs from the wheel (measured: gate 13/13, cohort 19/19, exit
-  0, in a fresh venv).
+  0, in a fresh venv).  The distribution half joins the contract (the
+  2026-11-11 ruling): every release.yml bundle carries both packs
+  (`--add-data "samples/cohort"` on Windows and macOS), the frozen
+  artifact runs both self-checks headlessly right after the build and
+  any exit code but 0 fails the release (measured on Linux: gate 13/13
+  and cohort 19/19, exit 0, with no display available - and the
+  missing-pack state measured at exit 2 / sample_pack_not_available),
+  `workflow_dispatch` joins the tag push for the no-publish trial run
+  (the release attach sits behind the push guard), and the frozen GUI
+  entry dispatches `gate|cohort --self-check` to the CLI before
+  QApplication so a self-check run never opens a window.
 - **Dependency floors**: sieve-scope raised from >=1.3.0 to >=1.5.0 and
   sieve-referee from >=1.3.0 to >=1.6.0 (sieve-lens stays >=0.22.0) -
   the cohort lane consumes Scope's strip_base_sources and the letter

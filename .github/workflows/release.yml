@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - "v*"
+  # v2.1.0 (request §3.10, the 2026-11-11 ruling): the manual trial
+  # run - the three-OS build and the two frozen-artifact self-checks
+  # run without publishing anything (the release attach steps sit
+  # behind the push guard below).
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -46,6 +51,7 @@ jobs:
           --icon assets/icon.ico
           --add-data "assets/icon.png;assets"
           --add-data "samples/gate;samples/gate"
+          --add-data "samples/cohort;samples/cohort"
           sieve_tray_gui.py
 
       - name: Build with PyInstaller (macOS)
@@ -56,7 +62,54 @@ jobs:
           --collect-all sieve_lens_ext
           --add-data "assets/icon.png:assets"
           --add-data "samples/gate:samples/gate"
+          --add-data "samples/cohort:samples/cohort"
           sieve_tray_gui.py
+
+      - name: Self-check the frozen artifact (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          # v2.1.0 (request §3.10, the 2026-11-11 ruling): the built
+          # artifact runs both self-checks headlessly - the frozen GUI
+          # entry dispatches `gate|cohort --self-check` to the CLI
+          # before QApplication, so no window opens.  Any exit code
+          # but 0 (1 = a difference, 2 = the self-check could not run)
+          # fails the release (the 2026-11-10 exit-code contract).
+          # Start-Process -Wait holds the step until the
+          # GUI-subsystem exe exits, and the redirect keeps the JSON
+          # in the CI log.
+          $env:PYTHONIOENCODING = "utf-8"
+          $p = Start-Process -FilePath "dist\SieveTray.exe" `
+            -ArgumentList "gate", "--self-check" -Wait -PassThru `
+            -RedirectStandardOutput gate-selfcheck.log `
+            -RedirectStandardError gate-selfcheck.err.log
+          Get-Content gate-selfcheck.log
+          Get-Content gate-selfcheck.err.log
+          if ($p.ExitCode -ne 0) {
+            Write-Host "::error::gate --self-check exited $($p.ExitCode)"
+            exit $p.ExitCode
+          }
+          $p = Start-Process -FilePath "dist\SieveTray.exe" `
+            -ArgumentList "cohort", "--self-check" -Wait -PassThru `
+            -RedirectStandardOutput cohort-selfcheck.log `
+            -RedirectStandardError cohort-selfcheck.err.log
+          Get-Content cohort-selfcheck.log
+          Get-Content cohort-selfcheck.err.log
+          if ($p.ExitCode -ne 0) {
+            Write-Host "::error::cohort --self-check exited $($p.ExitCode)"
+            exit $p.ExitCode
+          }
+
+      - name: Self-check the frozen artifact (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # v2.1.0 (request §3.10, the 2026-11-11 ruling): the built
+          # artifact runs both self-checks headlessly - the inner
+          # binary dispatches `gate|cohort --self-check` to the CLI
+          # before QApplication, so no window opens.  The step shell
+          # (bash -e) fails the release on exit 1 (a difference) or 2
+          # (the self-check could not run).
+          ./dist/SieveTray.app/Contents/MacOS/SieveTray gate --self-check
+          ./dist/SieveTray.app/Contents/MacOS/SieveTray cohort --self-check
 
       - name: Package artifact (Windows)
         if: runner.os == 'Windows'
@@ -77,6 +130,10 @@ jobs:
           path: dist/${{ matrix.asset_name }}
 
       - name: Attach to GitHub Release
+        # v2.1.0 (§3.10, the 2026-11-11 ruling): tag pushes publish;
+        # a workflow_dispatch trial run builds and self-checks without
+        # touching a Release.
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/${{ matrix.asset_name }}
@@ -91,6 +148,9 @@ jobs:
     # GitHub plans. artifact-metadata: write is the fine-grained
     # permission GA'd 2026-01-13 (creates the artifact storage record).
     needs: build
+    # v2.1.0 (§3.10, the 2026-11-11 ruling): tag pushes publish; a
+    # workflow_dispatch trial run stops after the build self-checks.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -124,6 +184,7 @@ jobs:
           path: artifacts/SHA256SUMS.txt
 
       - name: Attach SHA256SUMS.txt to the GitHub Release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/SHA256SUMS.txt

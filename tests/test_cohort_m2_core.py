@@ -1139,3 +1139,49 @@ def test_ch_t19_readme_spans_unit():
     ja = (REPO_ROOT / "README.ja.md").read_text(encoding="utf-8")
     assert "characters" in en and "tokens" in en
     assert "文字" in ja and "トークン" in ja
+
+
+# ---------------------------------------------------------------------------
+# CH-T20: the release workflow runs the two self-checks on each OS's
+# frozen artifact (request §3.10, the 2026-11-11 ruling).  The M2
+# acceptance found the distribution half of §3.10 unfulfilled: the
+# release.yml carried only samples/gate in its --add-data lists and no
+# self-check step at all, so a tagged bundle would ship without the
+# cohort pack and its cohort --self-check would return exit 2 (the
+# sample_pack_not_available error dict).  Static pins:
+#   - every build command bundles BOTH packs (Windows ';', macOS ':');
+#   - the self-check steps follow the build directly on the frozen
+#     artifact and fail the release on any exit code but 0;
+#   - workflow_dispatch joins the tag push for the no-publish trial
+#     run, and every Release attach sits behind the push guard;
+#   - the frozen GUI entry routes the two self-check shapes to the
+#     headless CLI before QApplication, so a self-check run never
+#     opens a window (measured on Linux: exit 0 without a display;
+#     the macOS/Windows legs are measured by the workflow_dispatch
+#     trial run on the runners).
+# ---------------------------------------------------------------------------
+
+def test_ch_t20_release_workflow_frozen_self_check_static():
+    text = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8")
+    # every build command bundles both packs
+    assert text.count('--add-data "samples/gate') == 2
+    assert text.count('--add-data "samples/cohort') == 2
+    # the self-check steps run the frozen artifact on every OS image
+    assert "gate --self-check" in text and "cohort --self-check" in text
+    assert "dist\\SieveTray.exe" in text
+    assert "dist/SieveTray.app/Contents/MacOS/SieveTray" in text
+    # the release fails when the exit code is not 0 (1 = a difference,
+    # 2 = the self-check could not run)
+    assert "ExitCode -ne 0" in text
+    # the no-publish trial: workflow_dispatch joins the tag push and
+    # every release attach sits behind the push guard (the attach step
+    # in the build job, the release-extras job, the SHA256SUMS attach)
+    assert "workflow_dispatch:" in text
+    assert text.count("github.event_name == 'push'") == 3
+    # the frozen app runs the self-checks headlessly: the GUI entry
+    # dispatches to the CLI before QApplication opens any window
+    gui = (REPO_ROOT / "sieve_tray_gui.py").read_text(encoding="utf-8")
+    assert '"--self-check" in sys.argv[2:]' in gui
+    assert "from sieve_tray import _gate_main" in gui
+    assert gui.index("--self-check") < gui.index("QApplication(sys.argv)")

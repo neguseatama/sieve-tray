@@ -3098,6 +3098,23 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    # v2.1.0 (request §3.10, the 2026-11-11 ruling): the frozen
+    # distribution app runs its own self-checks headlessly - release.yml
+    # starts the built artifact with `gate --self-check` / `cohort
+    # --self-check` right after the build and fails the release when
+    # the exit code is 1 or 2 (0 = the expected observations matched).
+    # The dispatch sits before QApplication, so a self-check run never
+    # opens a window; the GUI launches only without those arguments.
+    # The stdout/stderr guard covers the --windowed builds, where the
+    # streams may be None and the self-check's prints would crash.
+    if len(sys.argv) > 2 and sys.argv[1] in ("gate", "cohort") \
+            and "--self-check" in sys.argv[2:]:
+        if sys.stdout is None:
+            sys.stdout = open(os.devnull, "w", encoding="utf-8")
+        if sys.stderr is None:
+            sys.stderr = open(os.devnull, "w", encoding="utf-8")
+        from sieve_tray import _gate_main
+        sys.exit(_gate_main(sys.argv[1:]))
     app = QApplication(sys.argv)
     icon_path = resource_path("assets/icon.png")
     if icon_path.exists():
