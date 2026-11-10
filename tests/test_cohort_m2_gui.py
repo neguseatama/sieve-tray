@@ -555,6 +555,16 @@ def test_gu_t15_structure_invariants(tmp_path):
 # the fix).  The ninth page rides the real _add_page path as the §3.9
 # model; the §3.2 display names are set on the item directly (the i18n
 # table carries them from §3.9).
+#
+# The 2026-11-10 follow-up note (§124): the rows go back to the
+# original 6px padding (26px rows — nine rows ≈ 234px still fit the
+# 323-329px viewport, and 20px rows are cramped as click targets), and
+# the sidebar background is a FIXED #f5f6f8, so under an OS dark
+# palette the unselected rows' palette text would turn white on that
+# light background and vanish.  Every row state therefore names an
+# explicit text colour: ::item (normal), ::item:disabled and
+# ::item:selected (the explicit background + colour stay).  The
+# geometry guard is unchanged.
 # ---------------------------------------------------------------------------
 
 NINE_PAGE_TAIL = {"en": "Compare Submissions", "ja": "提出物の比較"}
@@ -598,10 +608,21 @@ def test_gu_t16_nine_pages_fit_and_selected_visible(tmp_path):
             r = sb.visualItemRect(sb.item(sb.count() - 1))
             assert r.top() >= 0 and r.bottom() <= vh - 1, \
                 (lang, "selected", r.top(), r.bottom(), vh)
-            # the rows are tightened (the ask of the 2026-11-10 note):
-            # the item style carries the small vertical padding
+            # the rows keep the original height (the 2026-11-10
+            # follow-up: 26px rows fit with room to spare and are not
+            # cramped as click targets — the 3px squeeze is reverted)
             style = win.sidebar.styleSheet()
-            assert "padding: 3px 8px" in style, style
+            assert "padding: 6px 8px" in style, style
+            # the sidebar background is a fixed light colour, so every
+            # row state must name an explicit text colour or the OS
+            # dark palette turns the rows white-on-light and unreadable
+            # (the 2026-11-10 follow-up): normal, disabled and selected
+            base = style.split("::item", 1)[1].split("{", 1)[1]
+            base = base.split("}", 1)[0]
+            assert "color" in base, style
+            dis = style.split("::item:disabled", 1)[1]
+            dis = dis.split("{", 1)[1].split("}", 1)[0]
+            assert "color" in dis, style
             # the selected row is visible beyond the OS palette: the
             # style carries an explicit background and text colour
             # (§1.3: distinguishable, and not invisible on the light
