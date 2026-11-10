@@ -47,7 +47,13 @@ sieve-tray = "sieve_tray:main"
 sieve-tray-gui = "sieve_tray_gui:main"
 
 [tool.setuptools]
-packages = ["sieve_crowd", "sieve_order"]
+# 2.1.0 (request §3.10, CH-T14): the two sample packs travel in the
+# wheel so the `gate --self-check` / `cohort --self-check` runs work
+# from an installed wheel without the repo tree.  samples is one plain
+# package (no __init__.py inside gate/ or cohort/ - the pack contents
+# must stay byte-identical to the generator's output), the files ride
+# as package-data.
+packages = ["sieve_crowd", "sieve_order", "samples"]
 py-modules = ["sieve_tray", "sieve_tray_gui", "sieve_tray_storage", "sieve_tray_i18n", "sieve_redact"]
 # v1.1.0 (design doc §3.8-F): the vendored sieve_crowd may carry data files
 # (.json etc.) in a future vendor update (v1.2.0). Declaring the patterns
@@ -61,6 +67,7 @@ py-modules = ["sieve_tray", "sieve_tray_gui", "sieve_tray_storage", "sieve_tray_
 
 [tool.setuptools.package-data]
 sieve_crowd = ["*.json", "*.txt", "*.csv"]
+"samples" = ["gate/*", "cohort/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "sieve_tray.__version__" }

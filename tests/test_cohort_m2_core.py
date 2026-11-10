@@ -22,7 +22,9 @@ settings and the report.
 """
 
 import hashlib
+import importlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -912,8 +914,46 @@ def test_ch_t13_storage_wired_into_run_cohort(tmp_path):
 # into a fresh venv and both self-checks run without the repo tree.
 # ---------------------------------------------------------------------------
 
+# the engines and the HTML-lane extras the self-checks need.  They ride
+# from the RUNNING environment: the smoke measures the wheel's own
+# completeness (the code and the sample pack), not the engines, which
+# are external distributions (the 2026-11-10 measured plan).
+SMOKE_MODULES = (
+    "sieve_lens", "sieve_lens_ext", "sieve_scope", "sieve_referee",
+    "tinycss2", "cssselect2", "webencodings", "pypdf",
+)
+
+
+def _stage_smoke_modules(dest: Path) -> None:
+    """Copy the engine/extra top-level packages from the running
+    environment into a staging folder that rides as PYTHONPATH.  A
+    single-module distribution travels as its .py file, a package as
+    its folder (the same shape they sit in site-packages)."""
+    import shutil as _shutil
+    for name in SMOKE_MODULES:
+        mod = importlib.import_module(name)
+        src = Path(mod.__file__)
+        if src.name == "__init__.py":
+            _shutil.copytree(src.parent, dest / name,
+                             ignore=_shutil.ignore_patterns("__pycache__"))
+        else:
+            _shutil.copy2(src, dest / src.name)
+
+
 def test_ch_t14_wheel_smoke(tmp_path):
     import venv as venv_mod
+    # the smoke needs the M2 engines (the cohort lane strips the base
+    # with the Scope 1.5.0 API and the 1.6.0 Referee lanes); without
+    # them the self-checks cannot be exercised - same skip philosophy
+    # as the GUI tests' _require_qt
+    try:
+        import sieve_referee  # noqa: F401
+        import sieve_scope
+        if not hasattr(sieve_scope, "strip_base_sources"):
+            raise ImportError("sieve-scope without strip_base_sources")
+    except ImportError:
+        pytest.skip("M2 engines (sieve-scope 1.5.0 / sieve-referee 1.6.0) "
+                    "unusable in this environment")
     dist = tmp_path / "dist"
     build = subprocess.run(
         [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
@@ -922,26 +962,41 @@ def test_ch_t14_wheel_smoke(tmp_path):
     assert build.returncode == 0, build.stdout + build.stderr
     wheels = list(dist.glob("sieve_tray-*.whl"))
     assert len(wheels) == 1
-    env = venv_mod.create(tmp_path / "venv", with_pip=True)
-    py = Path(env).joinpath(
-        "bin/python" if sys.platform != "win32" else "Scripts/python.exe")
+    # venv.create() returns None on 3.12+ (measured 2026-11-10) - the
+    # interpreter path is built from the created folder instead
+    venv_dir = tmp_path / "venv"
+    venv_mod.create(str(venv_dir), with_pip=True)
+    py = venv_dir / ("bin/python" if sys.platform != "win32"
+                     else "Scripts/python.exe")
     proc = subprocess.run(
         [str(py), "-m", "pip", "install", "--no-deps", str(wheels[0])],
         capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+    # the engines travel from the running environment (see above) - the
+    # staging folder rides as PYTHONPATH, never inside the fresh venv
+    staging = tmp_path / "engines"
+    staging.mkdir()
+    _stage_smoke_modules(staging)
+    env = dict(os.environ, PYTHONPATH=str(staging))
+
+    def run_self_check(lane):
+        # cwd stays neutral: `python -m` puts the current directory at
+        # sys.path[0], and the repo tree must not shadow the wheel
+        return subprocess.run(
+            [str(py), "-m", "sieve_tray", lane, "--self-check"],
+            capture_output=True, text=True, cwd=str(tmp_path), env=env)
+
     # gate --self-check runs from the wheel
-    gate = subprocess.run(
-        [str(py), "-m", "sieve_tray", "gate", "--self-check"],
-        capture_output=True, text=True)
+    gate = run_self_check("gate")
     assert gate.returncode == 0, gate.stdout + gate.stderr
     # cohort --self-check runs from the wheel too: the pack travels in
-    # the wheel (request §3.10 - the distribution smoke)
-    cohort = subprocess.run(
-        [str(py), "-m", "sieve_tray", "cohort", "--self-check"],
-        capture_output=True, text=True)
+    # the wheel (request §3.10 - the distribution smoke).  The progress
+    # lines ride before the JSON, so the object is sliced off the tail
+    cohort = run_self_check("cohort")
     assert cohort.returncode == 0, cohort.stdout + cohort.stderr
-    obj = json.loads(cohort.stdout)
+    obj = json.loads(cohort.stdout[cohort.stdout.index("{"):])
     assert obj["matching"] == obj["expected"]
+    assert obj["differences"] == []
 
 
 # ---------------------------------------------------------------------------
