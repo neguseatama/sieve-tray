@@ -260,6 +260,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         # describe the actual behavior: sequential per-occurrence
         # labels ([REDACTED]1, [REDACTED]2, ...) - the "same value,
         # same symbol" replacement is NOT in Redact 0.11.0 (§7).
+        "window_menu": "Window",
+        "window_reset_action": "Reset Window Size",
         "gate_tab": "Gate",
         "gate_input_label": "Input folder",
         "gate_output_label": "Output folder",
@@ -509,6 +511,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         # v2.0.0 (M1 Gate): Gate タブの文言（§3.6）。実際の挙動
         # （出現順の連番 [REDACTED]1、[REDACTED]2...）を記述する。
         # 「同じ値を同じ記号にする」置換は Redact 0.11.0 には無い（§7）。
+        "window_menu": "ウインドウ",
+        "window_reset_action": "初期サイズに戻す",
         "gate_tab": "Gate",
         "gate_input_label": "入力フォルダ",
         "gate_output_label": "出力先",

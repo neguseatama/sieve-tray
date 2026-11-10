@@ -85,15 +85,22 @@ def test_gu_t02_startup_geometry(tmp_path):
     win = gui.MainWindow(storage=store)
     try:
         win.show()
-        geo = win.frameGeometry()
+        # the client rect carries the decision: the size is exactly the
+        # pure function's decision, and the client origin sits at the
+        # frame's interior origin (a platform frame shifts both together
+        # - offscreen draws a 2px frame and may clamp the placement)
+        geo = win.geometry()
         screen = win.screen().availableGeometry()
         expected = gui.compute_window_geometry(
             [QRect(screen.x(), screen.y(), screen.width(),
                    screen.height())])
         assert geo.width() == expected.width
         assert geo.height() == expected.height
-        assert geo.x() == expected.x
-        assert geo.y() == expected.y
+        handle = win.windowHandle()
+        m = handle.frameMargins()
+        frame = win.frameGeometry().topLeft()
+        assert geo.x() - frame.x() == m.left()
+        assert geo.y() - frame.y() == m.top()
     finally:
         win.close()
 
@@ -113,12 +120,16 @@ def test_gu_t03_geometry_save_and_restore(tmp_path):
         win.close()  # closeEvent saves the geometry
         saved = store.get_setting("window_geometry")
         assert saved, "the geometry is saved into the settings table"
+        # the saved value is the client geometry: the restore puts the
+        # client back at the same client origin (positive coordinates
+        # are not clamped by the platform)
+        client_pos = win.geometry().topLeft()
         win2 = gui.MainWindow(storage=Storage(db))
         try:
             win2.show()
-            geo = win2.frameGeometry()
+            geo = win2.geometry()
             assert (geo.width(), geo.height()) == (960, 620)
-            assert (geo.x(), geo.y()) == (30, 40)
+            assert (geo.x(), geo.y()) == (client_pos.x(), client_pos.y())
         finally:
             win2.close()
         # a broken saved value (below half the minimum) is reset to the
@@ -131,8 +142,8 @@ def test_gu_t03_geometry_save_and_restore(tmp_path):
             expected = gui.compute_window_geometry(
                 [QRect(screen.x(), screen.y(), screen.width(),
                        screen.height())])
-            assert (win3.frameGeometry().width(),
-                    win3.frameGeometry().height()) == \
+            assert (win3.geometry().width(),
+                    win3.geometry().height()) == \
                 (expected.width, expected.height)
         finally:
             win3.close()

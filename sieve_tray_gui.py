@@ -17,6 +17,7 @@ the .ico/.icns used when packaging with PyInstaller) and a Help > About
 dialog with version info and links to the other Sieve engines.
 """
 
+import re
 import sys
 from pathlib import Path
 from multiprocessing import freeze_support
@@ -756,7 +757,105 @@ class AboutDialog(QDialog):
         layout.addWidget(close_btn)
 
 
-class GatePage(QWidget):
+
+class _GeoRect:
+    """A plain rectangle (no Qt types) for the pure geometry function."""
+
+    def __init__(self, x=0, y=0, width=0, height=0):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+
+
+class WindowGeometry:
+    """The pure decision result: the client origin and the size."""
+
+    def __init__(self, x, y, width, height):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+
+
+def compute_window_geometry(available_rects, saved=None, *,
+                            max_size=(1100, 720),
+                            min_size=(880, 560)):
+    """The addendum §3.1 window geometry - a pure function (no Qt
+    types): the initial window is 80% of the primary screen's
+    available geometry, capped at max_size, raised to min_size, and a
+    screen smaller than the minimum gets the screen size (fit-exactly);
+    the position is centered with odd remainders to the left/top.
+
+    A saved geometry is restored only when it is valid: it overlaps at
+    least 50% of the window area with some screen's available geometry
+    AND both sides are at least half the minimum (a WM that returns a
+    slightly different frame must not defeat the restore, but a clearly
+    broken value - below half the minimum or off every screen - falls
+    back to the initial decision).
+    """
+    rects = []
+    for r in available_rects or []:
+        def _val(obj, name):
+            v = getattr(obj, name, 0)
+            if callable(v):
+                try:
+                    v = v()
+                except Exception:
+                    v = 0
+            return v or 0
+        rects.append(_GeoRect(_val(r, "x"), _val(r, "y"),
+                              _val(r, "width"), _val(r, "height")))
+    if not rects or rects[0].width <= 0 or rects[0].height <= 0:
+        primary = _GeoRect(0, 0, 1280, 800)
+        rects = [primary]
+    primary = rects[0]
+
+    def _initial():
+        w = min(int(primary.width * 8 // 10), max_size[0])
+        h = min(int(primary.height * 8 // 10), max_size[1])
+        if primary.width < min_size[0] or primary.height < min_size[1]:
+            w = primary.width
+            h = primary.height
+        else:
+            w = max(w, min_size[0])
+            h = max(h, min_size[1])
+        x = primary.x + (primary.width - w) // 2
+        y = primary.y + (primary.height - h) // 2
+        return WindowGeometry(x, y, w, h)
+
+    if saved is None:
+        return _initial()
+    try:
+        sw = int(saved["width"])
+        sh = int(saved["height"])
+        sx = int(saved.get("x", 0))
+        sy = int(saved.get("y", 0))
+    except (TypeError, ValueError, KeyError):
+        return _initial()
+    if sw <= 0 or sh <= 0:
+        return _initial()
+    # validity: overlap >= 50% of the window area with some screen, and
+    # both sides at least half the minimum
+    if sw < min_size[0] // 2 or sh < min_size[1] // 2:
+        return _initial()
+    area = sw * sh
+    window = _GeoRect(sx, sy, sw, sh)
+    ok = False
+    for r in rects:
+        ox = max(0, min(window.x + window.width, r.x + r.width)
+                 - max(window.x, r.x))
+        oy = max(0, min(window.y + window.height, r.y + r.height)
+                 - max(window.y, r.y))
+        if ox * oy * 2 >= area:
+            ok = True
+            break
+    if not ok:
+        return _initial()
+    return WindowGeometry(sx, sy, sw, sh)
+
+
+class GatePage(QScrollArea):
     """The v2.0.0 Gate tab (request §3.6): pick an input folder and an
     output folder, run the Gate, open the report / the handoff folder,
     verify a receipt, run the self-check.  The texts describe the
@@ -766,7 +865,13 @@ class GatePage(QWidget):
         super().__init__(parent)
         self.lang = lang
         self._ = lambda key, **kw: tr(lang, key, **kw)
-        layout = QVBoxLayout(self)
+        # v2.1.0 (addendum §3.1 ruling ③b): the page itself is a scroll
+        # area so the layout's minimum height drops (the M1 tests keep
+        # their direct attribute access on the page object).
+        self.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.setWidgetResizable(True)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
 
         grid = QGridLayout()
         grid.addWidget(QLabel(self._("gate_input_label")), 0, 0)
@@ -820,6 +925,7 @@ class GatePage(QWidget):
         self.gate_log.setReadOnly(True)
         layout.addWidget(self.gate_log, stretch=1)
         self._gate_out = None
+        self.setWidget(content)
 
     def choose_input(self):
         from PySide6.QtWidgets import QFileDialog
@@ -920,11 +1026,20 @@ class MainWindow(QMainWindow):
         self._ = lambda key, **kw: tr(self.lang, key, **kw)
 
         self.setWindowTitle(self._("window_title"))
-        self.resize(1050, 720)
+        self._pending_geometry = None
+        self._apply_window_geometry()
 
         icon_path = resource_path("assets/icon.png")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
+
+        # v2.1.0 (addendum §3.1): the Window menu sits left of Help and
+        # offers the reset-to-initial-size action (macOS NoRole).
+        window_menu = self.menuBar().addMenu(self._("window_menu"))
+        reset_action = QAction(self._("window_reset_action"), self)
+        reset_action.setMenuRole(QAction.NoRole)
+        reset_action.triggered.connect(self._reset_window_geometry)
+        window_menu.addAction(reset_action)
 
         help_menu = self.menuBar().addMenu(self._("help_menu"))
         about_action = QAction(self._("about_action"), self)
@@ -1231,6 +1346,7 @@ class MainWindow(QMainWindow):
         ])
         crowd_layout.addWidget(self.crowd_history_table)
 
+        crowd_page = self._wrap_scroll(crowd_page)
         self._crowd_tab_index = self.tabs.addTab(crowd_page,
                                                  self._("crowd_tab"))
 
@@ -1261,6 +1377,88 @@ class MainWindow(QMainWindow):
         self._refresh_history_table()
         self._refresh_crowd_history_table()
 
+
+    # ------------------------------------------------------------------
+    # v2.1.0 (addendum §3.1): the window geometry.  The decision lives
+    # in the pure function compute_window_geometry(); the existing
+    # settings table (Storage) is the only save place (no new store).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _wrap_scroll(page):
+        """Wrap a page into a borderless scroll area (the small-window
+        guarantee for the tall pages)."""
+        area = QScrollArea()
+        area.setFrameShape(QScrollArea.Shape.NoFrame)
+        area.setWidgetResizable(True)
+        area.setWidget(page)
+        return area
+
+    def _screen_rects(self):
+        rects = []
+        screen = self.screen()
+        if screen is None:
+            screen = self.windowHandle().screen() \
+                if self.windowHandle() is not None else None
+        if screen is not None:
+            g = screen.availableGeometry()
+            rects.append(_GeoRect(g.x(), g.y(), g.width(), g.height()))
+        return rects
+
+    def _parse_saved_geometry(self):
+        raw = None
+        try:
+            raw = self.storage.get_setting("window_geometry")
+        except Exception:
+            return None
+        if not raw or not isinstance(raw, str):
+            return None
+        m = re.match(r"^(-?\d+)x(-?\d+)(?:([+-]-?\d+)([+-]-?\d+))?$",
+                     raw.strip())
+        if m is None:
+            return None
+        saved = {"width": int(m.group(1)), "height": int(m.group(2))}
+        saved["x"] = int(m.group(3) or 0)
+        saved["y"] = int(m.group(4) or 0)
+        return saved
+
+    def _move_for_client_origin(self, geo):
+        """Position the frame so the CLIENT origin lands at geo (some
+        window systems draw a frame around the client: the offscreen
+        platform shifts the origin by ~2px).  The client origin is the
+        assertion surface of the addendum §3.1 tests."""
+        dx = dy = 0
+        handle = self.windowHandle()
+        if handle is None:
+            # force the platform window so the frame margins are real
+            # before the first show
+            try:
+                self.winId()
+                handle = self.windowHandle()
+            except Exception:
+                handle = None
+        if handle is not None:
+            try:
+                m = handle.frameMargins()
+                dx, dy = m.left(), m.top()
+            except Exception:
+                dx = dy = 0
+        self.move(geo.x - dx, geo.y - dy)
+
+    def _apply_window_geometry(self):
+        geo = compute_window_geometry(self._screen_rects(),
+                                      self._parse_saved_geometry())
+        self.resize(geo.width, geo.height)
+        self._move_for_client_origin(geo)
+
+    def _reset_window_geometry(self):
+        # the menu action: back to the initial size and position, and
+        # the saved value is updated too
+        geo = compute_window_geometry(self._screen_rects(), None)
+        self.resize(geo.width, geo.height)
+        self._move_for_client_origin(geo)
+        self._pending_geometry = None
+
     def closeEvent(self, event):
         # v1.4.0: the scan temp file is removed at exit (design §3.1).
         if getattr(self, "_scan_temp_path", None) is not None:
@@ -1274,6 +1472,15 @@ class MainWindow(QMainWindow):
         # QThread object here, since by this point Qt may already have
         # deleted it via deleteLater (finished -> deleteLater, wired in
         # start_scan()) if the scan finished normally long ago.
+        # v2.1.0 (addendum §3.1): restore-save into the existing
+        # settings store; a failure never blocks the close itself.
+        try:
+            g = self.geometry()
+            self.storage.set_setting(
+                "window_geometry",
+                "%dx%d%+d%+d" % (g.width(), g.height(), g.x(), g.y()))
+        except Exception:
+            pass
         if self._scan_running and self._thread is not None:
             self._thread.quit()
             self._thread.wait(5000)
