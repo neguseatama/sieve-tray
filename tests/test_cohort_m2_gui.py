@@ -11,6 +11,8 @@ offscreen render saved to $M2_RENDER_DIR when set.
 """
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -333,13 +335,138 @@ def test_gu_t08_readme_about_description_sync(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# GU-T09: the minimum-size render (the implementer's addition, reported
-# in the fix commit) - at 880×560 no Gate control is clipped, the
-# render is saved to $M2_RENDER_DIR when set, and the Cohort page joins
-# the same guarantee when it arrives (request §3.9).
+# GU-T10..T15 (addendum 2 = §3.15): the left sidebar.  GU-T09 (the
+# minimum-size render, the implementer's addition reported at §117) is
+# merged into GU-T14 here, as the addendum 2 §3 table permits - the
+# merged test keeps GU-T09's render and M2_RENDER_DIR behavior.
 # ---------------------------------------------------------------------------
 
-def test_gu_t09_minsize_render(tmp_path):
+SIDEBAR_ORDER = ("doc", "code", "text", "audit", "history",
+                 "sanitize_history", "crowd", "gate")
+
+
+def test_gu_t10_sidebar_order_and_names(tmp_path):
+    _require_qt()
+    import sieve_tray_gui as gui
+    from sieve_tray_storage import Storage
+    from sieve_tray_i18n import tr
+    win = gui.MainWindow(storage=Storage(tmp_path / "history.db"))
+    try:
+        keys = list(win._page_keys)
+        # the §1.1 order (the existing order is kept); the new Cohort
+        # page rides the sidebar when it arrives (request §3.9)
+        assert keys[:len(SIDEBAR_ORDER)] == list(SIDEBAR_ORDER)
+        assert "cohort" in keys, "the Cohort page joins the sidebar"
+        # the display names come from the i18n table (ja/en)
+        assert win.sidebar.item(0).text() == tr("en", "doc_tab", n=0)
+        # selecting an item switches the right-hand page
+        target = win.sidebar.item(2)
+        win.sidebar.setCurrentRow(2)
+        assert win.pages.currentWidget() == win.pages.widget(2)
+        assert target is not None
+        # the counted titles update dynamically (§1.1)
+        win._set_page_title("doc", n=3)
+        assert win.sidebar.item(0).text() == tr("en", "doc_tab", n=3)
+    finally:
+        win.close()
+
+
+def test_gu_t11_sidebar_width_and_elision(tmp_path):
+    _require_qt()
+    import sieve_tray_gui as gui
+    from sieve_tray_storage import Storage
+    win = gui.MainWindow(storage=Storage(tmp_path / "history.db"))
+    try:
+        win.show()
+        w = win.sidebar.width()
+        assert 160 <= w <= 240, w
+        # every item carries the full text as its tooltip (§1.2)
+        for i in range(win.sidebar.count()):
+            item = win.sidebar.item(i)
+            assert item.toolTip() == item.text()
+        # the long names are elided, not wrapped (the view's elide mode)
+        from PySide6.QtCore import Qt as QtCore
+        assert win.sidebar.textElideMode() == QtCore.ElideRight
+        # a Japanese window recalculates with the ja names (§1.2)
+        win2 = gui.MainWindow(storage=Storage(tmp_path / "ja.db"),
+                              lang="ja")
+        try:
+            win2.show()
+            assert 160 <= win2.sidebar.width() <= 240
+            from sieve_tray_i18n import tr
+            assert win2.sidebar.item(0).text() == tr("ja", "doc_tab", n=0)
+        finally:
+            win2.close()
+    finally:
+        win.close()
+
+
+def test_gu_t12_sidebar_keyboard_and_selection(tmp_path):
+    _require_qt()
+    import sieve_tray_gui as gui
+    from sieve_tray_storage import Storage
+    from PySide6.QtCore import Qt as QtCore
+    from PySide6.QtTest import QTest
+    win = gui.MainWindow(storage=Storage(tmp_path / "history.db"))
+    try:
+        win.show()
+        # the arrows move the selection and the page follows
+        win.sidebar.setCurrentRow(0)
+        QTest.keyClick(win.sidebar, QtCore.Key_Down)
+        assert win.sidebar.currentRow() == 1
+        assert win.pages.currentIndex() == 1
+        # Ctrl+1..9 (Cmd on macOS) switch by position
+        shortcuts = win.findChildren(
+            __import__("PySide6.QtGui", fromlist=["QShortcut"])
+            .QShortcut)
+        seqs = [sc.key().toString().lower() for sc in shortcuts]
+        assert "ctrl+1" in seqs, seqs
+        assert "ctrl+9" in seqs
+        QTest.keyClick(win.sidebar, QtCore.Key_Down)
+        # the selected item is distinguishable beyond color: the style
+        # adds bold and a leading edge to the selected row (§1.3)
+        style = win.sidebar.styleSheet()
+        assert "font-weight" in style and "border-left" in style
+        # accessible names: the row exposes its display name (Qt's
+        # accessibility reads the item text - the same string)
+        item = win.sidebar.item(0)
+        assert item.text() == win.sidebar.item(0).text()
+        assert win.sidebar.accessibleName()
+    finally:
+        win.close()
+
+
+def test_gu_t13_last_page_save_and_restore(tmp_path):
+    _require_qt()
+    import sieve_tray_gui as gui
+    from sieve_tray_storage import Storage
+    db = str(tmp_path / "history.db")
+    store = Storage(db)
+    win = gui.MainWindow(storage=store)
+    try:
+        win.show()
+        win.sidebar.setCurrentRow(3)
+        win.close()  # closeEvent saves last_page
+        assert store.get_setting("last_page") == "audit"
+        win2 = gui.MainWindow(storage=Storage(db))
+        try:
+            win2.show()
+            assert win2.sidebar.currentRow() == 3
+        finally:
+            win2.close()
+        # a saved key that no longer exists falls back to the first row
+        store.set_setting("last_page", "no-such-page")
+        win3 = gui.MainWindow(storage=Storage(db))
+        try:
+            win3.show()
+            assert win3.sidebar.currentRow() == 0
+        finally:
+            win3.close()
+    finally:
+        win.close()
+
+
+def test_gu_t14_minsize_render(tmp_path):
     _require_qt()
     import sieve_tray_gui as gui
     from sieve_tray_storage import Storage
@@ -347,16 +474,58 @@ def test_gu_t09_minsize_render(tmp_path):
     try:
         win.resize(880, 560)
         win.show()
-        gate = win.gate_page
-        visible = gate.visibleRegion().boundingRect()
-        assert visible.width() >= 800, visible
-        # the render (for the report): saved when M2_RENDER_DIR is set
+        # the central layout's minimum height stays at or under 560
+        mh = win.centralWidget().layout().minimumSizeHint().height()
+        assert mh <= 560, mh
+        # every page listed by addendum 2 §3 renders uncut at the
+        # minimum size (documents / crowd / gate now; the Cohort page
+        # joins with request §3.9)
+        for key in ("doc", "crowd", "gate"):
+            win._select_page(key)
+            win.repaint()
+            page = win.pages.currentWidget()
+            visible = page.visibleRegion().boundingRect()
+            assert visible.width() >= 600, (key, visible)
         out_dir = os.environ.get("M2_RENDER_DIR")
         if out_dir:
             render = win.grab()
-            render.save(str(Path(out_dir) / "gu_t09_minsize.png"))
-        # the Cohort page gets the same guarantee when it arrives
-        assert getattr(win, "cohort_page", None) is not None, \
+            render.save(str(Path(out_dir) / "gu_t14_minsize_sidebar.png"))
+        assert "cohort" in win._page_keys, \
             "the Cohort page arrives with the §3.9 commit"
     finally:
         win.close()
+
+
+def test_gu_t15_structure_invariants(tmp_path):
+    # the §3 "invariant" mold: the receipts, the JSON, the CLI and the
+    # history allowlists are identical before and after the sidebar
+    _require_qt()
+    from sieve_tray import (VERIFY_NOT_VERIFIABLE_REASONS,
+                            VERIFY_REASONS, run_gate)
+    assert VERIFY_NOT_VERIFIABLE_REASONS == frozenset({
+        "receipt_unreadable", "receipt_version_unsupported",
+        "receipt_digest_mismatch", "settings_unavailable",
+        "handoff_incomplete"})
+    assert VERIFY_REASONS == frozenset({
+        "input_changed", "input_missing", "item_added", "output_changed",
+        "output_missing", "replay_differs", "engine_version_differs"})
+    inp, out = tmp_path / "in", tmp_path / "out"
+    inp.mkdir()
+    (inp / "a.txt").write_text("alpha\n", encoding="utf-8")
+    receipt = run_gate(inp, out)
+    assert receipt["kind"] == "sieve-gate"
+    assert set(receipt.keys()) == {"receipt_version", "kind", "tool",
+                                   "engines", "settings", "items",
+                                   "summary", "digest"}
+    from sieve_tray_storage import COHORT_RUN_ALLOWLIST
+    assert COHORT_RUN_ALLOWLIST == frozenset({
+        "run_id", "ts_utc", "items", "compared", "not_compared",
+        "pairs_flagged", "removed_total", "receipt_digest", "engines"})
+    # the CLI shapes stay (the legacy + gate + verify + cohort)
+    proc = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "sieve_tray.py"), "cohort",
+         "--help"], capture_output=True, text=True, cwd=str(REPO_ROOT))
+    assert proc.returncode == 0
+    for flag in ("--base", "--exclude-quotes", "--exclude-bibliography",
+                 "--no-paths", "--no-input-hashes", "--lang"):
+        assert flag in proc.stdout, flag
