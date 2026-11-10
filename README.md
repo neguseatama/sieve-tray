@@ -20,7 +20,10 @@
 > submissions and it detects and reports, in one pass, documents containing
 > invisible content or hidden prompts, code pairs with suspicious structural
 > similarity, text pairs that look paraphrased or reused, and sentences that
-> make ungrounded universal claims (hallucination candidates).
+> make ungrounded universal claims (hallucination candidates). New in
+> 2.1.0, the **Cohort** tab compares the submissions of a folder against
+> each other and writes a privacy-checked sharing record (`handoff/`);
+> the full report stays on your machine.
 
 [![Test](https://github.com/neguseatama/sieve-tray/actions/workflows/test.yml/badge.svg)](https://github.com/neguseatama/sieve-tray/actions/workflows/test.yml)
 [![Release](https://github.com/neguseatama/sieve-tray/actions/workflows/release.yml/badge.svg)](https://github.com/neguseatama/sieve-tray/actions/workflows/release.yml)
@@ -104,6 +107,11 @@ flagged pairs are an observation, not a judgment. `verify` keeps the
 M1 vocabulary unchanged: a Cohort receipt whose summary counts do not
 hold together is reported with the existing `receipt_unreadable` word,
 like any receipt that cannot be read as a record.
+
+In the report, matched spans are located by character offsets
+(characters, not tokens); the only token counts are the base-removal
+ratios - how many of each submission's tokens the base stripping
+removed.
 
 ---
 

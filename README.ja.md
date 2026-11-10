@@ -18,7 +18,10 @@
 > 提出物のフォルダを指定するだけで、
 > 不可視のコンテンツや隠されたプロンプトを含む文書、構造的に疑わしく似ているコードペア、
 > 言い換え・流用の疑いがあるテキストペア、根拠のない全称主張（ハルシネーション候補）を
-> 含む文を、一度にまとめて検出、報告します。
+> 含む文を、一度にまとめて検出、報告します。v2.1.0からは、
+> **Cohort（提出物の比較）**タブが加わりました: フォルダ内の提出物を互いに比較し、
+> プライバシーを確認済みの書き出し記録（`handoff/`）を書き出します。
+> 報告一式は手元に残ります。
 
 [![Test](https://github.com/neguseatama/sieve-tray/actions/workflows/test.yml/badge.svg)](https://github.com/neguseatama/sieve-tray/actions/workflows/test.yml)
 [![Release](https://github.com/neguseatama/sieve-tray/actions/workflows/release.yml/badge.svg)](https://github.com/neguseatama/sieve-tray/actions/workflows/release.yml)
@@ -94,6 +97,10 @@ Lens／Referee のレーン、`.py` は Scope、残りのソース言語は汎�
 `match_per_mille` は、高い側の値です。要確認の組は観測であり、結論ではありません。
 `verify` の語彙は M1 のままで変更しません。要約の件数の辻褄が合わない Cohort の
 受領書は、記録として読み取れない受領書と同じ `receipt_unreadable` で報告されます。
+
+報告の中で一致箇所は文字の位置で示されます（トークンではなく文字）。トークンを
+数えるのは基準文書の除去比率（各提出物のトークンのうち、基準文書の除去で
+取り除かれた量）だけです。
 
 ---
 
