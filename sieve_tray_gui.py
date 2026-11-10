@@ -1104,6 +1104,15 @@ class MainWindow(QMainWindow):
         # highlight, so without it the selected row paints its white
         # text over the light sidebar background and the row (e.g. the
         # tail pages) turns near-invisible (measured 2026-11-10, §123).
+        # The 2026-11-10 follow-up (§124): the rows return to the
+        # original 6px padding (26px rows - nine rows still fit the
+        # 323-329px viewport, and 20px rows are cramped click targets),
+        # and because the sidebar background is a FIXED #f5f6f8, every
+        # row state names an explicit text colour - under an OS dark
+        # palette the palette text would turn white and vanish on that
+        # light background (normal, disabled and selected alike; the
+        # background itself stays fixed, so one colour set serves both
+        # palettes - the dark-palette offscreen renders prove it).
         self.sidebar = QListWidget()
         self.sidebar.setObjectName("page_sidebar")
         self.sidebar.setHorizontalScrollBarPolicy(
@@ -1112,10 +1121,12 @@ class MainWindow(QMainWindow):
         self.sidebar.setUniformItemSizes(True)
         self.sidebar.setStyleSheet(
             "#page_sidebar { background: #f5f6f8; }"
-            "#page_sidebar::item { padding: 3px 8px; }"
+            "#page_sidebar::item { padding: 6px 8px;"
+            " color: #1a2029; }"
             "#page_sidebar::item:selected { font-weight: bold;"
             " border-left: 3px solid #334455;"
-            " background: #dbe3ec; color: #1a2029; }")
+            " background: #dbe3ec; color: #1a2029; }"
+            "#page_sidebar::item:disabled { color: #82898f; }")
         self.sidebar.setAccessibleName("page navigation")
         self.sidebar.currentRowChanged.connect(
             self._on_sidebar_row_changed)
