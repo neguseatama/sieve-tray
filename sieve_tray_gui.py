@@ -1099,6 +1099,11 @@ class MainWindow(QMainWindow):
         # v2.1.0 (addendum 2 = §3.15): the tab row becomes a left sidebar
         # (a QListWidget equivalent) and a right page stack.  The pages
         # themselves, the top scan row and the log are unchanged (§1.4).
+        # The selected row carries an explicit background and text
+        # colour: naming ::item:selected at all makes Qt drop the OS
+        # highlight, so without it the selected row paints its white
+        # text over the light sidebar background and the row (e.g. the
+        # tail pages) turns near-invisible (measured 2026-11-10, §123).
         self.sidebar = QListWidget()
         self.sidebar.setObjectName("page_sidebar")
         self.sidebar.setHorizontalScrollBarPolicy(
@@ -1107,9 +1112,10 @@ class MainWindow(QMainWindow):
         self.sidebar.setUniformItemSizes(True)
         self.sidebar.setStyleSheet(
             "#page_sidebar { background: #f5f6f8; }"
-            "#page_sidebar::item { padding: 6px 8px; }"
+            "#page_sidebar::item { padding: 3px 8px; }"
             "#page_sidebar::item:selected { font-weight: bold;"
-            " border-left: 3px solid #334455; }")
+            " border-left: 3px solid #334455;"
+            " background: #dbe3ec; color: #1a2029; }")
         self.sidebar.setAccessibleName("page navigation")
         self.sidebar.currentRowChanged.connect(
             self._on_sidebar_row_changed)
