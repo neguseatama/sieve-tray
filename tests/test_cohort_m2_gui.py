@@ -539,3 +539,75 @@ def test_gu_t15_structure_invariants(tmp_path):
     for flag in ("--base", "--exclude-quotes", "--exclude-bibliography",
                  "--no-paths", "--no-input-hashes", "--lang"):
         assert flag in proc.stdout, flag
+
+
+# ---------------------------------------------------------------------------
+# GU-T16 (the implementer's addition, reported at §123): the design note
+# of 2026-11-10 — at the en minimum size the last sidebar item "looked
+# cut"; the offscreen measurement shows it is NOT cut (nine rows fit
+# with the scrollbar range at zero), the grab hid the selected row
+# because the ::item:selected style named no background, so Qt drops
+# the OS highlight and paints white text over the light sidebar
+# background.  The fix: tighter row padding + an explicit selected
+# background/text colour.  This test pins both: the nine-page geometry
+# (a regression guard, green before the fix — the same shape as the
+# GU-T14 minimum-height mold) and the two style observables (red before
+# the fix).  The ninth page rides the real _add_page path as the §3.9
+# model; the §3.2 display names are set on the item directly (the i18n
+# table carries them from §3.9).
+# ---------------------------------------------------------------------------
+
+NINE_PAGE_TAIL = {"en": "Compare Submissions", "ja": "提出物の比較"}
+
+
+def test_gu_t16_nine_pages_fit_and_selected_visible(tmp_path):
+    _require_qt()
+    import sieve_tray_gui as gui
+    from sieve_tray_storage import Storage
+    from PySide6.QtWidgets import QApplication, QWidget
+    for lang in ("en", "ja"):
+        win = gui.MainWindow(storage=Storage(tmp_path / ("h_%s.db" % lang)),
+                             lang=lang)
+        try:
+            win.resize(880, 560)
+            win.show()
+            # the §3.9 model: the ninth page rides _add_page, the real
+            # registration path, then carries its §3.2 display name
+            win._add_page("cohort", QWidget(), "cohort_tab")
+            item = win.sidebar.item(win._page_keys.index("cohort"))
+            item.setText(NINE_PAGE_TAIL[lang])
+            item.setToolTip(NINE_PAGE_TAIL[lang])
+            win._recalc_sidebar_width()
+            sb = win.sidebar
+            assert win._page_keys[-1] == "cohort"
+            assert sb.item(sb.count() - 1).text() == NINE_PAGE_TAIL[lang]
+            # the width rule still holds with the ninth name (§1.2)
+            assert 160 <= sb.width() <= 240, (lang, sb.width())
+            # nine rows fit the minimum size without scrolling: every
+            # row inside the viewport, the scrollbar range at zero
+            vh = sb.viewport().height()
+            for i in range(sb.count()):
+                r = sb.visualItemRect(sb.item(i))
+                assert r.top() >= 0 and r.bottom() <= vh - 1, \
+                    (lang, i, r.top(), r.bottom(), vh)
+            assert sb.verticalScrollBar().maximum() == 0, lang
+            # the last row stays inside when it is the selected one
+            win.sidebar.setCurrentRow(sb.count() - 1)
+            win.repaint()
+            QApplication.processEvents()
+            r = sb.visualItemRect(sb.item(sb.count() - 1))
+            assert r.top() >= 0 and r.bottom() <= vh - 1, \
+                (lang, "selected", r.top(), r.bottom(), vh)
+            # the rows are tightened (the ask of the 2026-11-10 note):
+            # the item style carries the small vertical padding
+            style = win.sidebar.styleSheet()
+            assert "padding: 3px 8px" in style, style
+            # the selected row is visible beyond the OS palette: the
+            # style carries an explicit background and text colour
+            # (§1.3: distinguishable, and not invisible on the light
+            # background the offscreen grab demonstrated)
+            sel = style.split("::item:selected", 1)[1]
+            assert "background" in sel, style
+            assert "color" in sel, style
+        finally:
+            win.close()
