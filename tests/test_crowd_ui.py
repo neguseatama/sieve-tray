@@ -275,18 +275,21 @@ def test_crowd_keygen_writes_mode_600_key_and_confirms_overwrite(
     assert second != first
 
 
-def test_about_dialog_lists_five_bundled_engines(window):
-    """v0.10.1: the About dialog must list all five bundled engines."""
+def test_about_dialog_lists_all_bundled_engines(window):
+    """v0.10.1, 2.1.1 (GU-T08): the About dialog lists all bundled
+    engines - six, since Sieve Order joined the tray at 2.0.0 and was
+    missing from the credits."""
     dialog = gui.AboutDialog(window.lang, window)
     names = [name for name, _ in gui.AboutDialog.ENGINE_LINKS]
     assert names == ["Sieve Lens", "Sieve Scope", "Sieve Referee",
-                     "Sieve Redact", "Sieve Crowd"]
+                     "Sieve Order", "Sieve Redact", "Sieve Crowd"]
     assert all(url.startswith("https://github.com/neguseatama/")
                for _, url in gui.AboutDialog.ENGINE_LINKS)
     link_labels = [w for w in dialog.findChildren(gui.QLabel)
                    if w.openExternalLinks()]
     assert len(link_labels) == 1
-    assert link_labels[0].text().count("<a href=") == 5
+    assert link_labels[0].text().count("<a href=") == 6
+    assert "Sieve Order" in link_labels[0].text()
     assert "Sieve Redact" in link_labels[0].text()
     assert "Sieve Crowd" in link_labels[0].text()
     dialog.close()

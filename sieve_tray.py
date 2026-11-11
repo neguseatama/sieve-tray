@@ -4171,9 +4171,15 @@ def _gate_main(argv: List[str]) -> int:
         return 0
     if args.cmd == "gate":
         if args.self_check:
+            # the exit codes (the 2026-11-10 ruling): 0 = the expected
+            # observations matched, 1 = a difference, 2 = the self-check
+            # could not run; the machine-readable result carries
+            # expected / matching either way (the same shape as cohort)
             result = gate_self_check(progress=print)
             print(json.dumps(result, ensure_ascii=False, indent=1))
-            return 0 if "error" not in result else 2
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
         if args.input_dir is None or args.output is None:
             parser.error("gate needs an input folder and -o/--output "
                          "(or --self-check)")

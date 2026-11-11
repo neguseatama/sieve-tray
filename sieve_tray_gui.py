@@ -756,6 +756,7 @@ class AboutDialog(QDialog):
         ("Sieve Lens", "https://github.com/neguseatama/sieve-lens"),
         ("Sieve Scope", "https://github.com/neguseatama/sieve-scope"),
         ("Sieve Referee", "https://github.com/neguseatama/sieve-referee"),
+        ("Sieve Order", "https://github.com/neguseatama/sieve-order"),
         ("Sieve Redact", "https://github.com/neguseatama/sieve-redact"),
         ("Sieve Crowd", "https://github.com/neguseatama/sieve-crowd"),
     ]
@@ -996,6 +997,19 @@ class GatePage(QScrollArea):
         row.addWidget(self.gate_selfcheck_button, 1, 1)
         layout.addLayout(row)
 
+        # v2.1.1 (GU-T06): the empty state carries the §3.4 placeholder,
+        # the same shape as the Cohort page (the 2026-11-11 acceptance
+        # found the Gate side missing it); the run results keep flowing
+        # to the log below
+        self.summary_label = QLabel(self._("gate_summary_placeholder"))
+        self.summary_label.setWordWrap(True)
+        # the §3.4 placeholder colour rides the palette's own
+        # placeholder role, so it stays readable under an OS dark
+        # palette too (the same rule as the Cohort page's)
+        self.summary_label.setForegroundRole(
+            QPalette.ColorRole.PlaceholderText)
+        layout.addWidget(self.summary_label)
+
         self.gate_log = QPlainTextEdit()
         self.gate_log.setReadOnly(True)
         layout.addWidget(self.gate_log, stretch=1)
@@ -1141,10 +1155,13 @@ class CohortPage(QScrollArea):
         self.cohort_base_edit = QLineEdit()
         self.cohort_base_edit.setReadOnly(True)
         self.cohort_base_edit.setToolTip(self._("cohort_base_tooltip"))
-        cohort_browse_base = QPushButton(self._("browse_folder"))
-        cohort_browse_base.clicked.connect(self.choose_base)
+        # v2.1.1 (GU-T18): this picks files (the multi-file picker),
+        # not a folder - the wording says files, and the picker lives
+        # on the page so the acceptance can reach it
+        self.cohort_browse_base = QPushButton(self._("cohort_base_pick"))
+        self.cohort_browse_base.clicked.connect(self.choose_base)
         grid.addWidget(self.cohort_base_edit, 2, 1)
-        grid.addWidget(cohort_browse_base, 2, 2)
+        grid.addWidget(self.cohort_browse_base, 2, 2)
         layout.addLayout(grid)
 
         self.cohort_quotes_cb = QCheckBox(self._("cohort_quotes_cb"))
