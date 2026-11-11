@@ -247,7 +247,10 @@ def test_gu_t05_tooltips_set_on_widgets(tmp_path):
 
 def test_gu_t06_placeholder_strings():
     from sieve_tray_i18n import STRINGS
-    for key in ("cohort_input_placeholder", "cohort_summary_placeholder"):
+    # the Gate page joins the Cohort page (addendum §3.4 covers BOTH
+    # tabs; the Gate side was found missing at the 2026-11-11 acceptance)
+    for key in ("gate_summary_placeholder", "cohort_input_placeholder",
+                "cohort_summary_placeholder"):
         assert key in STRINGS["en"] and key in STRINGS["ja"]
         assert STRINGS["en"][key].strip()
         assert STRINGS["ja"][key].strip()
@@ -259,6 +262,10 @@ def test_gu_t06_placeholder_on_widgets(tmp_path):
     from sieve_tray_storage import Storage
     win = gui.MainWindow(storage=Storage(tmp_path / "history.db"))
     try:
+        gate = getattr(win, "gate_page", None)
+        assert gate is not None
+        assert getattr(gate, "summary_label", None) is not None, \
+            "the Gate page carries the §3.4 placeholder too"
         page = getattr(win, "cohort_page", None)
         assert page is not None, "the Cohort page arrives with the fix"
         assert getattr(page, "summary_label", None) is not None
@@ -700,3 +707,74 @@ def test_gu_t17_cohort_gui_record_has_no_names(tmp_path):
         assert "match" in log and "replay" in log, log
     finally:
         win.close()
+
+# ---------------------------------------------------------------------------
+# GU-T08 additions (Tray 2.1.1, the 2026-11-11 acceptance findings):
+# the Powered by list carries every engine the tray actually uses
+# (Sieve Order joined the tray at 2.0.0 and was missing from the
+# list), and the tagline mentions the two M2 lanes (Export for
+# Sharing / Compare Submissions), not only the scan.
+# ---------------------------------------------------------------------------
+
+def test_gu_t08_about_engines_list():
+    import sieve_tray_gui as gui
+    names = [name for name, _ in gui.AboutDialog.ENGINE_LINKS]
+    assert names == ["Sieve Lens", "Sieve Scope", "Sieve Referee",
+                     "Sieve Order", "Sieve Redact", "Sieve Crowd"]
+    assert ("Sieve Order",
+            "https://github.com/neguseatama/sieve-order") \
+        in gui.AboutDialog.ENGINE_LINKS
+
+
+def test_gu_t08_about_tagline_names_the_two_m2_lanes():
+    from sieve_tray_i18n import tr
+    for lang in ("en", "ja"):
+        tagline = tr(lang, "about_tagline")
+        assert ("export" in tagline.lower() or "書き出し" in tagline), \
+            (lang, tagline)
+        assert ("compare" in tagline.lower() or "比較" in tagline), \
+            (lang, tagline)
+        # the one-line description stays in sync with the README (GU-T08)
+        if lang == "en":
+            assert "compares the submissions" in tagline
+
+
+# ---------------------------------------------------------------------------
+# GU-T18 (Tray 2.1.1, the 2026-11-11 acceptance finding): the Cohort
+# base-files picker states files, not a folder - the dialog itself is
+# the multi-file QFileDialog.getOpenFileNames, only the button label
+# reused the folder wording ("Select Folder..." / "フォルダを選択...").
+# ---------------------------------------------------------------------------
+
+def test_gu_t18_cohort_base_pick_wording():
+    from sieve_tray_i18n import STRINGS
+    assert STRINGS["en"]["cohort_base_pick"] == "Select Files..."
+    assert STRINGS["ja"]["cohort_base_pick"] == "ファイルを選択..."
+
+
+def test_gu_t18_cohort_base_pick_button(tmp_path):
+    _require_qt()
+    import sieve_tray_gui as gui
+    from sieve_tray_storage import Storage
+    win = gui.MainWindow(storage=Storage(tmp_path / "history.db"))
+    try:
+        page = getattr(win, "cohort_page", None)
+        assert page is not None
+        button = getattr(page, "cohort_browse_base", None)
+        assert button is not None, "the base picker is stored on the page"
+        assert button.text() == "Select Files..."
+    finally:
+        win.close()
+
+
+# ---------------------------------------------------------------------------
+# GU-T19 (Tray 2.1.1, the 2026-11-11 acceptance finding): the history
+# timestamp header fits its stretched column at the minimum size -
+# "Timestamp (UTC)" clipped to "mestamp (UTC" in the en render; the
+# shorter "Time (UTC)" rides the same wording as the crowd history.
+# ---------------------------------------------------------------------------
+
+def test_gu_t19_history_header_timestamp_fits():
+    from sieve_tray_i18n import tr
+    assert tr("en", "history_header_timestamp") == "Time (UTC)"
+    assert tr("ja", "history_header_timestamp") == "日時 (UTC)"

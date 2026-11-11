@@ -1185,3 +1185,49 @@ def test_ch_t20_release_workflow_frozen_self_check_static():
     assert '"--self-check" in sys.argv[2:]' in gui
     assert "from sieve_tray import _gate_main" in gui
     assert gui.index("--self-check") < gui.index("QApplication(sys.argv)")
+
+# ---------------------------------------------------------------------------
+# CH-T21 (Tray 2.1.1, the 2026-11-11 ruling): the gate --self-check
+# rides the same exit-code contract as cohort (0 = the expected
+# observations matched, 1 = a difference, 2 = the self-check could not
+# run).  The acceptance found the gate branch returning 0 whenever the
+# self-check ran, so a difference would pass the frozen artifact check.
+# ---------------------------------------------------------------------------
+
+def test_ch_t21_gate_self_check_exit_codes(tmp_path):
+    import shutil
+    # rc 0: the pack matches (this tree)
+    proc = subprocess.run(
+        [sys.executable, str(TRAY), "gate", "--self-check"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    obj = json.loads(proc.stdout[proc.stdout.index("{"):])
+    assert obj["matching"] == obj["expected"]
+    # rc 1: a tampered pack reports a difference (hidden_count 99 is a
+    # guaranteed difference - the sample files carry 0 or 1)
+    lone = tmp_path / "lone"
+    (lone / "samples" / "gate").mkdir(parents=True)
+    (lone / "sieve_tray.py").write_bytes(TRAY.read_bytes())
+    for src in (REPO_ROOT / "samples" / "gate").iterdir():
+        shutil.copyfile(src, lone / "samples" / "gate" / src.name)
+    manifest_path = lone / "samples" / "gate" / "MANIFEST.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["items"][0]["expect"]["hidden_count"] = 99
+    manifest_path.write_text(json.dumps(manifest, indent=1),
+                             encoding="utf-8")
+    proc1 = subprocess.run(
+        [sys.executable, str(lone / "sieve_tray.py"), "gate",
+         "--self-check"], capture_output=True, text=True)
+    assert proc1.returncode == 1, proc1.stdout + proc1.stderr
+    obj1 = json.loads(proc1.stdout[proc1.stdout.index("{"):])
+    assert obj1["differences"]
+    # rc 2: a tree without the pack (the pack is a repository resource)
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / "sieve_tray.py").write_bytes(TRAY.read_bytes())
+    proc2 = subprocess.run(
+        [sys.executable, str(bare / "sieve_tray.py"), "gate",
+         "--self-check"], capture_output=True, text=True)
+    assert proc2.returncode == 2, proc2.stdout + proc2.stderr
+    obj2 = json.loads(proc2.stdout[proc2.stdout.index("{"):])
+    assert obj2["error"] == "sample_pack_not_available"
