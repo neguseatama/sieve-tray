@@ -4,7 +4,7 @@ verification means and the dependency floors.
 
 Non-GUI tests run everywhere.  The GUI wiring tests call
 ``pytest.importorskip("PySide6.QtWidgets")`` first: environments
-without a usable Qt (this sandbox has no libEGL, CI without the gui
+without a usable Qt (headless Linux has no libEGL, CI without the gui
 extra) skip them, and the Mac / CI acceptance runs exercise them.
 
 Contracts (design doc §2/§3):

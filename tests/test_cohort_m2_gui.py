@@ -336,7 +336,7 @@ def test_gu_t08_readme_about_description_sync(tmp_path):
 
 # ---------------------------------------------------------------------------
 # GU-T10..T15 (addendum 2 = §3.15): the left sidebar.  GU-T09 (the
-# minimum-size render, the implementer's addition reported at §117) is
+# minimum-size render, the implementer's addition) is
 # merged into GU-T14 here, as the addendum 2 §3 table permits - the
 # merged test keeps GU-T09's render and M2_RENDER_DIR behavior.
 # ---------------------------------------------------------------------------
@@ -542,7 +542,7 @@ def test_gu_t15_structure_invariants(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# GU-T16 (the implementer's addition, reported at §123): the design note
+# GU-T16 (the implementer's addition): the design note
 # of 2026-11-10 — at the en minimum size the last sidebar item "looked
 # cut"; the offscreen measurement shows it is NOT cut (nine rows fit
 # with the scrollbar range at zero), the grab hid the selected row
@@ -556,7 +556,7 @@ def test_gu_t15_structure_invariants(tmp_path):
 # model; the §3.2 display names are set on the item directly (the i18n
 # table carries them from §3.9).
 #
-# The 2026-11-10 follow-up note (§124): the rows go back to the
+# The 2026-11-10 follow-up note: the rows go back to the
 # original 6px padding (26px rows — nine rows ≈ 234px still fit the
 # 323-329px viewport, and 20px rows are cramped as click targets), and
 # the sidebar background is a FIXED #f5f6f8, so under an OS dark

@@ -1,10 +1,10 @@
 """Tray 2.0.0 Gate GUI wiring (request §3.6).
 
-GUI tests run only where a usable Qt exists (Mac / CI); this sandbox
-has no libEGL, so _require_qt() skips them (the same pattern as
+GUI tests run only where a usable Qt exists (Mac / CI); headless
+Linux has no libEGL, so _require_qt() skips them (the same pattern as
 test_v1_4_scan.py).  Red stage: the Gate tab and its strings arrive
 with the fix commit, so the assertions fail on a machine with Qt until
-then.  The sandbox measurement therefore never exercises this file.
+then.  The headless measurement therefore never exercises this file.
 """
 
 import pytest

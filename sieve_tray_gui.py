@@ -1437,8 +1437,8 @@ class MainWindow(QMainWindow):
         # colour: naming ::item:selected at all makes Qt drop the OS
         # highlight, so without it the selected row paints its white
         # text over the light sidebar background and the row (e.g. the
-        # tail pages) turns near-invisible (measured 2026-11-10, §123).
-        # The 2026-11-10 follow-up (§124): the rows return to the
+        # tail pages) turns near-invisible (measured 2026-11-10).
+        # The 2026-11-10 follow-up: the rows return to the
         # original 6px padding (26px rows - nine rows still fit the
         # 323-329px viewport, and 20px rows are cramped click targets),
         # and because the sidebar background is a FIXED #f5f6f8, every

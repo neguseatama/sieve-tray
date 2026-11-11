@@ -1,7 +1,7 @@
 """CH-T01..T19 (Tray 2.1.0 Cohort core).
 
 Acceptance tests for the M2 Cohort lane (request doc §3.1/§3.6/§3.7/§3.8
-+ the design-chat rulings of 2026-11-09/10).  The Cohort core (run_cohort,
++ the design review rulings of 2026-11-09/10).  The Cohort core (run_cohort,
 verify on sieve-cohort, cohort_self_check, the cohort_runs table) arrives
 with the fix commits, so every test that needs it fails with ImportError
 during the red stage; the count of those failures is the red measurement.

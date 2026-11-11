@@ -1722,7 +1722,7 @@ def render_text(result: ScanResult) -> str:
 # ===========================================================================
 # v2.0.0 (M1 Gate): the pre-handoff quarantine, anonymization and receipt
 # lane (request doc §3.1-§3.6, rev. 2026-11-08, plus the 2026-11-08
-# design-chat ruling).
+# design review ruling).
 #
 # Gate walks a folder and, per item: decides the lane -> observes ->
 # treats -> writes.  Documents yield only their visible text (strip of
@@ -1737,7 +1737,7 @@ def render_text(result: ScanResult) -> str:
 #   - verification item reasons (7) and not_verifiable reasons (5),
 #     in verify_gate below.
 #
-# HTML lane (§3.2 as amended, measured in worklog §85): core Lens does
+# HTML lane (§3.2 as amended, measured in the M1 gate round): core Lens does
 # NOT detect <style>-rule hiding, so Gate uses the extras lane
 # (sieve_lens_ext.html_css_selectors) with a charset pre-check done
 # here first.  The extras lane reports a rule match as a css_hidden
@@ -1880,7 +1880,7 @@ def _gate_charset_check(data: bytes):
 
 def _gate_html_lane_ready() -> bool:
     """The extras lane is usable only when html_css_selectors AND
-    cssselect2 import (worklog §85: without cssselect2 the extractor
+    cssselect2 import (measured: without cssselect2 the extractor
     degrades silently to no rule detection)."""
     try:
         import sieve_lens_ext.html_css_selectors as _sel  # noqa: F401
@@ -1997,7 +1997,7 @@ def _gate_classify_hidden(segments) -> Tuple[list, list]:
     rule_hidden - css_hidden segments whose location carries the
                  "selector:" marker: a <style>-rule matched something,
                  but the extras body emitter still marks that body
-                 visible -> the item must fail closed (§85).
+                 visible -> the item must fail closed (measured).
     """
     orderable, rule_hidden = [], []
     for s in segments:
@@ -2351,7 +2351,7 @@ def _gate_item_document(engine, src: Path, data: bytes, suffix: str,
     """The document lane: Lens observation -> visible text (strip) ->
     Redact (label) -> handoff.  HTML rides the extras lane with a
     charset pre-check done here first; a rule-originated css_hidden
-    segment fails the item closed (§85)."""
+    segment fails the item closed (measured)."""
     # --- observation
     try:
         if suffix in (".html", ".htm"):
@@ -2650,7 +2650,7 @@ def _cohort_explanation_settings() -> dict:
 
 
 def _cohort_engine_table() -> list:
-    """The Cohort receipt's engines (the 2026-11-09 §118 note: the four
+    """The Cohort receipt's engines (the 2026-11-09 design note: the four
     guards lens/order/referee/scope - Order is the hidden-text
     observer).  The names are the gate table's, so the verification's
     drift check resolves them."""
@@ -3447,7 +3447,7 @@ def _cohort_document_item(engine, src: Path, data: bytes, suffix: str,
                           ) -> Optional[str]:
     """The document lane (request §3.1): Lens observation -> visible
     text for the referee map.  A rule-originated css_hidden segment
-    fails the item closed (the §85 ruling - its visible text is never
+    fails the item closed (the gate ruling - its visible text is never
     compared).  Returns the visible text or None (the item stays
     not_compared)."""
     try:
