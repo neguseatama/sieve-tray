@@ -96,8 +96,13 @@ def test_gu_t02_startup_geometry(tmp_path):
         expected = gui.compute_window_geometry(
             [QRect(screen.x(), screen.y(), screen.width(),
                    screen.height())])
-        assert geo.width() == expected.width
-        assert geo.height() == expected.height
+        # Qt raises the shown size to the layout minimum when the pure
+        # decision sits below it: the windows runner's font metrics push
+        # the minimum to 1092px (run #84 measured 1092 > 800).  The
+        # decision stays the floor everywhere the platform allows it.
+        hint = win.minimumSizeHint()
+        assert geo.width() == max(expected.width, hint.width())
+        assert geo.height() == max(expected.height, hint.height())
         handle = win.windowHandle()
         m = handle.frameMargins()
         frame = win.frameGeometry().topLeft()
@@ -130,7 +135,14 @@ def test_gu_t03_geometry_save_and_restore(tmp_path):
         try:
             win2.show()
             geo = win2.geometry()
-            assert (geo.width(), geo.height()) == (960, 620)
+            # the saved size is what the platform actually gave win1:
+            # Qt raised resize(960, 620) to the layout minimum on the
+            # windows runner (1092 - run #84), the restore re-applies
+            # the saved client size and the same clamp form keeps the
+            # POSIX values (960, 620) where the minimum is smaller.
+            hint = win2.minimumSizeHint()
+            assert (geo.width(), geo.height()) == (
+                max(960, hint.width()), max(620, hint.height()))
             assert (geo.x(), geo.y()) == (client_pos.x(), client_pos.y())
         finally:
             win2.close()
@@ -144,9 +156,11 @@ def test_gu_t03_geometry_save_and_restore(tmp_path):
             expected = gui.compute_window_geometry(
                 [QRect(screen.x(), screen.y(), screen.width(),
                        screen.height())])
+            hint = win3.minimumSizeHint()
             assert (win3.geometry().width(),
                     win3.geometry().height()) == \
-                (expected.width, expected.height)
+                (max(expected.width, hint.width()),
+                 max(expected.height, hint.height()))
         finally:
             win3.close()
     finally:
