@@ -188,7 +188,12 @@ def _write_tree_text(root: Path, tree: dict):
     for rel, content in tree.items():
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
+        # newline="" keeps the fixtures LF on every OS: write_text's
+        # default newline=None translates \n to os.linesep on Windows,
+        # and the engines read the input as bytes, so CRLF fixtures
+        # drift the byte pins (run #84: MOLD_REDACT_OUT, the core
+        # hashes).
+        p.write_text(content, encoding="utf-8", newline="")
 
 
 def _core_hash(result: ScanResult) -> str:
@@ -464,7 +469,8 @@ class TR3_T04_RedactPhoneLongVowelForms(unittest.TestCase):
             sample = work / "s.txt"
             sample.write_text(
                 "連絡先 taro.yamada@example.com / 090-1234-5678\n"
-                "担当 佐藤花子 識別 MY-654321\n", encoding="utf-8")
+                "担当 佐藤花子 識別 MY-654321\n",
+                encoding="utf-8", newline="")  # fixed-LF sample (run #84)
             cfg = work / "c.txt"
             cfg.write_text(
                 "builtin email:delete\nbuiltin phone-jp:delete\n"
