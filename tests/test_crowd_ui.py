@@ -17,6 +17,7 @@ no event-loop timing is involved.
 """
 
 import json
+import os
 import re
 import stat
 from pathlib import Path
@@ -262,7 +263,11 @@ def test_crowd_keygen_writes_mode_600_key_and_confirms_overwrite(
     window.crowd_keygen_to(key_path)
     first = key_path.read_text(encoding="ascii")
     assert re.fullmatch(r"[0-9a-f]{64}\n", first)
-    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+    # the 0o600 contract is POSIX-only (no POSIX mode bits exist on
+    # Windows - run #84 measured 0o100666 there), so the mode pin rides
+    # the v1.4.0 os.name idiom; the key content stays universal.
+    if os.name == "posix":
+        assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
     assert window._crowd_key_path == key_path
     calls = _patch_question(monkeypatch, QMessageBox.No)
     window.crowd_keygen_to(key_path)

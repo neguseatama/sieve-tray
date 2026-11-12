@@ -245,14 +245,22 @@ def test_t09_empty_and_unreadable_text_reported(tmp_path):
 
     secret = a / "secret.txt"
     secret.write_text("secret words here", encoding="utf-8")
-    secret.chmod(0o000)
-    try:
-        r2 = run_scan(tmp_path)
-        un = [e for e in r2.unobserved if e["file"].endswith("secret.txt")]
-        assert un and un[0]["reason"] == "unreadable"
-        assert not any("secret words" in json.dumps(p) for p in r2.text_pairs)
-    finally:
-        secret.chmod(0o644)
+    # the unreadable lane is a POSIX-only contract: on Windows a mode
+    # change never makes a file unreadable to the reader (the runner
+    # account keeps access - run #84 measured assert ([]) there), so
+    # the chmod scenario rides the v1.4.0 os.name idiom; the
+    # empty_input half above is universal and already covered.
+    if os.name == "posix":
+        secret.chmod(0o000)
+        try:
+            r2 = run_scan(tmp_path)
+            un = [e for e in r2.unobserved
+                  if e["file"].endswith("secret.txt")]
+            assert un and un[0]["reason"] == "unreadable"
+            assert not any("secret words" in json.dumps(p)
+                           for p in r2.text_pairs)
+        finally:
+            secret.chmod(0o644)
 
 
 # ---------------------------------------------------------------------------
@@ -312,16 +320,22 @@ def test_t11_symlinks_and_fifo_are_not_read(tmp_path):
     (out / "target.py").write_text("OUTSIDE_MARKER = 1\n", encoding="utf-8")
     (ga / "link.py").symlink_to(out / "target.py")
     (ga / "linkdir").symlink_to(out)
-    os.mkfifo(ga / "pipe.py")
+    # os.mkfifo is POSIX-only (AttributeError on Windows - run #84);
+    # the symlink half is universal (the GitHub windows runner creates
+    # symlinks: run #84 reached this line past both symlink_to calls).
+    # The special-file lane keeps the v1.4.0 os.name idiom.
+    if os.name == "posix":
+        os.mkfifo(ga / "pipe.py")
     (ga / "normal.py").write_text("def f():\n    return 1\n", encoding="utf-8")
 
     result = run_scan(root)
     link_entries = [e for e in result.unobserved
                     if e["file"].endswith("link.py")]
     assert link_entries and link_entries[0]["reason"] == "symlink_skipped"
-    fifo_entries = [e for e in result.unobserved
-                    if e["file"].endswith("pipe.py")]
-    assert fifo_entries and fifo_entries[0]["reason"] == "unreadable"
+    if os.name == "posix":
+        fifo_entries = [e for e in result.unobserved
+                        if e["file"].endswith("pipe.py")]
+        assert fifo_entries and fifo_entries[0]["reason"] == "unreadable"
 
     blob = json.dumps([result.doc_results, result.code_pairs,
                        result.unobserved], default=str)
