@@ -491,6 +491,23 @@ def test_ci_workflow_three_os_matrix_static():
 
 
 # ---------------------------------------------------------------------------
+# 2.1.1 (three-OS Test matrix, round 2): the vendored-hash verification is
+# checkout-normalization-proof - the windows runner image ships
+# core.autocrlf and its git may hand the hasher CRLF bytes while the pin
+# certifies the canonical LF blob (run 43210414712: windows-latest died on
+# the verify step, exit 1, in 54s, before the suite ever started)
+# ---------------------------------------------------------------------------
+
+def test_ci_workflow_vendor_verify_lf_canonical_static():
+    text = (REPO_ROOT / ".github" / "workflows" / "test.yml").read_text(
+        encoding="utf-8")
+    # the vendored bytes pass through the LF canonical form before hashing
+    assert 'replace(b"\\r\\n", b"\\n")' in text
+    # the normalization is justified where it happens, not buried
+    assert "core.autocrlf" in text
+
+
+# ---------------------------------------------------------------------------
 # TR4-T13: README (en/ja) - the first-launch section; heading structure
 # symmetric; no limitations section added
 # ---------------------------------------------------------------------------
