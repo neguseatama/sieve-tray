@@ -64,6 +64,12 @@ def _zip_parts(parts):
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for name, data in parts:
             info = zipfile.ZipInfo(name, date_time=ZIP_STAMP)
+            # Pin the "version made by" field to UNIX: ZipInfo defaults
+            # create_system to 0 (MS-DOS) on win32 and 3 (UNIX)
+            # elsewhere, so the regenerated pack differed from the
+            # committed bytes on Windows alone - one central-directory
+            # byte per entry (run #84's windows leg: broken.docx).
+            info.create_system = 3
             info.compress_type = zipfile.ZIP_DEFLATED
             z.writestr(info, data)
     return buf.getvalue()
@@ -436,9 +442,13 @@ def build(target: Path) -> None:
         "items": items,
         "pairs": PAIRS,
     }
-    (target / "MANIFEST.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=1, sort_keys=True)
-        + "\n", encoding="utf-8")
+    # write_bytes keeps the manifest LF on every OS: write_text's
+    # default newline=None translates \n to os.linesep on Windows,
+    # which drifted the regeneration pin (run #84's windows leg:
+    # MANIFEST.json).
+    (target / "MANIFEST.json").write_bytes(
+        (json.dumps(manifest, ensure_ascii=False, indent=1, sort_keys=True)
+         + "\n").encode("utf-8"))
 
 
 def main(argv) -> int:
