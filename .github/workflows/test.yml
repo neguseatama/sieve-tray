@@ -58,9 +58,14 @@ jobs:
                           pathlib.Path("tests/test_redact_vendor_sync.py")
                           .read_text(encoding="utf-8")).group(1)
           print("pinned sha256:", pin)
+          # the windows runner image ships core.autocrlf, so its git may
+          # check this text file out with CRLF while the pin certifies
+          # the canonical LF blob - normalize before hashing; genuine
+          # drift still fails and the LF legs are the live control
           for name, blob in (("upstream", upstream),
                              ("vendored",
-                              pathlib.Path("sieve_redact.py").read_bytes())):
+                              pathlib.Path("sieve_redact.py").read_bytes()
+                              .replace(b"\r\n", b"\n"))):
               got = hashlib.sha256(blob).hexdigest()
               assert got == pin, "%s: %s != %s" % (name, got, pin)
           print("vendor sync verified on", sys.platform)
