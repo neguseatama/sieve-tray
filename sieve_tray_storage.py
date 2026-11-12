@@ -9,6 +9,7 @@ Data lives in a single file: ~/.sieve_tray/history.db
 """
 
 import json
+import os
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
@@ -19,6 +20,18 @@ from typing import List, Optional
 from sieve_tray import ScanResult, classify_observation
 
 DEFAULT_DB_PATH = Path.home() / ".sieve_tray" / "history.db"
+
+
+def _posix_path_str(p) -> str:
+    """Canonical POSIX-slash form of a path string (cohort-m2, run #84).
+
+    The sanitize history rows are pinned cross-OS ('/b/in', never a
+    backslash form): WindowsPath's str() carries backslashes, so every
+    path entering the history is normalized at the storage boundary -
+    the same canonical form the report molds use (sieve_tray._posix).
+    Identity on POSIX."""
+    return str(p).replace(os.sep, "/")
+
 
 # v1.1.0 (design doc §3.7): the crowd payload is stored as an allowlist, not a
 # denylist. Measured basis (v1.0.0): the receipt never contains cell values
@@ -308,7 +321,8 @@ class Storage:
                 " config_path, out_root, n_files, ok_count, masked_total,"
                 " integrity_bad_count, skipped) VALUES (?,?,?,?,?,?,?,?,?)",
                 (datetime.now().isoformat(timespec="seconds"),
-                 str(input_dir), str(config_path), str(out_root),
+                 _posix_path_str(input_dir), _posix_path_str(config_path),
+                 _posix_path_str(out_root),
                  summary.get("n_files", 0), summary.get("ok_count", 0),
                  summary.get("masked_total", 0),
                  summary.get("integrity_bad_count", 0),
