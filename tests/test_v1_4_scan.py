@@ -463,6 +463,34 @@ def test_t12_release_workflow_hashes_and_attestation_static():
 
 
 # ---------------------------------------------------------------------------
+# 2.1.1: the Test workflow rides the same three OS legs the release
+# build proves (static check, the TR4-T12 shape)
+# ---------------------------------------------------------------------------
+
+def test_ci_workflow_three_os_matrix_static():
+    text = (REPO_ROOT / ".github" / "workflows" / "test.yml").read_text(
+        encoding="utf-8")
+    # the three release OS legs, with the ubuntu pin that dodged the
+    # 26 image migration (run 43053398991: the apt step died with exit
+    # code 100 before the suite ever started on the migrated image)
+    assert "ubuntu-24.04" in text
+    assert "windows-latest" in text
+    assert "macos-15" in text
+    # the matrix drives runs-on; one leg failing must not kill the rest
+    assert "runs-on: ${{ matrix.os }}" in text
+    assert "fail-fast: false" in text
+    # the Qt library install is Linux-only (the PySide6 wheels need
+    # nothing extra on Windows/macOS) and the vendored sieve_redact
+    # check is cross-platform via the python shell (sha256sum /
+    # python3 / curl are not portable across the three runners)
+    assert "if: runner.os == 'Linux'" in text
+    assert "shell: python" in text
+    # the offscreen platform and the pytest invocation stay
+    assert "QT_QPA_PLATFORM: offscreen" in text
+    assert "python -m pytest -v" in text
+
+
+# ---------------------------------------------------------------------------
 # TR4-T13: README (en/ja) - the first-launch section; heading structure
 # symmetric; no limitations section added
 # ---------------------------------------------------------------------------
