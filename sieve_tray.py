@@ -155,6 +155,20 @@ def _silent(_msg: str) -> None:
     pass
 
 
+def _posix(p) -> str:
+    """Canonical POSIX-slash form of a path string (cohort-m2, run #84).
+
+    Every path string entering a ScanResult (the groups, the document
+    results, the unobserved entries) and therefore every report and
+    history row is normalized to forward slashes: WindowsPath's str()
+    carries backslashes, which leaked into the JSON core hash and
+    drifted the cross-OS byte molds (run #84's windows leg).  On POSIX
+    this is the identity, so every mold measured on the POSIX runners
+    is unchanged - the same canonical form the gate walk already emits
+    (the str(rel).replace(os.sep, "/") idiom)."""
+    return str(p).replace(os.sep, "/")
+
+
 @dataclass
 class ScanResult:
     """Structured result of a full sieve_tray run.
@@ -193,7 +207,7 @@ class ScanResult:
     def to_dict(self) -> dict:
         """JSON-serializable form, used by sieve_tray_storage for history."""
         return {
-            "groups": [[name, [str(p) for p in files]] for name, files in self.groups],
+            "groups": [[name, [_posix(p) for p in files]] for name, files in self.groups],
             "doc_results": self.doc_results,
             "code_pairs": self.code_pairs,
             "text_pairs": self.text_pairs,
@@ -226,7 +240,7 @@ def _walk_group(group_dir: Path) -> Tuple[List[Path], List[dict]]:
     entries: List[dict] = []
 
     def _entry(p: Path, reason: str) -> dict:
-        return {"file": str(p), "engine": "tray",
+        return {"file": _posix(p), "engine": "tray",
                 "reason": reason, "detail": None}
 
     for dirpath, dirnames, filenames in os.walk(group_dir, followlinks=False):
@@ -270,7 +284,7 @@ def observe_documents(doc_paths: List[Path],
     except ImportError:
         progress("Note: sieve-lens not installed; marking documents unobserved.")
         return [{
-            "path": str(f),
+            "path": _posix(f),
             "mask": "0000-000",
             "flagged": False,
             "h_states": {},
@@ -310,7 +324,7 @@ def observe_documents(doc_paths: List[Path],
         try:
             obs = engine.observe(str(f))
             entry = {
-                "path": str(f),
+                "path": _posix(f),
                 "mask": obs.mask,
                 "flagged": (obs.mask != "1000-000"
                             and not obs.mask.startswith("0")),
@@ -319,7 +333,7 @@ def observe_documents(doc_paths: List[Path],
             }
         except Exception as e:
             entry = {
-                "path": str(f),
+                "path": _posix(f),
                 "mask": "0000-000",
                 "flagged": False,
                 "h_states": {},
@@ -475,7 +489,7 @@ def _scope_pairs_from_analysis(analysis: dict
             # keep the original string out of the results
             reason = "parse_failed"
         skipped_entries.append(
-            {"file": str(item.get("path", "")), "engine": "scope",
+            {"file": _posix(item.get("path", "")), "engine": "scope",
              "reason": reason, "detail": None})
     return pairs, excluded, skipped_entries
 
@@ -1278,7 +1292,7 @@ def run_scan(input_dir: Path,
 
     def _unobserved(f: Path, engine: str, reason: str,
                     detail: Optional[str] = None) -> None:
-        unobserved_entries.append({"file": str(f), "engine": engine,
+        unobserved_entries.append({"file": _posix(f), "engine": engine,
                                    "reason": reason, "detail": detail})
 
     code_map: Dict[str, str] = {}
