@@ -508,6 +508,28 @@ def test_ci_workflow_vendor_verify_lf_canonical_static():
 
 
 # ---------------------------------------------------------------------------
+# 2.1.1 (three-OS Test matrix, round 3): the repo pins its own checkout
+# normalization - the pytest byte-pins hash the disk bytes and the windows
+# runner image's git checks text files out with CRLF, so the pins cannot
+# certify bytes the working tree does not hold (run #83: windows-latest
+# died in "Run tests", exit 1, while ubuntu-24.04 / macos-15 hashing
+# identical bytes passed)
+# ---------------------------------------------------------------------------
+
+def test_repo_gitattributes_pins_lf_checkout_static():
+    attr = REPO_ROOT / ".gitattributes"
+    assert attr.exists(), (
+        ".gitattributes is missing - the working-tree line endings are "
+        "then whatever each runner image's git config makes of the index, "
+        "and the byte-pins cannot certify that")
+    # the pin itself is checkout-normalization-proof, the run-43210414712
+    # shape: assertions run on the canonical LF form
+    text = attr.read_bytes().replace(b"\r\n", b"\n").decode("utf-8")
+    # every text file checks out in the canonical LF form on all three
+    # runners; the binary assets stay byte-exact
+    assert "* text=auto eol=lf" in text
+
+# ---------------------------------------------------------------------------
 # TR4-T13: README (en/ja) - the first-launch section; heading structure
 # symmetric; no limitations section added
 # ---------------------------------------------------------------------------
