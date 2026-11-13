@@ -441,14 +441,22 @@ def test_t11_input_notes_shape_en_ja(tmp_path):
 def test_t12_release_workflow_hashes_and_attestation_static():
     text = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8")
-    # the existing three-asset build stays
-    for asset in ("SieveTray-windows.zip", "SieveTray-macos-arm64.zip",
-                  "SieveTray-macos-intel.zip"):
+    # the existing three-asset build stays; the asset names are decided
+    # from the tag (the 2026-11-13 ruling) - github.ref_name rides the
+    # matrix, so tag v2.1.1 ships SieveTray-v2.1.1-windows.zip and
+    # its siblings
+    for asset in ("SieveTray-${{ github.ref_name }}-windows.zip",
+                  "SieveTray-${{ github.ref_name }}-macos-arm64.zip",
+                  "SieveTray-${{ github.ref_name }}-macos-intel.zip"):
         assert asset in text
     assert "actions/checkout@" in text and "actions/upload-artifact@" in text
-    # SHA-256 list: generated, uploaded and attached to the release
+    # SHA-256 list: generated from whatever the tag named, uploaded and
+    # attached to the release
     assert "SHA256SUMS.txt" in text
-    assert "sha256sum" in text
+    assert "sha256sum *.zip" in text
+    # the release body is the CHANGELOG section of the tag version
+    assert "tools/extract_changelog.py" in text
+    assert "body_path: release_body.md" in text
     # provenance attestation: the official action and the permissions
     # (measured 2026-11-06: actions/attest@v4 is the action the official
     # README recommends for new implementations - attest-build-provenance
