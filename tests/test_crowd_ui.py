@@ -17,6 +17,7 @@ no event-loop timing is involved.
 """
 
 import json
+import os
 import re
 import stat
 from pathlib import Path
@@ -100,8 +101,13 @@ def _patch_critical(monkeypatch):
 
 
 def test_crowd_tab_is_seventh_with_core_widgets(window):
-    assert window.tabs.count() == 8  # v2.0.0: +1 Gate
-    assert window.tabs.tabText(window._crowd_tab_index) == tr("en", "crowd_tab")
+    # v2.1.0 (addendum 2): the Crowd page is the seventh sidebar row
+    # (the count moves 8 -> 9 with the §3.9 Cohort page - the same
+    # structure-pin change the addendum 2 §3 ruling permits, reported
+    # with the §3.9 commit)
+    assert window.sidebar.count() == 9  # v2.0.0: +1 Gate, v2.1.0: +1 Cohort
+    assert window.sidebar.item(
+        window._page_keys.index("crowd")).text() == tr("en", "crowd_tab")
     assert window.crowd_file_btn.isEnabled() is True
     assert window.crowd_inspect_btn.isEnabled() is False
     assert window.crowd_dry_run_btn.isEnabled() is False
@@ -257,7 +263,11 @@ def test_crowd_keygen_writes_mode_600_key_and_confirms_overwrite(
     window.crowd_keygen_to(key_path)
     first = key_path.read_text(encoding="ascii")
     assert re.fullmatch(r"[0-9a-f]{64}\n", first)
-    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+    # the 0o600 contract is POSIX-only (no POSIX mode bits exist on
+    # Windows - run #84 measured 0o100666 there), so the mode pin rides
+    # the v1.4.0 os.name idiom; the key content stays universal.
+    if os.name == "posix":
+        assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
     assert window._crowd_key_path == key_path
     calls = _patch_question(monkeypatch, QMessageBox.No)
     window.crowd_keygen_to(key_path)
@@ -270,18 +280,21 @@ def test_crowd_keygen_writes_mode_600_key_and_confirms_overwrite(
     assert second != first
 
 
-def test_about_dialog_lists_five_bundled_engines(window):
-    """v0.10.1: the About dialog must list all five bundled engines."""
+def test_about_dialog_lists_all_bundled_engines(window):
+    """v0.10.1, 2.1.1 (GU-T08): the About dialog lists all bundled
+    engines - six, since Sieve Order joined the tray at 2.0.0 and was
+    missing from the credits."""
     dialog = gui.AboutDialog(window.lang, window)
     names = [name for name, _ in gui.AboutDialog.ENGINE_LINKS]
     assert names == ["Sieve Lens", "Sieve Scope", "Sieve Referee",
-                     "Sieve Redact", "Sieve Crowd"]
+                     "Sieve Order", "Sieve Redact", "Sieve Crowd"]
     assert all(url.startswith("https://github.com/neguseatama/")
                for _, url in gui.AboutDialog.ENGINE_LINKS)
     link_labels = [w for w in dialog.findChildren(gui.QLabel)
                    if w.openExternalLinks()]
     assert len(link_labels) == 1
-    assert link_labels[0].text().count("<a href=") == 5
+    assert link_labels[0].text().count("<a href=") == 6
+    assert "Sieve Order" in link_labels[0].text()
     assert "Sieve Redact" in link_labels[0].text()
     assert "Sieve Crowd" in link_labels[0].text()
     dialog.close()

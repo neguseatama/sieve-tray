@@ -188,7 +188,12 @@ def _write_tree_text(root: Path, tree: dict):
     for rel, content in tree.items():
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
+        # newline="" keeps the fixtures LF on every OS: write_text's
+        # default newline=None translates \n to os.linesep on Windows,
+        # and the engines read the input as bytes, so CRLF fixtures
+        # drift the byte pins (run #84: MOLD_REDACT_OUT, the core
+        # hashes).
+        p.write_text(content, encoding="utf-8", newline="")
 
 
 def _core_hash(result: ScanResult) -> str:
@@ -464,7 +469,8 @@ class TR3_T04_RedactPhoneLongVowelForms(unittest.TestCase):
             sample = work / "s.txt"
             sample.write_text(
                 "連絡先 taro.yamada@example.com / 090-1234-5678\n"
-                "担当 佐藤花子 識別 MY-654321\n", encoding="utf-8")
+                "担当 佐藤花子 識別 MY-654321\n",
+                encoding="utf-8", newline="")  # fixed-LF sample (run #84)
             cfg = work / "c.txt"
             cfg.write_text(
                 "builtin email:delete\nbuiltin phone-jp:delete\n"
@@ -1042,8 +1048,17 @@ class TR3_T17_ReadmeEnJaAligned(unittest.TestCase):
         ja = (REPO_ROOT / "README.ja.md").read_text(encoding="utf-8")
         en_h1 = re.search(r"^# (.+)$", en, re.M).group(1)
         ja_h1 = re.search(r"^# (.+)$", ja, re.M).group(1)
-        self.assertIn("v1.4.0", en_h1, "en H1 is not v1.4.0: " + en_h1)
-        self.assertIn("v1.4.0", ja_h1, "ja H1 is not v1.4.0: " + ja_h1)
+        # both titles carry the release version and the SAME one - the
+        # value itself is pinned to the single source by
+        # tests/test_release_version_pins.py (the 2026-11-13 ruling)
+        en_v = re.search(r"^# Sieve Tray v([0-9]+\.[0-9]+\.[0-9]+)$", en, re.M)
+        ja_v = re.search(r"^# Sieve Tray v([0-9]+\.[0-9]+\.[0-9]+)$", ja, re.M)
+        self.assertIsNotNone(en_v, "en H1 is not a versioned title: " + en_h1)
+        self.assertIsNotNone(ja_v, "ja H1 is not a versioned title: " + ja_h1)
+        self.assertEqual(en_v.group(1), sieve_tray.__version__,
+                         "the en title version is not the release version")
+        self.assertEqual(ja_v.group(1), sieve_tray.__version__,
+                         "the ja title version is not the release version")
         en_h2 = re.findall(r"^## (.+)$", en, re.M)
         ja_h2 = re.findall(r"^## (.+)$", ja, re.M)
         self.assertEqual(len(en_h2), len(ja_h2),
@@ -1069,22 +1084,25 @@ class TR3_T18_DependencyFloorsStayPublished(unittest.TestCase):
         import tomllib
         with open(REPO_ROOT / "pyproject.toml", "rb") as fh:
             proj = tomllib.load(fh)["project"]
+        # v2.1.0 (M2, request §3.13): the floors are the published
+        # engines (scope 1.5.0 / referee 1.6.0 on PyPI at the raise).
         self.assertEqual(
             proj["dependencies"],
-            ["sieve-lens>=0.22.0", "sieve-scope>=1.3.0",
-             "sieve-referee>=1.3.0"])
+            ["sieve-lens>=0.22.0", "sieve-scope>=1.5.0",
+             "sieve-referee>=1.6.0"])
         gui = proj["optional-dependencies"]["gui"]
         self.assertIn("Pillow>=10.0", gui)
 
 
 class TR3_T19_Version140(unittest.TestCase):
-    """TR3-T19: __version__ and pyproject agree on 2.0.0 and the
-    CHANGELOG carries a [2.0.0] section (pin refreshed for the M1
-    Gate lane; the scope/referee floors are unchanged)."""
+    """TR3-T19: __version__ and pyproject agree on 2.1.1 and the
+    CHANGELOG carries a [2.1.1] section (pin refreshed for the 2.1.1
+    release; the floors are the published scope 1.5.0 /
+    referee 1.6.0)."""
 
     def test_version_is_140(self):
-        self.assertEqual(sieve_tray.__version__, "2.0.0")
+        self.assertEqual(sieve_tray.__version__, "2.1.1")
 
     def test_changelog_has_140(self):
         text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertIn("## [2.0.0]", text)
+        self.assertIn("## [2.1.1]", text)

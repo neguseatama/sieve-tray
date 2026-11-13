@@ -8,12 +8,14 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     env:
       QT_QPA_PLATFORM: offscreen
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.12"]
+        os: [ubuntu-24.04, windows-latest, macos-15]
 
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +26,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install Qt system libraries for offscreen tests
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1
@@ -31,15 +34,40 @@ jobs:
       - name: Install sieve-tray and test dependencies
         run: |
           python -m pip install --upgrade pip
+          # CH-T14's wheel smoke builds with --no-build-isolation: the build
+          # backend must exist here (PR #1 CI red: no module named setuptools)
+          pip install setuptools
           pip install ".[gui]"
           pip install pytest pypdf tinycss2 cssselect2
 
       - name: Verify vendored sieve_redact matches the published release
+        shell: python
         run: |
-          curl -fsSL https://raw.githubusercontent.com/neguseatama/sieve-redact/v0.11.0/sieve_redact.py -o /tmp/upstream_redact.py
-          PIN=$(python3 -c "import re, pathlib; print(re.search(r'PINNED_SHA256 = \"([0-9a-f]+)\"', pathlib.Path('tests/test_redact_vendor_sync.py').read_text()).group(1))")
-          echo "pinned sha256: $PIN"
-          echo "$PIN  /tmp/upstream_redact.py" | sha256sum -c -
-          echo "$PIN  sieve_redact.py" | sha256sum -c -
+          # 2.1.1 (the three-OS Test matrix): the check went
+          # cross-platform - sha256sum / python3 / curl are not
+          # portable across the three runners, the python shell is.
+          # The verification itself is unchanged: the vendored
+          # sieve_redact.py and the published v0.11.0 upstream must
+          # both hash to the PINNED_SHA256 in
+          # tests/test_redact_vendor_sync.py.
+          import hashlib, pathlib, re, sys, urllib.request
+          url = ("https://raw.githubusercontent.com/neguseatama/"
+                 "sieve-redact/v0.11.0/sieve_redact.py")
+          upstream = urllib.request.urlopen(url).read()
+          pin = re.search(r'PINNED_SHA256 = "([0-9a-f]+)"',
+                          pathlib.Path("tests/test_redact_vendor_sync.py")
+                          .read_text(encoding="utf-8")).group(1)
+          print("pinned sha256:", pin)
+          # the windows runner image ships core.autocrlf, so its git may
+          # check this text file out with CRLF while the pin certifies
+          # the canonical LF blob - normalize before hashing; genuine
+          # drift still fails and the LF legs are the live control
+          for name, blob in (("upstream", upstream),
+                             ("vendored",
+                              pathlib.Path("sieve_redact.py").read_bytes()
+                              .replace(b"\r\n", b"\n"))):
+              got = hashlib.sha256(blob).hexdigest()
+              assert got == pin, "%s: %s != %s" % (name, got, pin)
+          print("vendor sync verified on", sys.platform)
       - name: Run tests
         run: python -m pytest -v

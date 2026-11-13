@@ -48,7 +48,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "2.0.0"
+__version__ = "2.1.1"
 
 
 CODE_EXTS = {".py"}
@@ -155,6 +155,20 @@ def _silent(_msg: str) -> None:
     pass
 
 
+def _posix(p) -> str:
+    """Canonical POSIX-slash form of a path string (cohort-m2, run #84).
+
+    Every path string entering a ScanResult (the groups, the document
+    results, the unobserved entries) and therefore every report and
+    history row is normalized to forward slashes: WindowsPath's str()
+    carries backslashes, which leaked into the JSON core hash and
+    drifted the cross-OS byte molds (run #84's windows leg).  On POSIX
+    this is the identity, so every mold measured on the POSIX runners
+    is unchanged - the same canonical form the gate walk already emits
+    (the str(rel).replace(os.sep, "/") idiom)."""
+    return str(p).replace(os.sep, "/")
+
+
 @dataclass
 class ScanResult:
     """Structured result of a full sieve_tray run.
@@ -193,7 +207,7 @@ class ScanResult:
     def to_dict(self) -> dict:
         """JSON-serializable form, used by sieve_tray_storage for history."""
         return {
-            "groups": [[name, [str(p) for p in files]] for name, files in self.groups],
+            "groups": [[name, [_posix(p) for p in files]] for name, files in self.groups],
             "doc_results": self.doc_results,
             "code_pairs": self.code_pairs,
             "text_pairs": self.text_pairs,
@@ -226,7 +240,7 @@ def _walk_group(group_dir: Path) -> Tuple[List[Path], List[dict]]:
     entries: List[dict] = []
 
     def _entry(p: Path, reason: str) -> dict:
-        return {"file": str(p), "engine": "tray",
+        return {"file": _posix(p), "engine": "tray",
                 "reason": reason, "detail": None}
 
     for dirpath, dirnames, filenames in os.walk(group_dir, followlinks=False):
@@ -270,7 +284,7 @@ def observe_documents(doc_paths: List[Path],
     except ImportError:
         progress("Note: sieve-lens not installed; marking documents unobserved.")
         return [{
-            "path": str(f),
+            "path": _posix(f),
             "mask": "0000-000",
             "flagged": False,
             "h_states": {},
@@ -310,7 +324,7 @@ def observe_documents(doc_paths: List[Path],
         try:
             obs = engine.observe(str(f))
             entry = {
-                "path": str(f),
+                "path": _posix(f),
                 "mask": obs.mask,
                 "flagged": (obs.mask != "1000-000"
                             and not obs.mask.startswith("0")),
@@ -319,7 +333,7 @@ def observe_documents(doc_paths: List[Path],
             }
         except Exception as e:
             entry = {
-                "path": str(f),
+                "path": _posix(f),
                 "mask": "0000-000",
                 "flagged": False,
                 "h_states": {},
@@ -475,7 +489,7 @@ def _scope_pairs_from_analysis(analysis: dict
             # keep the original string out of the results
             reason = "parse_failed"
         skipped_entries.append(
-            {"file": str(item.get("path", "")), "engine": "scope",
+            {"file": _posix(item.get("path", "")), "engine": "scope",
              "reason": reason, "detail": None})
     return pairs, excluded, skipped_entries
 
@@ -1278,7 +1292,7 @@ def run_scan(input_dir: Path,
 
     def _unobserved(f: Path, engine: str, reason: str,
                     detail: Optional[str] = None) -> None:
-        unobserved_entries.append({"file": str(f), "engine": engine,
+        unobserved_entries.append({"file": _posix(f), "engine": engine,
                                    "reason": reason, "detail": detail})
 
     code_map: Dict[str, str] = {}
@@ -1722,7 +1736,7 @@ def render_text(result: ScanResult) -> str:
 # ===========================================================================
 # v2.0.0 (M1 Gate): the pre-handoff quarantine, anonymization and receipt
 # lane (request doc §3.1-§3.6, rev. 2026-11-08, plus the 2026-11-08
-# design-chat ruling).
+# design review ruling).
 #
 # Gate walks a folder and, per item: decides the lane -> observes ->
 # treats -> writes.  Documents yield only their visible text (strip of
@@ -1737,7 +1751,7 @@ def render_text(result: ScanResult) -> str:
 #   - verification item reasons (7) and not_verifiable reasons (5),
 #     in verify_gate below.
 #
-# HTML lane (§3.2 as amended, measured in worklog §85): core Lens does
+# HTML lane (§3.2 as amended, measured in the M1 gate round): core Lens does
 # NOT detect <style>-rule hiding, so Gate uses the extras lane
 # (sieve_lens_ext.html_css_selectors) with a charset pre-check done
 # here first.  The extras lane reports a rule match as a css_hidden
@@ -1880,7 +1894,7 @@ def _gate_charset_check(data: bytes):
 
 def _gate_html_lane_ready() -> bool:
     """The extras lane is usable only when html_css_selectors AND
-    cssselect2 import (worklog §85: without cssselect2 the extractor
+    cssselect2 import (measured: without cssselect2 the extractor
     degrades silently to no rule detection)."""
     try:
         import sieve_lens_ext.html_css_selectors as _sel  # noqa: F401
@@ -1955,6 +1969,18 @@ def _gate_engine_table() -> list:
     except Exception:
         engines.append({"name": "sieve-order", "version": GATE_ORDER_VERSION,
                         "source": "vendored", "file_sha256": None})
+    # v2.1.0 (M2 Cohort): the Cohort receipt's engines resolve against
+    # this table (the verification's drift check), so the comparison
+    # engines join it here.
+    for name in ("sieve-referee", "sieve-scope"):
+        try:
+            mod = __import__(name.replace("-", "_"))
+            engines.append({"name": name,
+                            "version": getattr(mod, "__version__", None),
+                            "source": "pip", "file_sha256": None})
+        except Exception:
+            engines.append({"name": name, "version": None,
+                            "source": "pip", "file_sha256": None})
     return engines
 
 
@@ -1985,7 +2011,7 @@ def _gate_classify_hidden(segments) -> Tuple[list, list]:
     rule_hidden - css_hidden segments whose location carries the
                  "selector:" marker: a <style>-rule matched something,
                  but the extras body emitter still marks that body
-                 visible -> the item must fail closed (§85).
+                 visible -> the item must fail closed (measured).
     """
     orderable, rule_hidden = [], []
     for s in segments:
@@ -2339,7 +2365,7 @@ def _gate_item_document(engine, src: Path, data: bytes, suffix: str,
     """The document lane: Lens observation -> visible text (strip) ->
     Redact (label) -> handoff.  HTML rides the extras lane with a
     charset pre-check done here first; a rule-originated css_hidden
-    segment fails the item closed (§85)."""
+    segment fails the item closed (measured)."""
     # --- observation
     try:
         if suffix in (".html", ".htm"):
@@ -2595,12 +2621,1100 @@ def _gate_verify_item_ident(it: dict) -> dict:
     return ident
 
 
+# ===========================================================================
+# v2.1.0 (M2 Cohort): the Cohort lane (request §3.1 the flow, §3.6 the
+# report and the graph, §3.7 the receipt / the verification / the
+# history, §3.8 the samples and the self-check).
+#
+# Cohort compares the submissions of a folder side by side:
+#   documents (GATE_DOC_EXTS)  -> Lens visible text -> Referee
+#   .py                        -> Scope analyze_corpus
+#   generic source (10 exts)   -> Scope language_agnostic_pair
+# everything else is not_applicable.  The output splits like Gate:
+# handoff/ carries the receipt only, local/ the full report.  The
+# receipt lists the flagged pairs only (GREEN lives in the summary).
+# ===========================================================================
+
+COHORT_KIND = "sieve-cohort"
+# request §3.1: the generic lane covers the remaining source languages
+# (the enumerated 10 extensions resolve the request's list).
+COHORT_GENERIC_EXTENSIONS = (".js", ".ts", ".java", ".c", ".cpp", ".cs",
+                             ".go", ".rb", ".php", ".sh")
+# the 2026-11-09 ruling: the generic threshold is a provisional 700 ‰
+# (a clear near-identity in per-mille terms); the 2026-11-10 ruling
+# fixes the SIDE rule: either side at/over the threshold flags the pair.
+COHORT_GENERIC_FLAG_PER_MILLE = 700
+# request §3.6: the report caps each document at 20,000 characters and
+# the side-by-side section at 50 pairs; overflows show counts.
+COHORT_REPORT_MARK_CAP_CHARS = 20000
+COHORT_REPORT_PAIR_CAP = 50
+
+
+def _cohort_explanation_settings() -> dict:
+    """The explanation-layer constants, read from the engine modules
+    (request §3.7: the settings record the explanation layer)."""
+    from sieve_referee.fingerprint import (FINGERPRINT_K as rk,
+                                           FINGERPRINT_W as rw,
+                                           MIN_FINGERPRINT_SPAN as rmin)
+    import sieve_scope
+    return {"referee": {"k": int(rk), "w": int(rw), "min": int(rmin)},
+            "scope": {"k": int(sieve_scope.FINGERPRINT_K),
+                      "w": int(sieve_scope.FINGERPRINT_W),
+                      "min": int(sieve_scope.MIN_FINGERPRINT_SPAN)}}
+
+
+def _cohort_engine_table() -> list:
+    """The Cohort receipt's engines (the 2026-11-09 design note: the four
+    guards lens/order/referee/scope - Order is the hidden-text
+    observer).  The names are the gate table's, so the verification's
+    drift check resolves them."""
+    engines = []
+    gate = {e["name"]: e for e in _gate_engine_table()}
+    for name in ("sieve-lens", "sieve-order", "sieve-referee",
+                 "sieve-scope"):
+        entry = gate.get(name)
+        if entry is None:
+            try:
+                import importlib
+                mod = importlib.import_module(
+                    name.replace("-", "_"))
+                entry = {"name": name,
+                         "version": getattr(mod, "__version__", None),
+                         "source": "pip", "file_sha256": None}
+            except Exception:
+                entry = {"name": name, "version": None,
+                         "source": "pip", "file_sha256": None}
+        engines.append(dict(entry))
+    return engines
+
+
+def _cohort_removed_zero() -> dict:
+    """The per-selection removal report (request §3.3/§3.4): counts and
+    lengths only - never a position, never a body."""
+    return {"bibliography": {"length": 0},
+            "quotes": {"length": 0},
+            "base": {"length": 0}}
+
+
+def _cohort_measure_exclusions(text: str, *, exclude_quotes: bool,
+                               exclude_bibliography: bool,
+                               base_texts: Optional[List[str]]) -> Tuple[str, dict]:
+    """Measure the exclusions with the engine's own strip functions in
+    the engine's declared order (bibliography -> quotes -> base), so
+    the measured bytes equal what the judgment strips internally.
+    Returns (text for the comparison, removal report)."""
+    from sieve_referee.citations import strip_bibliography, strip_quotes
+    from sieve_referee.base_strip import strip_base_segments
+    removed = _cohort_removed_zero()
+    work = text
+    if exclude_bibliography:
+        stripped = strip_bibliography(work)
+        removed["bibliography"]["length"] = len(work) - len(stripped)
+        work = stripped
+    if exclude_quotes:
+        stripped = strip_quotes(work)
+        removed["quotes"]["length"] = len(work) - len(stripped)
+        work = stripped
+    if base_texts:
+        stripped, _spans = strip_base_segments(work, base_texts)
+        removed["base"]["length"] = len(work) - len(stripped)
+        work = stripped
+    return work, removed
+
+
+def _cohort_base_texts(base_paths) -> List[str]:
+    """Read the base files (request §3.3): missing, empty or undecodable
+    base files fail closed with ValueError - a base the run cannot read
+    must never silently turn into 'no base'."""
+    texts = []
+    for raw in (base_paths or ()):
+        p = Path(raw)
+        if not p.is_file():
+            raise ValueError("base file not found: %s" % p)
+        data = p.read_bytes()
+        if not data:
+            raise ValueError("base file is empty: %s" % p)
+        text, err = _read_limited(p)
+        if text is None:
+            raise ValueError("base file unreadable (%s): %s"
+                             % (err, p))
+        texts.append(text)
+    return texts
+
+
+def _cohort_generic_pairs(generic_map: Dict[str, str],
+                          base_texts: Optional[List[str]],
+                          progress) -> Tuple[list, list, dict, list]:
+    """The generic lane (request §3.5): every pair goes through the
+    Scope's language-agnostic comparison.  The base removal strips the
+    base-matched token spans BEFORE the comparison (the 2026-11-09
+    ruling: the starter-code base must not make every submission look
+    alike), and a submission emptied by the removal leaves the
+    comparison as empty_input.  A pair is flagged when EITHER side
+    reaches COHORT_GENERIC_FLAG_PER_MILLE (the 2026-11-10 ruling: a
+    small file contained in a larger one must not be missed); the
+    recorded match_per_mille is the triggering (higher) side.
+    Returns (flagged pairs, all pairs for the report listing, per-item
+    base removal report, emptied names)."""
+    try:
+        import sieve_scope
+    except ImportError:
+        return [], [], {}, []
+    compare_map: Dict[str, str] = {}
+    removal_report: dict = {}
+    emptied: list = []
+    if base_texts:
+        for name, text in generic_map.items():
+            stripped, report = sieve_scope.strip_base_sources(
+                text, base_texts)
+            removal_report[name] = {
+                "total_tokens": report.get("total_tokens", 0),
+                "removed_tokens": report.get("removed_tokens", 0),
+                "removed_ratio": report.get("removed_ratio", 0.0)}
+            if not stripped.strip():
+                emptied.append(name)
+                continue
+            compare_map[name] = stripped
+    else:
+        compare_map = dict(generic_map)
+    flagged_pairs: list = []
+    all_pairs: list = []
+    names = sorted(compare_map)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            res = sieve_scope.language_agnostic_pair(
+                compare_map[a], compare_map[b])
+            pm = res.get("match_per_mille") or {}
+            # the either-side rule (2026-11-10 ruling): the flagged
+            # value is the triggering (higher) side, so the receipt and
+            # the report show the number that justified the flag
+            pmv = int(max(pm.get("a", 0), pm.get("b", 0)))
+            flagged = pmv >= COHORT_GENERIC_FLAG_PER_MILLE
+            all_pairs.append({"a": a, "b": b, "lane": "generic",
+                              "label": pmv, "flagged": flagged})
+            if flagged:
+                spans = res.get("spans") or []
+                flagged_pairs.append({
+                    "a": a, "b": b,
+                    "generic": {"match_per_mille": pmv},
+                    "spans": {
+                        "count": len(spans),
+                        "total_length": sum(
+                            max(0, int(s.get("a_end", 0))
+                                - int(s.get("a_start", 0)))
+                            for s in spans)}})
+    return flagged_pairs, all_pairs, removal_report, emptied
+
+
+def _cohort_scope_pairs(code_map: Dict[str, str],
+                        base_texts: Optional[List[str]],
+                        progress) -> Tuple[list, list, dict, list]:
+    """The .py lane (request §3.1): the Scope corpus analysis on the
+    (optionally base-stripped) code map.  Returns (flagged pairs, all
+    pairs, per-item base removal report, emptied names)."""
+    import sieve_scope
+    from sieve_scope import (SieveScopeEngineV1_3,
+                             SieveClusterAnalyzerV1_3)
+    compare_map: Dict[str, str] = {}
+    removal_report: dict = {}
+    emptied: list = []
+    if base_texts:
+        for name, text in code_map.items():
+            stripped, report = sieve_scope.strip_base_sources(
+                text, base_texts)
+            removal_report[name] = {
+                "total_tokens": report.get("total_tokens", 0),
+                "removed_tokens": report.get("removed_tokens", 0),
+                "removed_ratio": report.get("removed_ratio", 0.0)}
+            if not stripped.strip():
+                emptied.append(name)
+                continue
+            compare_map[name] = stripped
+    else:
+        compare_map = dict(code_map)
+    if not compare_map:
+        return [], [], removal_report, emptied
+    engine = SieveScopeEngineV1_3()
+    analyzer = SieveClusterAnalyzerV1_3(engine, min_cluster_size=2)
+    analysis = analyzer.analyze_corpus(compare_map)
+    flagged_pairs: list = []
+    all_pairs: list = []
+    for (a, b), pr in sorted(
+            (analysis.get("pair_results") or {}).items()):
+        if pr.get("short_circuited"):
+            # the M1 reading: a short-circuited pair is excluded from
+            # the listing entirely (the summary counts it)
+            continue
+        mask = pr.get("mask") or pr.get("v0_mask") or ""
+        flagged = _scope_pair_flagged(mask)
+        all_pairs.append({"a": a, "b": b, "lane": "scope",
+                          "label": mask, "flagged": flagged})
+        if flagged:
+            spans = []
+            try:
+                explained = sieve_scope.explain_pair(
+                    compare_map[a], compare_map[b])
+                spans = explained.get("spans") or []
+            except Exception:  # noqa: BLE001 - explanation is additive
+                spans = []
+            flagged_pairs.append({
+                "a": a, "b": b, "scope": {"mask": mask},
+                "spans": {
+                    "count": len(spans),
+                    "total_length": sum(
+                        max(0, int(s.get("a_end", 0))
+                            - int(s.get("a_start", 0)))
+                        for s in spans)}})
+    return flagged_pairs, all_pairs, removal_report, emptied
+
+
+def _scope_pair_flagged(mask: str) -> bool:
+    """The .py lane's flag rule (request §3.1): a similarity bit in the
+    H4..H7 positions (the content/coverage dimensions) - a structural
+    presence alone (1000-000) is not a flagged pair."""
+    bits = (mask or "").replace("-", "")
+    if len(bits) < 7:
+        bits = (bits + "0000000")[:7]
+    return any(b == "1" for b in bits[3:])
+
+
+COHORT_REPORT_TEXTS = {
+    "en": {
+        "title": "Cohort report",
+        "leading_line": "The flagged pairs below are an observation "
+                        "worth checking by a person; they are not a "
+                        "conclusion.",
+        "counts_heading": "Counts",
+        "items_label": "Submissions",
+        "compared_label": "compared",
+        "not_compared_label": "not compared",
+        "excluded_label": "Excluded",
+        "excluded_total": "total excluded length: {n}",
+        "base_lanes_label": "the base exclusion applied to the lanes: "
+                            "{lanes}",
+        "too_large_label": "files over {n} bytes are not read "
+                           "(too large)",
+        "not_compared_reasons": "not compared by reason",
+        "items_heading": "Submissions",
+        "pairs_heading": "Pairs",
+        "generic_rule": "The generic lane flags a pair when either "
+                        "side reaches {per_mille} ‰ (either side, so "
+                        "that a small file contained in a larger one "
+                        "is not missed).  The recorded match_per_mille "
+                        "is the higher of the two sides.",
+        "spans_heading": "Matched spans",
+        "graph_heading": "Flagged pairs graph",
+        "graph_note": "The regions are the connected components of "
+                      "the flagged pairs plus the isolated submissions "
+                      "(Referee publishes no cluster API, so the "
+                      "engine's clusters are not used here).",
+        "hidden_heading": "Hidden text observed by Order (local only)",
+        "omitted": "{n} characters omitted",
+        "pairs_shown": "{shown} of {total} pairs shown",
+        "pair_of": "pair",
+        "lane": "lane",
+        "observation": "observation",
+        "status": "status",
+        "reason": "reason",
+        "file": "file",
+        "kind": "kind",
+        "hidden": "hidden",
+        "flagged_word": "check",
+        "clean_word": "-",
+        "mask": "mask",
+        "per_mille": "per mille",
+        "spans_label": "spans",
+        "no_pairs": "no flagged pairs",
+    },
+    "ja": {
+        "title": "Cohort 報告",
+        "leading_line": "要確認の組は、人が確かめる価値があることを示した"
+                        "ものであり、結論ではない。",
+        "counts_heading": "件数",
+        "items_label": "提出物",
+        "compared_label": "比較に入れた",
+        "not_compared_label": "比較に入れなかった",
+        "excluded_label": "除外",
+        "excluded_total": "除外した合計長: {n}",
+        "base_lanes_label": "基準の除外を適用したレーン: {lanes}",
+        "too_large_label": "{n} バイトを超えるファイルは読まない"
+                           "（大きすぎる）",
+        "not_compared_reasons": "比較に入らなかった理由別の件数",
+        "items_heading": "提出物",
+        "pairs_heading": "組の一覧",
+        "generic_rule": "汎用レーンは、いずれか一方の側でも {per_mille} ‰ "
+                        "に達した組を要確認にします（小さなファイルが大きな"
+                        "ファイルにそのまま含まれる場合を見落とさないため）。"
+                        "記録される一致率は、高い側の値です。",
+        "spans_heading": "一致箇所",
+        "graph_heading": "要確認の組の図",
+        "graph_note": "図の領域は、要確認の組の連結成分と孤立した提出物 "
+                      "です（Referee には公開のクラスタ API がないため、"
+                      "エンジンのクラスタはここでは使いません）。",
+        "hidden_heading": "Order が観測した隠れた文章（手元用）",
+        "omitted": "残り {n} 文字を省略",
+        "pairs_shown": "{total} 組のうち {shown} 組を表示",
+        "pair_of": "組",
+        "lane": "レーン",
+        "observation": "観測",
+        "status": "状態",
+        "reason": "理由",
+        "file": "ファイル",
+        "kind": "種類",
+        "hidden": "隠れた文章",
+        "flagged_word": "要確認",
+        "clean_word": "-",
+        "mask": "マスク",
+        "per_mille": "千分率",
+        "spans_label": "区間",
+        "no_pairs": "要確認の組なし",
+    },
+}
+
+
+def _cohort_tr(lang: str, key: str, **kw) -> str:
+    """The report wording (request §3.6, the 2026-11-09 ruling ⑤: ja/en
+    both, en the default).  Unknown languages fall back to English."""
+    table = COHORT_REPORT_TEXTS.get(lang) or COHORT_REPORT_TEXTS["en"]
+    text = table.get(key) or COHORT_REPORT_TEXTS["en"].get(key, key)
+    if kw:
+        try:
+            text = text.format(**kw)
+        except (KeyError, IndexError):
+            pass
+    return text
+
+
+def _cohort_merge_spans(spans: list) -> list:
+    """Merge overlapping spans on one side (the Scope spans can contain
+    each other - the receipt keeps every span, the display merges)."""
+    ordered = sorted(((int(s.get("a_start", 0)), int(s.get("a_end", 0)))
+                      for s in spans if int(s.get("a_end", 0))
+                      > int(s.get("a_start", 0))))
+    merged: list = []
+    for start, end in ordered:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return merged
+
+
+def _cohort_marked_text(text: str, spans: list, side: str) -> Tuple[str, int]:
+    """Escape the text with the matched spans wrapped in <mark>; the
+    display is capped at COHORT_REPORT_MARK_CAP_CHARS with the omitted
+    count (request §3.6: 超過は件数)."""
+    merged = _cohort_merge_spans(spans)
+    marks = []
+    cursor = 0
+    out = []
+    cap = COHORT_REPORT_MARK_CAP_CHARS
+    for start, end in merged:
+        start = min(start, cap)
+        end = min(end, cap)
+        if end <= cursor:
+            continue
+        out.append(html.escape(text[cursor:start]))
+        out.append("<mark>%s</mark>" % html.escape(text[start:end]))
+        cursor = end
+        if cursor >= cap:
+            break
+    out.append(html.escape(text[cursor:cap]))
+    omitted = max(0, len(text) - cap)
+    return "".join(out), omitted
+
+
+def _cohort_render_fragment(a_text: str, b_text: str,
+                            spans: list) -> str:
+    """One side-by-side fragment: both documents escaped with their
+    matched spans in <mark>, each capped at 20,000 characters with the
+    omitted count shown."""
+    a_disp, a_omit = _cohort_marked_text(a_text, spans, "a")
+    b_disp, b_omit = _cohort_marked_text(b_text, spans, "b")
+    parts = ['<div class="fragment">',
+             "<pre>%s</pre>" % a_disp,
+             "<pre>%s</pre>" % b_disp]
+    if a_omit or b_omit:
+        parts.append("<p>%s</p>" % html.escape(
+            _cohort_tr("en", "omitted", n=max(a_omit, b_omit))))
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
+def _cohort_svg_graph(all_pairs: list, node_names: List[str]) -> str:
+    """The deterministic SVG (request §3.6): no JavaScript, no xmlns
+    (HTML5 inline SVG), the flagged pairs' connected components plus
+    the isolated submissions as regions, the nodes of each region on
+    the circumference in name order, RED edges heavy (2.5) and the
+    others light (1.5) dashed, coordinates at 1 decimal."""
+    names = sorted(node_names)
+    idx = {n: i for i, n in enumerate(names)}
+    flagged = [p for p in all_pairs if p.get("flagged")]
+
+    # connected components over the flagged pairs (union-find)
+    parent = {n: n for n in names}
+
+    def find(n):
+        while parent[n] != n:
+            parent[n] = parent[parent[n]]
+            n = parent[n]
+        return n
+
+    for p in flagged:
+        ra, rb = find(p["a"]), find(p["b"])
+        if ra != rb:
+            parent[ra] = rb
+    regions: Dict[str, List[str]] = {}
+    for n in names:
+        regions.setdefault(find(n), []).append(n)
+    ordered = sorted(regions.values(),
+                     key=lambda members: min(members))
+
+    import math
+    width, height = 640.0, 320.0
+    parts = ['<svg width="%s" height="%s" viewBox="0 0 %s %s">'
+             % (_fmt1(width), _fmt1(height), _fmt1(width), _fmt1(height))]
+    colors = ["#f2f7ff", "#fff7f2", "#f7fff2", "#fff2fb", "#f2fffb"]
+    x0, y0, w_box, h_box = 10.0, 10.0, width - 20.0, height - 20.0
+    cols = max(1, int(len(ordered) ** 0.5 + 0.999))
+    rows = max(1, (len(ordered) + cols - 1) // cols)
+    cell_w, cell_h = w_box / cols, h_box / rows
+    pos: Dict[str, tuple] = {}
+    for r_i, members in enumerate(ordered):
+        r, c = divmod(r_i, cols)
+        rx, ry = x0 + c * cell_w, y0 + r * cell_h
+        rw, rh = cell_w, cell_h
+        parts.append('<rect x="%s" y="%s" width="%s" height="%s" '
+                     'fill="%s" stroke="#8899aa"/>'
+                     % (_fmt1(rx), _fmt1(ry), _fmt1(rw), _fmt1(rh),
+                        colors[r_i % len(colors)]))
+        n = len(members)
+        cx, cy = rx + rw / 2, ry + rh / 2
+        rad = min(rw, rh) * 0.36
+        for k, name in enumerate(sorted(members)):
+            ang = 2 * 3.141592653589793 * k / max(1, n) - 1.5707963267948966
+            px, py = cx + rad * math.cos(ang), cy + rad * math.sin(ang)
+            pos[name] = (px, py)
+            parts.append('<circle cx="%s" cy="%s" r="4" fill="#334455"/>'
+                         % (_fmt1(px), _fmt1(py)))
+            parts.append('<text x="%s" y="%s" font-size="9">%s</text>'
+                         % (_fmt1(px + 6), _fmt1(py + 3),
+                            html.escape(name)))
+    for p in flagged:
+        pa = pos.get(p["a"])
+        pb = pos.get(p["b"])
+        if pa is None or pb is None:
+            continue
+        heavy = p.get("lane") == "referee" and \
+            p.get("label") in ("RED", "red")
+        if heavy:
+            parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s" '
+                         'stroke="#aa3344" stroke-width="2.5"/>'
+                         % (_fmt1(pa[0]), _fmt1(pa[1]),
+                            _fmt1(pb[0]), _fmt1(pb[1])))
+        else:
+            parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s" '
+                         'stroke="#aa8833" stroke-width="1.5" '
+                         'stroke-dasharray="4 3"/>'
+                         % (_fmt1(pa[0]), _fmt1(pa[1]),
+                            _fmt1(pb[0]), _fmt1(pb[1])))
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _fmt1(value: float) -> str:
+    """One decimal place, deterministically (request §3.6)."""
+    return "%0.1f" % (value + 0.0)
+
+
+def run_cohort(input_dir: Path, output_dir: Path, *,
+               base_paths=None, exclude_quotes: bool = False,
+               exclude_bibliography: bool = False,
+               include_paths: bool = True,
+               include_input_hashes: bool = True,
+               storage_path=None, lang: str = "en",
+               progress=None) -> dict:
+    """The M2 Cohort (request §3.1): compare the submissions of a
+    folder side by side and write handoff/ (the receipt only) +
+    local/ (the report).  Returns the receipt dict (with its digest).
+
+    Fails closed before any work when the output directory exists and
+    is not empty, or when it sits inside the input folder or contains
+    it (ValueError); a base file that is missing, empty or undecodable
+    is also a ValueError.
+
+    storage_path is accepted for the §3.7 history: when given, one
+    allowlisted cohort_runs record (counts, the receipt digest, the
+    engine versions - no paths, no bodies) is appended; a broken
+    storage never fails the run itself."""
+    input_dir = Path(input_dir)
+    output_dir = Path(output_dir)
+    if progress is None:
+        progress = _silent
+    if not input_dir.is_dir():
+        raise ValueError("input folder does not exist: %s" % input_dir)
+    out_abs = output_dir.absolute()
+    in_abs = input_dir.absolute()
+    if out_abs == in_abs or in_abs in out_abs.parents or \
+            out_abs in in_abs.parents:
+        raise ValueError(
+            "output folder must not contain or sit inside the input "
+            "folder")
+    if out_abs.exists():
+        if not out_abs.is_dir():
+            raise ValueError("output path exists and is not a folder")
+        if any(out_abs.iterdir()):
+            raise ValueError(
+                "output folder exists and is not empty")
+    if lang not in COHORT_REPORT_TEXTS:
+        lang = "en"
+
+    handoff = out_abs / "handoff"
+    local = out_abs / "local"
+    handoff.mkdir(parents=True, exist_ok=False)
+    local.mkdir(parents=True, exist_ok=False)
+
+    base_texts = _cohort_base_texts(base_paths)
+
+    rels = _gate_walk(input_dir)
+    progress("Cohort: %d items" % len(rels))
+
+    doc_engine = _gate_build_engine()
+    doc_texts: Dict[str, str] = {}
+    code_texts: Dict[str, str] = {}
+    generic_texts: Dict[str, str] = {}
+    span_data: Dict[tuple, list] = {}
+    items: List[dict] = []
+    item_by_rel: Dict[str, dict] = {}
+    fragments: List[dict] = []
+    too_large_note = False
+
+    for seq, rel in enumerate(rels, start=1):
+        src = input_dir / rel
+        suffix = src.suffix.lower()
+        try:
+            data = src.read_bytes()
+        except OSError:
+            data = b""
+        if include_paths:
+            item = {"kind": None, "input": {"bytes": len(data)},
+                    "status": None, "unobserved_reason": None,
+                    "path": rel}
+        else:
+            item = {"kind": None, "input": {"bytes": len(data)},
+                    "status": None, "unobserved_reason": None,
+                    "index": seq}
+        if include_input_hashes:
+            item["input"]["sha256"] = "sha256:" + hashlib.sha256(
+                data).hexdigest()
+        item_by_rel[rel] = item
+        hidden = _gate_hidden()
+        items.append(item)
+
+        if len(data) > TRAY_READ_LIMIT_BYTES:
+            too_large_note = True
+            item["kind"] = ("document" if suffix in GATE_DOC_EXTS
+                            else "code" if (suffix == ".py" or suffix
+                                            in COHORT_GENERIC_EXTENSIONS)
+                            else "other")
+            item["status"] = "not_compared"
+            item["unobserved_reason"] = "too_large"
+            continue
+
+        if suffix in GATE_DOC_EXTS:
+            item["kind"] = "document"
+            doc_item = _cohort_document_item(
+                doc_engine, src, data, suffix, item, hidden, fragments,
+                seq)
+            if doc_item is not None:
+                doc_texts[rel] = doc_item
+        elif suffix == ".py" or suffix in COHORT_GENERIC_EXTENSIONS:
+            item["kind"] = "code"
+            text, err = _read_limited(src)
+            if text is None:
+                item["status"] = "not_compared"
+                item["unobserved_reason"] = (
+                    "too_large" if err == "too_large" else "unreadable")
+                too_large_note = too_large_note or err == "too_large"
+                continue
+            if not text.strip():
+                item["status"] = "not_compared"
+                item["unobserved_reason"] = "not_applicable"
+                continue
+            if suffix == ".py":
+                code_texts[rel] = text
+            else:
+                generic_texts[rel] = text
+            item["status"] = "compared"
+        else:
+            item["kind"] = "other"
+            item["status"] = "not_compared"
+            item["unobserved_reason"] = "not_applicable"
+
+    # --- lanes ----------------------------------------------------------
+    referee_flagged: list = []
+    referee_all: list = []
+    referee_summary = {}
+    if doc_texts:
+        try:
+            import sieve_referee
+            compare_docs: Dict[str, str] = {}
+            for rel, text in doc_texts.items():
+                stripped, removed = _cohort_measure_exclusions(
+                    text, exclude_quotes=exclude_quotes,
+                    exclude_bibliography=exclude_bibliography,
+                    base_texts=base_texts or None)
+                if any(int(v.get("length", 0))
+                       for v in removed.values()):
+                    item_by_rel[rel]["removed"] = {
+                        k: {"length": int(v.get("length", 0))}
+                        for k, v in removed.items()}
+                if stripped.strip():
+                    compare_docs[rel] = stripped
+                else:
+                    item_by_rel[rel]["status"] = "not_compared"
+                    item_by_rel[rel]["unobserved_reason"] = "empty_input"
+            results = sieve_referee.batch_evaluate(
+                compare_docs, base_documents=None,
+                exclude_quotes=exclude_quotes,
+                exclude_bibliography=exclude_bibliography)
+            counts = {"RED": 0, "YELLOW": 0, "GREEN": 0, "total": 0}
+            spans_map = {}
+            try:
+                from sieve_referee.explain import explain_results
+                spans_map = explain_results(compare_docs, results)
+            except Exception:  # noqa: BLE001 - explanation is additive
+                spans_map = {}
+            for res in results:
+                cls = getattr(res.evaluation_signal, "name", str(
+                    res.evaluation_signal))
+                counts[cls] = counts.get(cls, 0) + 1
+                counts["total"] += 1
+                a, b = res.item_id, res.matched_peer_id
+                if a is None or b is None:
+                    continue
+                mask = res.mask
+                flagged = cls in ("RED", "YELLOW")
+                spans = spans_map.get("%s_vs_%s" % (a, b)) or []
+                referee_all.append({"a": a, "b": b,
+                                    "lane": "referee", "label": cls,
+                                    "flagged": flagged})
+                if flagged:
+                    referee_flagged.append({
+                        "a": a, "b": b,
+                        "referee": {"class": cls, "mask": mask},
+                        "spans": {
+                            "count": len(spans),
+                            "total_length": sum(
+                                max(0, int(s.get("a_end", 0))
+                                    - int(s.get("a_start", 0)))
+                                for s in spans)}})
+                    span_data.setdefault((a, b), []).extend(spans)
+            referee_summary = counts
+        except ImportError:
+            referee_summary = {}
+            progress("Cohort: referee unavailable")
+
+    scope_flagged, scope_all, scope_removal, scope_emptied = \
+        _cohort_scope_pairs(code_texts, base_texts or None, progress)
+    generic_flagged, generic_all, generic_removal, generic_emptied = \
+        _cohort_generic_pairs(generic_texts, base_texts or None, progress)
+    for rel in scope_emptied + generic_emptied:
+        it = item_by_rel.get(rel)
+        if it is not None:
+            it["status"] = "not_compared"
+            it["unobserved_reason"] = "empty_input"
+    for rel, report in {**scope_removal, **generic_removal}.items():
+        it = item_by_rel.get(rel)
+        if it is not None and int(report.get("removed_tokens", 0)) > 0:
+            it["removed"] = {"base": {"length":
+                                      int(report.get("removed_tokens",
+                                                     0))}}
+
+    # --- receipt --------------------------------------------------------
+    compared_n = sum(1 for it in items if it["status"] == "compared")
+    not_compared_n = sum(1 for it in items
+                         if it["status"] == "not_compared")
+    reasons: Dict[str, int] = {}
+    for it in items:
+        if it["status"] == "not_compared" and it.get(
+                "unobserved_reason"):
+            reasons[it["unobserved_reason"]] = \
+                reasons.get(it["unobserved_reason"], 0) + 1
+
+    receipt = {
+        "receipt_version": 1,
+        "kind": COHORT_KIND,
+        "tool": {"name": "sieve-tray", "version": __version__},
+        "engines": _cohort_engine_table(),
+        "settings": {
+            "exclude_quotes": bool(exclude_quotes),
+            "exclude_bibliography": bool(exclude_bibliography),
+            "include_paths": bool(include_paths),
+            "include_input_hashes": bool(include_input_hashes),
+            "explanation": _cohort_explanation_settings(),
+        },
+        "items": items,
+        "pairs": sorted(
+            referee_flagged + scope_flagged + generic_flagged,
+            key=lambda p: (p["a"], p["b"])),
+        "summary": {
+            "items": len(items),
+            "compared": compared_n,
+            "not_compared": not_compared_n,
+            "not_compared_by_reason": reasons,
+            "referee": referee_summary,
+            "scope": {"pairs": len(scope_all),
+                      "short_circuited": 0},
+            "generic": {"pairs": len(generic_all)},
+            "flagged": len(referee_flagged) + len(scope_flagged)
+                       + len(generic_flagged),
+        },
+    }
+    if base_texts:
+        receipt["settings"]["base"] = {
+            "sha256": ["sha256:" + hashlib.sha256(
+                Path(p).read_bytes()).hexdigest()
+                for p in (base_paths or ())]}
+    # the base exclusion applies to the lanes whose engines received it
+    receipt["settings"]["base_lanes"] = [
+        lane for lane, present in
+        (("referee", bool(doc_texts)), ("scope", bool(code_texts)),
+         ("generic", bool(generic_texts))) if present and base_texts]
+    # the too_large threshold is Gate's own read limit (the ruling:
+    # reuse it and write it into the report)
+    receipt["settings"]["too_large_bytes"] = TRAY_READ_LIMIT_BYTES
+    # the generic flag rule is written into the settings and the
+    # report (the 2026-11-10 ruling: either side at/over the
+    # threshold, so an inclusion is not missed)
+    receipt["settings"]["generic_flag_per_mille"] = \
+        COHORT_GENERIC_FLAG_PER_MILLE
+    receipt["settings"]["generic_flag_side"] = "either"
+
+    # the report goes first, the receipt is written last (CH-T01)
+    report_texts = dict(doc_texts)
+    html_doc = _render_cohort_report(
+        receipt, fragments, doc_texts=report_texts,
+        span_data=span_data,
+        all_pairs=referee_all + scope_all + generic_all,
+        excluded_total=sum(
+            (it.get("removed") or {}).get(k, {}).get("length", 0)
+            for it in items for k in ("bibliography", "quotes", "base")),
+        too_large_note=too_large_note, lang=lang)
+    _gate_write_atomic(local / "cohort-report.html",
+                       html_doc.encode("utf-8"))
+    if not include_paths:
+        # the 2026-11-10 receipt ruling (request §2-5): a record
+        # without paths identifies items by sequence number - the
+        # flagged pairs carry the submission file names, which is
+        # where the personal names live, so the pairs take the same
+        # numbers.  The report above has already rendered with the
+        # names (it is local-only and never leaves this machine).
+        seq_of = {rel: seq for seq, rel in enumerate(rels, start=1)}
+        try:
+            for p in receipt["pairs"]:
+                p["a"] = seq_of[p["a"]]
+                p["b"] = seq_of[p["b"]]
+        except KeyError as exc:
+            raise ValueError(
+                "pair references an unknown item: %s" % (exc,))
+        receipt["pairs"] = sorted(
+            receipt["pairs"], key=lambda p: (p["a"], p["b"]))
+    receipt["digest"] = _gate_digest(receipt)
+    pairs = receipt["pairs"]
+    blob = _gate_norm_json(receipt)
+    _gate_write_atomic(handoff / "cohort-receipt.json",
+                       blob.encode("utf-8"))
+
+    # --- history (§3.7): allowlisted counts only, no paths, no bodies;
+    # a broken storage never fails the run itself (the gate rule)
+    if storage_path is not None:
+        try:
+            from sieve_tray_storage import Storage
+            storage = Storage(str(storage_path))
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            removed_total = 0
+            for it in items:
+                for rep in (it.get("removed") or {}).values():
+                    removed_total += int(rep.get("length", 0))
+            storage.record_cohort_run({
+                "run_id": "cohort-" + now.replace(":", "")
+                                       .replace("-", ""),
+                "ts_utc": now,
+                "items": len(items),
+                "compared": compared_n,
+                "not_compared": not_compared_n,
+                "pairs_flagged": len(pairs),
+                "removed_total": removed_total,
+                "receipt_digest": receipt["digest"],
+                "engines": _gate_engines_version(),
+            })
+        except Exception:
+            progress("Cohort: history record skipped")
+    return receipt
+
+
+def _cohort_document_item(engine, src: Path, data: bytes, suffix: str,
+                          item: dict, hidden: dict,
+                          fragments: List[dict], seq: int
+                          ) -> Optional[str]:
+    """The document lane (request §3.1): Lens observation -> visible
+    text for the referee map.  A rule-originated css_hidden segment
+    fails the item closed (the gate ruling - its visible text is never
+    compared).  Returns the visible text or None (the item stays
+    not_compared)."""
+    try:
+        obs = engine.observe(str(src))
+        mask = obs.mask
+        entry = {"path": str(src), "mask": mask,
+                 "flagged": (mask != "1000-000"
+                             and not mask.startswith("0")),
+                 "h_states": dict(obs.h_states),
+                 "evidence": dict(obs.evidence)}
+    except Exception as e:  # noqa: BLE001
+        entry = {"path": str(src), "mask": "0000-000", "flagged": False,
+                 "h_states": {}, "evidence": {},
+                 "error": type(e).__name__}
+    status, reason, detail = classify_observation(entry)
+    item["lens"] = {"mask": entry["mask"]}
+    if status == "unobserved":
+        item["status"] = "not_compared"
+        item["unobserved_reason"] = reason
+        return None
+    orderable, rule_hidden = _gate_classify_hidden(
+        getattr(obs, "segments", []))
+    if rule_hidden:
+        hidden["count"] = len(orderable) + len(rule_hidden)
+        item["hidden_segments"] = hidden
+        for seg in getattr(obs, "segments", []):
+            if seg.visible and seg.text and seg.text.strip():
+                fragments.append({"item": seq, "text": seg.text,
+                                  "kind": "withheld"})
+        item["status"] = "not_compared"
+        item["unobserved_reason"] = "refused"
+        item["unobserved_detail"] = "css_rule_hidden"
+        return None
+    for seg in orderable:
+        if seg.text and seg.text.strip():
+            fragments.append({"item": seq, "text": seg.text,
+                              "kind": "hidden"})
+    item["hidden_segments"] = _gate_order_on_hidden(orderable)
+    try:
+        from sieve_lens import visible_text
+    except ImportError:
+        item["status"] = "not_compared"
+        item["unobserved_reason"] = "engine_unavailable"
+        return None
+    vt = visible_text(obs, strip=set(GATE_STRIP_KINDS))
+    out_text = vt.text
+    if out_text and not out_text.endswith("\n"):
+        out_text += "\n"
+    if not out_text.strip():
+        item["status"] = "not_compared"
+        item["unobserved_reason"] = "empty_input"
+        return None
+    item["status"] = "compared"
+    return out_text
+
+
+def _cohort_pair_label(p: dict) -> str:
+    lane = p.get("lane")
+    if lane == "referee":
+        return str(p.get("label"))
+    if lane == "scope":
+        return "mask %s" % p.get("label")
+    return "%s ‰" % p.get("label")
+
+
+def _render_cohort_report(receipt: dict, fragments: List[dict], *,
+                          doc_texts=None, span_data=None, all_pairs=None,
+                          excluded_total: int = 0,
+                          too_large_note: bool = False,
+                          lang: str = "en") -> str:
+    """The report (request §3.6): the leading line first, the counts,
+    the pairs (flagged first, then by name), the matched spans side by
+    side with the spans wrapped in <mark> (each document capped at
+    20,000 characters with the omitted count, 50 pairs maximum with
+    the shown/total line), the deterministic SVG - no JavaScript, no
+    external requests.  ja/en both (the 2026-11-09 ruling ⑤)."""
+    parts = ["<!doctype html><html><head><meta charset=\"utf-8\">",
+             "<title>%s</title></head><body>" % html.escape(
+                 _cohort_tr(lang, "title"))]
+    # the leading line (request §3.6): an observation, not a conclusion
+    parts.append("<p>%s</p>" % html.escape(
+        _cohort_tr(lang, "leading_line")))
+    summary = receipt.get("summary") or {}
+    parts.append("<h2>%s</h2>" % html.escape(
+        _cohort_tr(lang, "counts_heading")))
+    parts.append("<p>%s: %d / %s: %d</p>" % (
+        html.escape(_cohort_tr(lang, "items_label")),
+        summary.get("items", 0),
+        html.escape(_cohort_tr(lang, "compared_label")),
+        summary.get("compared", 0)))
+    parts.append("<p>%s: %d</p>" % (
+        html.escape(_cohort_tr(lang, "not_compared_label")),
+        summary.get("not_compared", 0)))
+    reasons = summary.get("not_compared_by_reason") or {}
+    if reasons:
+        parts.append("<p>%s: %s</p>" % (
+            html.escape(_cohort_tr(lang, "not_compared_reasons")),
+            html.escape(", ".join(
+                "%s=%d" % (k, v) for k, v in sorted(reasons.items())))))
+    parts.append("<p>%s</p>" % html.escape(
+        _cohort_tr(lang, "excluded_total", n=excluded_total)))
+    removed_detail = {}
+    for it in receipt.get("items", []):
+        for k, v in (it.get("removed") or {}).items():
+            removed_detail[k] = removed_detail.get(k, 0) + \
+                int(v.get("length", 0))
+    if removed_detail:
+        parts.append("<p>%s</p>" % html.escape(
+            "Excluded: " + ", ".join(
+                "%s %d" % (k, v) for k, v in sorted(removed_detail.items()))))
+    lanes = (receipt.get("settings") or {}).get("base_lanes") or []
+    if lanes:
+        parts.append("<p>%s</p>" % html.escape(
+            _cohort_tr(lang, "base_lanes_label",
+                       lanes=", ".join(lanes))))
+    if too_large_note:
+        parts.append("<p>%s</p>" % html.escape(
+            _cohort_tr(lang, "too_large_label",
+                       n=TRAY_READ_LIMIT_BYTES)))
+    # --- the pair listing (all pairs, existing vocabulary and colors)
+    parts.append("<h2>%s</h2>" % html.escape(
+        _cohort_tr(lang, "pairs_heading")))
+    # the generic flag rule stated in the report (2026-11-10 ruling)
+    parts.append("<p>%s</p>" % html.escape(_cohort_tr(
+        lang, "generic_rule",
+        per_mille=COHORT_GENERIC_FLAG_PER_MILLE)))
+    parts.append("<table><tr><th>%s</th><th>%s</th><th>%s</th></tr>"
+                 % (html.escape(_cohort_tr(lang, "pair_of")),
+                    html.escape(_cohort_tr(lang, "lane")),
+                    html.escape(_cohort_tr(lang, "observation"))))
+    pairs = list(all_pairs or [])
+    flagged_first = sorted(
+        pairs, key=lambda p: (0 if p.get("flagged") else 1,
+                              str(p.get("a")), str(p.get("b"))))
+    for p in flagged_first:
+        obs = _cohort_pair_label(p)
+        cls = "signal-red" if p.get("label") in ("RED", "red") else ""
+        parts.append("<tr><td>%s vs %s</td><td>%s</td>"
+                     "<td class=\"%s\">%s</td></tr>"
+                     % (html.escape(str(p.get("a"))),
+                        html.escape(str(p.get("b"))),
+                        html.escape(str(p.get("lane"))),
+                        cls, html.escape(obs)))
+    parts.append("</table>")
+    # --- the matched spans of the flagged pairs, side by side
+    parts.append("<h2>%s</h2>" % html.escape(
+        _cohort_tr(lang, "spans_heading")))
+    shown = 0
+    span_data = span_data or {}
+    receipt_pairs = {(p.get("a"), p.get("b")): p
+                     for p in receipt.get("pairs", [])}
+    for (a, b), p in list(receipt_pairs.items())[
+            :COHORT_REPORT_PAIR_CAP]:
+        a_text = (doc_texts or {}).get(a)
+        b_text = (doc_texts or {}).get(b)
+        if a_text is None or b_text is None:
+            continue
+        parts.append("<h3>%s vs %s</h3>" % (html.escape(a),
+                                            html.escape(b)))
+        parts.append(_cohort_render_fragment(
+            a_text, b_text, span_data.get((a, b)) or []))
+        shown += 1
+    if len(receipt_pairs) > COHORT_REPORT_PAIR_CAP:
+        parts.append("<p>%s</p>" % html.escape(_cohort_tr(
+            lang, "pairs_shown", shown=shown,
+            total=len(receipt_pairs))))
+    # --- the graph
+    all_names = set(doc_texts)
+    for p in (all_pairs or []):
+        all_names.add(p.get("a"))
+        all_names.add(p.get("b"))
+    for it in receipt.get("items", []):
+        if it.get("path"):
+            all_names.add(it["path"])
+    all_names.discard(None)
+    node_names = sorted(all_names)
+    svg = _cohort_svg_graph(all_pairs, node_names)
+    parts.append("<h2>%s</h2>" % html.escape(
+        _cohort_tr(lang, "graph_heading")))
+    # the change from the design plan is stated in the report (the
+    # 2026-11-10 ruling)
+    parts.append("<p>%s</p>" % html.escape(_cohort_tr(lang, "graph_note")))
+    parts.append(svg)
+    if fragments:
+        parts.append("<h2>%s</h2>" % html.escape(
+            _cohort_tr(lang, "hidden_heading")))
+        for f in fragments[:50]:
+            parts.append("<p>%s</p>" % html.escape(
+                "[item %s] %s" % (f.get("item"), f.get("text", ""))))
+        if len(fragments) > 50:
+            parts.append("<p>%s</p>" % html.escape(
+                "... %d" % (len(fragments) - 50)))
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
+
+def _cohort_summary_consistent(obj: dict) -> bool:
+    """The GREEN 照合 (the 2026-11-10 ruling): the receipt lists the
+    flagged pairs only, so the summary counts are cross-checked against
+    the pairs list and against each other - GREEN has no individual
+    entries and lives in the summary alone, so the arithmetic must hold
+    for the record to be verifiable."""
+    summary = obj.get("summary") or {}
+    pairs = obj.get("pairs") or []
+    if summary.get("flagged") != len(pairs):
+        return False
+    n_ref = n_scope = n_gen = 0
+    for p in pairs:
+        lanes = sum(1 for k in ("referee", "scope", "generic") if k in p)
+        if lanes != 1:
+            return False
+        if "referee" in p:
+            n_ref += 1
+        elif "scope" in p:
+            n_scope += 1
+        else:
+            n_gen += 1
+    ref = summary.get("referee") or {}
+    if ref:
+        if ref.get("RED", 0) + ref.get("YELLOW", 0) != n_ref:
+            return False
+        if ref.get("GREEN", 0) != (ref.get("total", 0)
+                                   - ref.get("RED", 0)
+                                   - ref.get("YELLOW", 0)):
+            return False
+    sc = summary.get("scope") or {}
+    if sc and sc.get("pairs", 0) != n_scope:
+        return False
+    gen = summary.get("generic") or {}
+    if gen and gen.get("pairs", 0) != n_gen:
+        return False
+    return True
+
+
 def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
-                scope=None, redact_config=None) -> dict:
+                scope=None, redact_config=None, base_paths=None) -> dict:
     """Re-check a run (request §3.4).  scope is always reported:
     outputs_only / inputs_and_outputs / replay.  overall is
     match / differs / not_verifiable; the CLI maps it to exit codes
-    0 / 1 / 2.  The words of judgment ("pass" etc.) are never used."""
+    0 / 1 / 2.  The words of judgment ("pass" etc.) are never used.
+
+    A Cohort receipt (kind sieve-cohort, request §3.7) is verified in
+    the same vocabulary: handoff/ carries the receipt only, so with no
+    folders given the scope defaults to outputs_only; the summary
+    arithmetic (the GREEN 照合) is cross-checked in every scope - a
+    record whose numbers do not hold together is reported with the
+    existing receipt_unreadable word (the 2026-11-10 ruling: the
+    verify vocabulary is the published M1 contract and stays closed,
+    request §2-7; the distinction is carried by the human-readable
+    wording, not by a new vocabulary word); the base files given via
+    base_paths are hashed against the recorded settings (a mismatch is
+    settings_unavailable); the replay re-runs run_cohort with the
+    recorded settings and compares the digests."""
     receipt_path = Path(receipt_path)
     result = {"scope": None, "overall": None, "items": [],
               "not_verifiable_reason": None}
@@ -2617,6 +3731,7 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
         result["not_verifiable_reason"] = "receipt_unreadable"
         return result
     result["scope"] = scope
+    is_cohort = obj.get("kind") == COHORT_KIND
     if obj.get("receipt_version") != GATE_RECEIPT_VERSION:
         result["overall"] = "not_verifiable"
         result["not_verifiable_reason"] = "receipt_version_unsupported"
@@ -2632,13 +3747,56 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
             scope = "outputs_only"
         elif input_dir is not None:
             scope = "replay"
+        elif is_cohort:
+            # the Cohort handoff carries the receipt only (§3.1), so
+            # with nothing else given the outputs scope is the receipt
+            # itself
+            scope = "outputs_only"
         else:
+            # the 2026-11-10 ruling: the error wording is for the user
             raise ValueError(
-                "verify needs an output folder, an input folder, or an "
-                "explicit scope")
+                "verify cannot tell what to check: pass the run's "
+                "output folder (--output), the original input folder, "
+                "or an explicit --scope (outputs_only / "
+                "inputs_and_outputs / replay)")
         result["scope"] = scope
     elif scope not in ("outputs_only", "inputs_and_outputs", "replay"):
-        raise ValueError("unknown scope: %r" % (scope,))
+        raise ValueError(
+            "unknown scope: %r (the scopes are outputs_only, "
+            "inputs_and_outputs, replay)" % (scope,))
+
+    # the Cohort pre-checks (§3.7): the summary arithmetic and the base
+    # files.  Both run in every scope - they are properties of the
+    # record itself, not of the folders.
+    bases: List[Path] = []
+    recorded_bases: list = []
+    if is_cohort:
+        if not _cohort_summary_consistent(obj):
+            # the 2026-11-10 ruling: the verify vocabulary is the M1
+            # published contract and stays closed (request §2-7), so a
+            # record whose summary arithmetic does not hold together is
+            # reported with the existing word receipt_unreadable - the
+            # distinction is carried by the human-readable wording
+            # (README / report), not by a new vocabulary word
+            result["overall"] = "not_verifiable"
+            result["not_verifiable_reason"] = "receipt_unreadable"
+            return result
+        base_settings = (obj.get("settings") or {}).get("base") or {}
+        recorded_bases = list(base_settings.get("sha256") or [])
+        for raw in (base_paths or ()):  # missing base is fail-closed
+            p = Path(raw)
+            if not p.is_file():
+                result["overall"] = "not_verifiable"
+                result["not_verifiable_reason"] = "settings_unavailable"
+                return result
+            bases.append(p)
+        if recorded_bases and bases:
+            got = ["sha256:" + hashlib.sha256(b.read_bytes()).hexdigest()
+                   for b in bases]
+            if got != recorded_bases:
+                result["overall"] = "not_verifiable"
+                result["not_verifiable_reason"] = "settings_unavailable"
+                return result
 
     # engine version drift is reported but never stops the comparison
     current = {e["name"]: e["version"] for e in _gate_engine_table()}
@@ -2697,7 +3855,33 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
             if rel not in seen:
                 reasons.append({"path": rel, "reason": "item_added"})
 
-    if scope == "replay":
+    if scope == "replay" and is_cohort:
+        # the Cohort replay (§3.7): re-run the comparison with the
+        # recorded settings; the reproduced receipt must be
+        # byte-identical, which also covers the summary counts the
+        # receipt does not list individually (the GREEN 照合)
+        if recorded_bases and not bases:
+            # the exclusion cannot be reproduced without the base files
+            result["overall"] = "not_verifiable"
+            result["not_verifiable_reason"] = "settings_unavailable"
+            return result
+        csettings = obj.get("settings") or {}
+        with tempfile.TemporaryDirectory() as td:
+            receipt2 = run_cohort(
+                Path(input_dir), Path(td) / "out",
+                base_paths=bases or None,
+                exclude_quotes=bool(csettings.get("exclude_quotes")),
+                exclude_bibliography=bool(
+                    csettings.get("exclude_bibliography")),
+                include_paths=bool(csettings.get("include_paths", True)),
+                include_input_hashes=bool(
+                    csettings.get("include_input_hashes", True)))
+        if receipt2["digest"] != obj.get("digest"):
+            for it2 in receipt2["items"]:
+                ident = _gate_verify_item_ident(it2)
+                ident["reason"] = "replay_differs"
+                reasons.append(ident)
+    elif scope == "replay":
         settings = obj.get("settings", {})
         config_sha = settings.get("redact", {}).get("config_sha256")
         if config_sha is not None:
@@ -2809,6 +3993,125 @@ def gate_self_check(progress: ProgressCallback = _silent) -> dict:
             "differences": diffs}
 
 
+def cohort_self_check(progress: ProgressCallback = _silent) -> dict:
+    """The self-check (request §3.8): run the sample pack through the
+    Cohort in a temp folder and compare the expected observations -
+    the pair colors, the excluded-length ranges, the span presence,
+    the hidden-text presence - never a digest.  Returns {"expected":
+    n, "matching": n, "differences": [...]}.
+
+    The manifest's role "base" entries are passed via --base, never
+    copied into the comparison folder; the run config (the exclusions)
+    comes from the manifest's "run" block, so the pack exercises the
+    same configuration its expectations were measured with."""
+    manifest_path = REPO_ROOT / "samples" / "cohort" / "MANIFEST.json"
+    if not manifest_path.is_file():
+        # the pack is a repository resource (see gate_self_check):
+        # installed wheels and frozen bundles do not carry it
+        return {"error": "sample_pack_not_available",
+                "detail": str(REPO_ROOT / "samples" / "cohort")}
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    import shutil as _shutil
+    run_cfg = manifest.get("run") or {}
+    subs, bases = [], []
+    for entry in manifest["items"]:
+        (bases if entry.get("role") == "base" else subs).append(entry)
+    with tempfile.TemporaryDirectory() as td:
+        inp = Path(td) / "in"
+        inp.mkdir()
+        out = Path(td) / "out"
+        for entry in subs:
+            _shutil.copyfile(
+                REPO_ROOT / "samples" / "cohort" / entry["file"],
+                inp / entry["file"])
+        receipt = run_cohort(
+            inp, out, progress=progress,
+            base_paths=[REPO_ROOT / "samples" / "cohort" / b["file"]
+                        for b in bases] or None,
+            exclude_quotes=bool(run_cfg.get("exclude_quotes")),
+            exclude_bibliography=bool(run_cfg.get("exclude_bibliography")))
+    by_name = {it.get("path", str(it.get("index"))): it
+               for it in receipt["items"]}
+    diffs = []
+    for entry in subs:
+        it = by_name.get(entry["file"])
+        if it is None:
+            diffs.append({"file": entry["file"], "field": "presence",
+                          "expected": True, "actual": None})
+            continue
+        expect = entry.get("expect") or {}
+        for field in ("kind", "status"):
+            if field in expect and it[field] != expect[field]:
+                diffs.append({"file": entry["file"], "field": field,
+                              "expected": expect[field],
+                              "actual": it[field]})
+        hm = expect.get("hidden_count_min")
+        if hm is not None and it["hidden_segments"]["count"] < hm:
+            diffs.append({"file": entry["file"], "field": "hidden_count",
+                          "expected": ">= %d" % hm,
+                          "actual": it["hidden_segments"]["count"]})
+        for key, rng in (expect.get("removed") or {}).items():
+            val = ((it.get("removed") or {}).get(key)
+                   or {}).get("length", 0)
+            if val < rng.get("min", 0) or val > rng.get("max", val):
+                diffs.append({"file": entry["file"],
+                              "field": "removed.%s" % key,
+                              "expected": rng, "actual": val})
+    pair_index = {}
+    for p in receipt["pairs"]:
+        pair_index[(p["a"], p["b"])] = p
+        pair_index[(p["b"], p["a"])] = p
+    n_expect = len(subs) + len(manifest.get("pairs") or [])
+    for entry in manifest.get("pairs") or []:
+        key = (entry["a"], entry["b"])
+        expect = entry.get("expect") or {}
+        p = pair_index.get(key)
+        if expect.get("flagged"):
+            if p is None:
+                diffs.append({"pair": "%s vs %s" % key,
+                              "field": "flagged",
+                              "expected": True, "actual": False})
+                continue
+            lane = expect.get("lane")
+            if lane and lane not in p:
+                diffs.append({"pair": "%s vs %s" % key, "field": "lane",
+                              "expected": lane, "actual": None})
+            cls = expect.get("class")
+            if cls and (p.get("referee") or {}).get("class") != cls:
+                diffs.append({"pair": "%s vs %s" % key, "field": "class",
+                              "expected": cls,
+                              "actual": (p.get("referee") or {})
+                              .get("class")})
+            pm = expect.get("per_mille_min")
+            if pm is not None:
+                got = (p.get("generic") or {}).get("match_per_mille", 0)
+                if got < pm:
+                    diffs.append({"pair": "%s vs %s" % key,
+                                  "field": "match_per_mille",
+                                  "expected": ">= %d" % pm, "actual": got})
+            sm = expect.get("spans_min")
+            if sm is not None:
+                got = (p.get("spans") or {}).get("count", 0)
+                if got < sm:
+                    diffs.append({"pair": "%s vs %s" % key,
+                                  "field": "spans",
+                                  "expected": ">= %d" % sm, "actual": got})
+            sl = expect.get("spans_length_min")
+            if sl is not None:
+                got = (p.get("spans") or {}).get("total_length", 0)
+                if got < sl:
+                    diffs.append({"pair": "%s vs %s" % key,
+                                  "field": "spans_total_length",
+                                  "expected": ">= %d" % sl,
+                                  "actual": got})
+        elif p is not None:
+            diffs.append({"pair": "%s vs %s" % key, "field": "flagged",
+                          "expected": False, "actual": True})
+    return {"expected": n_expect,
+            "matching": n_expect - len(diffs),
+            "differences": diffs}
+
+
 def _gate_main(argv: List[str]) -> int:
     """The `gate` / `verify` shapes (request §3.6).  Only entered when
     sys.argv[1] is exactly one of those words, so the legacy
@@ -2826,19 +4129,71 @@ def _gate_main(argv: List[str]) -> int:
     g.add_argument("--no-paths", action="store_true")
     g.add_argument("--no-input-hashes", action="store_true")
     g.add_argument("--self-check", action="store_true")
-    v = sub.add_parser("verify", help="verify a Gate receipt")
+    v = sub.add_parser("verify", help="verify a Gate/Cohort receipt")
     v.add_argument("receipt", type=Path)
     v.add_argument("input_dir", nargs="?", type=Path, default=None)
     v.add_argument("--output", "-o", type=Path, default=None)
     v.add_argument("--scope", default=None)
     v.add_argument("--redact-config", type=Path, default=None)
+    # §3.7: the Cohort base files for the settings check and the replay
+    v.add_argument("--base", action="append", default=None,
+                   metavar="PATH")
+    # v2.1.0 (M2 Cohort): the cohort subcommand joins gate and verify;
+    # the legacy shape and the M1 shapes stay byte-identical.
+    c = sub.add_parser("cohort", help="compare the submissions of a "
+                                      "folder")
+    c.add_argument("input_dir", type=Path, nargs="?", default=None)
+    c.add_argument("-o", "--output", type=Path, default=None)
+    c.add_argument("--base", action="append", default=None,
+                   metavar="PATH")
+    c.add_argument("--exclude-quotes", action="store_true")
+    c.add_argument("--exclude-bibliography", action="store_true")
+    c.add_argument("--no-paths", action="store_true")
+    c.add_argument("--no-input-hashes", action="store_true")
+    # §3.8: run the sample pack and compare the expected observations
+    c.add_argument("--self-check", action="store_true")
+    c.add_argument("--lang", default="en", choices=("en", "ja"),
+                   help="the report language (default: en)")
     args = parser.parse_args(argv)
 
+    if args.cmd == "cohort":
+        if args.self_check:
+            # the exit codes (the 2026-11-10 ruling): 0 = the expected
+            # observations matched, 1 = a difference, 2 = the self-check
+            # could not run; the machine-readable result carries
+            # expected / matching either way
+            result = cohort_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
+        if args.input_dir is None or args.output is None:
+            parser.error("cohort needs an input folder and -o/--output")
+        receipt = run_cohort(
+            args.input_dir, args.output, progress=print,
+            base_paths=[Path(p) for p in args.base]
+            if args.base else None,
+            exclude_quotes=args.exclude_quotes,
+            exclude_bibliography=args.exclude_bibliography,
+            include_paths=not args.no_paths,
+            include_input_hashes=not args.no_input_hashes,
+            lang=args.lang)
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Handoff: %s" % (args.output / "handoff"))
+        print("Report:  %s" % (args.output / "local"
+                               / "cohort-report.html"))
+        return 0
     if args.cmd == "gate":
         if args.self_check:
+            # the exit codes (the 2026-11-10 ruling): 0 = the expected
+            # observations matched, 1 = a difference, 2 = the self-check
+            # could not run; the machine-readable result carries
+            # expected / matching either way (the same shape as cohort)
             result = gate_self_check(progress=print)
             print(json.dumps(result, ensure_ascii=False, indent=1))
-            return 0 if "error" not in result else 2
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
         if args.input_dir is None or args.output is None:
             parser.error("gate needs an input folder and -o/--output "
                          "(or --self-check)")
@@ -2857,7 +4212,8 @@ def _gate_main(argv: List[str]) -> int:
         return 0
     result = verify_gate(
         args.receipt, input_dir=args.input_dir, output_dir=args.output,
-        scope=args.scope, redact_config=args.redact_config)
+        scope=args.scope, redact_config=args.redact_config,
+        base_paths=args.base)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return {"match": 0, "differs": 1,
             "not_verifiable": 2}[result["overall"]]
@@ -2874,7 +4230,8 @@ def main():
     # argument is exactly `gate` or `verify`; the legacy
     # `<input folder> -o report.html` shape keeps working unchanged
     # (a folder literally named `gate` is passed as `./gate`).
-    if len(sys.argv) > 1 and sys.argv[1] in ("gate", "verify"):
+    if len(sys.argv) > 1 and sys.argv[1] in ("gate", "verify",
+                                             "cohort"):
         sys.exit(_gate_main(sys.argv[1:]))
     parser = argparse.ArgumentParser(prog="sieve-tray")
     parser.add_argument("input_dir", type=Path,

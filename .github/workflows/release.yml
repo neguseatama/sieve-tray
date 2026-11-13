@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - "v*"
+  # v2.1.0 (request §3.10, the 2026-11-11 ruling): the manual trial
+  # run - the three-OS build and the two frozen-artifact self-checks
+  # run without publishing anything (the release attach steps sit
+  # behind the push guard below).
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,14 +17,17 @@ jobs:
   build:
     strategy:
       fail-fast: false
+      # the asset names are decided from the tag (the 2026-11-13
+      # ruling): github.ref_name rides the matrix, so tag v2.1.1 ships
+      # SieveTray-v2.1.1-windows.zip and its siblings
       matrix:
         include:
           - os: windows-latest
-            asset_name: SieveTray-windows.zip
+            asset_name: SieveTray-${{ github.ref_name }}-windows.zip
           - os: macos-15
-            asset_name: SieveTray-macos-arm64.zip
+            asset_name: SieveTray-${{ github.ref_name }}-macos-arm64.zip
           - os: macos-15-intel
-            asset_name: SieveTray-macos-intel.zip
+            asset_name: SieveTray-${{ github.ref_name }}-macos-intel.zip
 
     runs-on: ${{ matrix.os }}
 
@@ -46,6 +54,7 @@ jobs:
           --icon assets/icon.ico
           --add-data "assets/icon.png;assets"
           --add-data "samples/gate;samples/gate"
+          --add-data "samples/cohort;samples/cohort"
           sieve_tray_gui.py
 
       - name: Build with PyInstaller (macOS)
@@ -56,7 +65,54 @@ jobs:
           --collect-all sieve_lens_ext
           --add-data "assets/icon.png:assets"
           --add-data "samples/gate:samples/gate"
+          --add-data "samples/cohort:samples/cohort"
           sieve_tray_gui.py
+
+      - name: Self-check the frozen artifact (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          # v2.1.0 (request §3.10, the 2026-11-11 ruling): the built
+          # artifact runs both self-checks headlessly - the frozen GUI
+          # entry dispatches `gate|cohort --self-check` to the CLI
+          # before QApplication, so no window opens.  Any exit code
+          # but 0 (1 = a difference, 2 = the self-check could not run)
+          # fails the release (the 2026-11-10 exit-code contract).
+          # Start-Process -Wait holds the step until the
+          # GUI-subsystem exe exits, and the redirect keeps the JSON
+          # in the CI log.
+          $env:PYTHONIOENCODING = "utf-8"
+          $p = Start-Process -FilePath "dist\SieveTray.exe" `
+            -ArgumentList "gate", "--self-check" -Wait -PassThru `
+            -RedirectStandardOutput gate-selfcheck.log `
+            -RedirectStandardError gate-selfcheck.err.log
+          Get-Content gate-selfcheck.log
+          Get-Content gate-selfcheck.err.log
+          if ($p.ExitCode -ne 0) {
+            Write-Host "::error::gate --self-check exited $($p.ExitCode)"
+            exit $p.ExitCode
+          }
+          $p = Start-Process -FilePath "dist\SieveTray.exe" `
+            -ArgumentList "cohort", "--self-check" -Wait -PassThru `
+            -RedirectStandardOutput cohort-selfcheck.log `
+            -RedirectStandardError cohort-selfcheck.err.log
+          Get-Content cohort-selfcheck.log
+          Get-Content cohort-selfcheck.err.log
+          if ($p.ExitCode -ne 0) {
+            Write-Host "::error::cohort --self-check exited $($p.ExitCode)"
+            exit $p.ExitCode
+          }
+
+      - name: Self-check the frozen artifact (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # v2.1.0 (request §3.10, the 2026-11-11 ruling): the built
+          # artifact runs both self-checks headlessly - the inner
+          # binary dispatches `gate|cohort --self-check` to the CLI
+          # before QApplication, so no window opens.  The step shell
+          # (bash -e) fails the release on exit 1 (a difference) or 2
+          # (the self-check could not run).
+          ./dist/SieveTray.app/Contents/MacOS/SieveTray gate --self-check
+          ./dist/SieveTray.app/Contents/MacOS/SieveTray cohort --self-check
 
       - name: Package artifact (Windows)
         if: runner.os == 'Windows'
@@ -77,20 +133,29 @@ jobs:
           path: dist/${{ matrix.asset_name }}
 
       - name: Attach to GitHub Release
+        # v2.1.0 (§3.10, the 2026-11-11 ruling): tag pushes publish;
+        # a workflow_dispatch trial run builds and self-checks without
+        # touching a Release.
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/${{ matrix.asset_name }}
 
   release-extras:
-    # v1.4.0: the SHA-256 list of the three assets and the artifact
+    # v1.4.0: the SHA-256 list of the assets and the artifact
     # attestation. No code signing / notarization by decision - the
     # verification means are the hash list and the build provenance.
+    # 2.1.1 (the 2026-11-13 ruling): the release body is the CHANGELOG
+    # section of the tag version, extracted before the final attach.
     # Measured 2026-11-06: actions/attest@v4 is the official action for
     # new implementations (attest-build-provenance v4 is its wrapper);
     # attestations are free for public repositories on all current
     # GitHub plans. artifact-metadata: write is the fine-grained
     # permission GA'd 2026-01-13 (creates the artifact storage record).
     needs: build
+    # v2.1.0 (§3.10, the 2026-11-11 ruling): tag pushes publish; a
+    # workflow_dispatch trial run stops after the build self-checks.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -98,6 +163,15 @@ jobs:
       attestations: write
       artifact-metadata: write
     steps:
+      - name: Check out the CHANGELOG
+        uses: actions/checkout@v4
+      - name: Extract the CHANGELOG section for the tag
+        if: github.event_name == 'push'
+        run: |
+          # the release body is the [tag] section of CHANGELOG.md; a tag
+          # without its section fails here (exit 1), structurally - the
+          # tag is cut only after the section exists
+          python3 tools/extract_changelog.py "${GITHUB_REF_NAME#v}" > release_body.md
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -107,15 +181,14 @@ jobs:
       - name: Generate SHA256SUMS.txt
         run: |
           cd artifacts
-          sha256sum SieveTray-windows.zip SieveTray-macos-arm64.zip SieveTray-macos-intel.zip > SHA256SUMS.txt
+          # the names carry the tag, so the list rides the built zips
+          sha256sum *.zip > SHA256SUMS.txt
 
       - name: Attest build provenance
         uses: actions/attest@v4
         with:
           subject-path: |
-            artifacts/SieveTray-windows.zip
-            artifacts/SieveTray-macos-arm64.zip
-            artifacts/SieveTray-macos-intel.zip
+            artifacts/*.zip
 
       - name: Upload SHA256SUMS.txt as a build artifact
         uses: actions/upload-artifact@v4
@@ -123,7 +196,9 @@ jobs:
           name: SHA256SUMS.txt
           path: artifacts/SHA256SUMS.txt
 
-      - name: Attach SHA256SUMS.txt to the GitHub Release
+      - name: Attach SHA256SUMS.txt and the CHANGELOG body to the GitHub Release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/SHA256SUMS.txt
+          body_path: release_body.md

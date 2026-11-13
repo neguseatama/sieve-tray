@@ -146,7 +146,12 @@ def _write_tree(root: Path, tree: dict):
     for rel, content in tree.items():
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
+        # newline="" keeps the fixtures LF on every OS: write_text's
+        # default newline=None translates \n to os.linesep on Windows,
+        # and the engines read the input as bytes, so CRLF fixtures
+        # drift the byte pins (run #84: MOLD_REDACT_OUT, the core
+        # hashes).
+        p.write_text(content, encoding="utf-8", newline="")
 
 
 def _make_frozen_docx(path: Path):
@@ -360,7 +365,8 @@ class TR2_T05_GoldenMoldRedact(unittest.TestCase):
             sample = work / "s.txt"
             sample.write_text(
                 "連絡先 taro.yamada@example.com / 090-1234-5678\n"
-                "担当 佐藤花子 識別 MY-654321\n", encoding="utf-8")
+                "担当 佐藤花子 識別 MY-654321\n",
+                encoding="utf-8", newline="")  # fixed-LF sample (run #84)
             cfg = work / "c.txt"
             cfg.write_text(
                 "builtin email:delete\nbuiltin phone-jp:delete\n"
@@ -634,8 +640,9 @@ class TR2_T10_NeutralUnsupportedFormatWording(unittest.TestCase):
 
 class TR2_T11_DependencyFloors(unittest.TestCase):
     """TR2-T11: pyproject dependency floors match the measured values
-    (lens floor fixed by the design doc; referee floor verified by the
-    suite run against 1.3.0; scope has only 1.3.0 published)."""
+    (lens floor fixed by the design doc; refreshed at the v2.1.0 M2
+    update - the scope/referee floors are the published 1.5.0 / 1.6.0,
+    measured installing the PyPI wheels in a fresh venv)."""
 
     def test_lens_floor_is_0220(self):
         # v2.0.0 (M1 Gate): raised to the published 0.22.0 (Gate
@@ -645,16 +652,19 @@ class TR2_T11_DependencyFloors(unittest.TestCase):
 
     def test_other_floors_match_measurement(self):
         deps = _load_pyproject()["project"]["dependencies"]
-        self.assertIn("sieve-scope>=1.3.0", deps)
-        self.assertIn("sieve-referee>=1.3.0", deps)
+        # v2.1.0 (M2, request §3.13): raised to the published engines
+        # (scope 1.5.0 carries strip_base_sources, referee 1.6.0 the
+        # explanation spans) - both on PyPI at the raise time.
+        self.assertIn("sieve-scope>=1.5.0", deps)
+        self.assertIn("sieve-referee>=1.6.0", deps)
 
 
 class TR2_T12_Version140(unittest.TestCase):
     """TR2-T12: version across __version__, pyproject and the
-    CHANGELOG (pin refreshed for the 2.0.0 Gate lane)."""
+    CHANGELOG (pin refreshed for the 2.1.1 release)."""
 
     def test_version_is_2_0_0(self):
-        self.assertEqual(sieve_tray.__version__, "2.0.0")
+        self.assertEqual(sieve_tray.__version__, "2.1.1")
 
     def test_pyproject_reads_version_from_module(self):
         text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -662,7 +672,7 @@ class TR2_T12_Version140(unittest.TestCase):
 
     def test_changelog_has_140_section(self):
         text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertIn("## [2.0.0]", text)
+        self.assertIn("## [2.1.1]", text)
 
 
 if __name__ == "__main__":

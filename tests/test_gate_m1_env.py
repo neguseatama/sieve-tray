@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TRAY = REPO_ROOT / "sieve_tray.py"
 
 # ---------------------------------------------------------------------------
-# Worklog §84/§85 measured pins (Tray v1.4.0 baseline 402be10/f94f1be):
+# Measured pins (Tray v1.4.0 baseline 402be10/f94f1be):
 # vendored Redact 0.11.0 (PyPI wheel), vendored sieve-order v1.1.0
 # (tag 62c433bd), dependency floors.
 # ---------------------------------------------------------------------------
@@ -49,10 +49,10 @@ ORDER_V110_SHA = {
         "47f0832c7e724d5a7d941880073b86ac776efd0562cb508c6cd132b695c85437"),
     # The upstream package's own test module is NOT vendored: it reads
     # the upstream repo's README/SPEC/pyproject and would fail inside
-    # sieve-tray's tree.  (worklog §86 - design note for the report.)
+    # sieve-tray's tree.  (design note for the report.)
 }
 
-# The v1.4.0 closed vocabularies (§84 §4-6 measurement) - unchanged here.
+# The v1.4.0 closed vocabularies (§4-6 measurement) - unchanged here.
 V140_UNOBSERVED_STAGES = {
     "remedy": frozenset({
         "refused", "parse_failed", "unreadable", "too_large",
@@ -359,9 +359,12 @@ def test_t20_order_vendor_byte_identical():
 
 def test_t20_dependency_floors():
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    # v2.1.0 (M2, request §3.13): the scope/referee floors ride with the
+    # cohort lane once the engines are published - refreshed from the
+    # M1-era >=1.3.0 observation to the published 1.5.0 / 1.6.0.
     assert "sieve-lens>=0.22.0" in pyproject
-    assert "sieve-scope>=1.3.0" in pyproject
-    assert "sieve-referee>=1.3.0" in pyproject
+    assert "sieve-scope>=1.5.0" in pyproject
+    assert "sieve-referee>=1.6.0" in pyproject
 
 
 # ---------------------------------------------------------------------------
@@ -405,10 +408,10 @@ def test_t21_readme_no_limits_section_added():
 # ---------------------------------------------------------------------------
 
 def test_t22_version_consistency():
-    assert sieve_tray.__version__ == "2.0.0"
+    assert sieve_tray.__version__ == "2.1.1"
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'dynamic = ["version"]' in pyproject or \
-        'version = "2.0.0"' in pyproject
+        'version = "2.1.1"' in pyproject
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert changelog.lstrip("# \n").startswith("[2.0.0]") or \
-        "## [2.0.0]" in changelog
+    assert changelog.lstrip("# \n").startswith("[2.1.1]") or \
+        "## [2.1.1]" in changelog

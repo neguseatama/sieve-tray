@@ -15,6 +15,7 @@ column exists; if skipped rows start being saved, a column is added
 (recorded in PLAN-v0.6).
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -71,8 +72,12 @@ def test_sanitize_history_tab_structure(window):
     assert table.columnCount() == 7
     headers = [table.horizontalHeaderItem(c).text() for c in range(7)]
     assert headers == EXPECTED_HEADERS
-    assert window.tabs.count() == 8  # v0.8.0: +1 Quantifier Audit, v1.0.0: +1 Crowd, v2.0.0: +1 Gate
-    label = window.tabs.tabText(window._sanitize_history_tab_index)
+    # the count moves 8 -> 9 with the §3.9 Cohort page (the same
+    # structure-pin change the addendum 2 §3 ruling permits, reported
+    # with the §3.9 commit)
+    assert window.sidebar.count() == 9  # v0.8.0: +1 Audit, v1.0.0: +1 Crowd, v2.0.0: +1 Gate, v2.1.0: +1 Cohort
+    label = window.sidebar.item(
+        window._page_keys.index("sanitize_history")).text()
     assert label == tr("en", "sanitize_history_tab", n=0), \
         "initial tab label must show count 0"
 
@@ -106,7 +111,8 @@ def test_sanitize_history_rows(window, tmp_path):
 
 
 def test_sanitize_history_tab_label_tracks_row_count(window, tmp_path):
-    label = window.tabs.tabText(window._sanitize_history_tab_index)
+    label = window.sidebar.item(
+        window._page_keys.index("sanitize_history")).text()
     assert label == tr("en", "sanitize_history_tab", n=0)
     window.storage.save_sanitization(
         {"n_files": 1, "ok_count": 1, "masked_total": 1,
@@ -117,8 +123,8 @@ def test_sanitize_history_tab_label_tracks_row_count(window, tmp_path):
          "integrity_bad_count": 2, "skipped": False},
         Path("/a/in"), Path("/a/cfg.txt"), Path("/a/out"))
     window._refresh_sanitize_history_table()
-    assert window.tabs.tabText(
-        window._sanitize_history_tab_index) == tr(
+    assert window.sidebar.item(
+        window._page_keys.index("sanitize_history")).text() == tr(
         "en", "sanitize_history_tab", n=2)
 
 
@@ -136,8 +142,8 @@ def test_on_sanitize_finished_refreshes_immediately(
     t = window.sanitize_history_table
     assert t.rowCount() == 1, \
         "sanitize history must refresh immediately after the save"
-    assert window.tabs.tabText(
-        window._sanitize_history_tab_index) == tr(
+    assert window.sidebar.item(
+        window._page_keys.index("sanitize_history")).text() == tr(
         "en", "sanitize_history_tab", n=1)
 
 
@@ -159,8 +165,12 @@ def test_run_image_sanitize_refreshes_immediately(window, tmp_path):
     t = window.sanitize_history_table
     assert t.rowCount() == 1, \
         "single-image sanitize must refresh the history immediately"
-    assert t.item(0, 2).text() == str(cfg)
+    # the table mirrors the storage boundary, which takes the canonical
+    # POSIX-slash form (sieve_tray_storage._posix_path_str, stage 7c /
+    # run #85's windows leg): compare against the same canonical form
+    # instead of the native str() - identity on POSIX.
+    assert t.item(0, 2).text() == str(cfg).replace(os.sep, "/")
     assert t.item(0, 4).text() == "1 (1)"
-    assert window.tabs.tabText(
-        window._sanitize_history_tab_index) == tr(
+    assert window.sidebar.item(
+        window._page_keys.index("sanitize_history")).text() == tr(
         "en", "sanitize_history_tab", n=1)

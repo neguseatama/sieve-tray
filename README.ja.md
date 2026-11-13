@@ -1,6 +1,6 @@
 [English](README.md) | **日本語**
 
-# Sieve Tray v1.4.0
+# Sieve Tray v2.1.1
 
 **汎用観測ツール — Sieveシリーズのデスクトップフロントエンド**
 
@@ -12,13 +12,16 @@
 > 背後にある[Sieve Redact](https://github.com/neguseatama/sieve-redact)マスキング
 > エンジンと、v0.10.0で追加された「匿名化」タブの背後にある
 > [Sieve Crowd](https://github.com/neguseatama/sieve-crowd)テーブル匿名化エンジンを
-> 同梱しています。v1.4.0からは、匿名化タブに **表の観測（`scan`）** も加わりました:
+> 同梱しています。匿名化タブには **表の観測（`scan`）** もあります:
 > 「いまの表がどう見えているか」 — 役割・グループ・不可視文字の所見（セルの値は出ません）—
 > をCrowdが1枚のHTMLにまとめ、ブラウザでそのまま開けます。
 > 提出物のフォルダを指定するだけで、
 > 不可視のコンテンツや隠されたプロンプトを含む文書、構造的に疑わしく似ているコードペア、
 > 言い換え・流用の疑いがあるテキストペア、根拠のない全称主張（ハルシネーション候補）を
-> 含む文を、一度にまとめて検出、報告します。
+> 含む文を、一度にまとめて検出、報告します。さらに
+> **Cohort（提出物の比較）**タブが加わりました: フォルダ内の提出物を互いに比較し、
+> プライバシーを確認済みの書き出し記録（`handoff/`）を書き出します。
+> 報告一式は手元に残ります。
 
 [![Test](https://github.com/neguseatama/sieve-tray/actions/workflows/test.yml/badge.svg)](https://github.com/neguseatama/sieve-tray/actions/workflows/test.yml)
 [![Release](https://github.com/neguseatama/sieve-tray/actions/workflows/release.yml/badge.svg)](https://github.com/neguseatama/sieve-tray/actions/workflows/release.yml)
@@ -74,6 +77,30 @@ Gate は M1 の検疫レーンです。フォルダを選ぶと、1 回で文書
 受領書（`handoff/gate-receipt.json`）には件数・ハッシュ・閉じた語彙の符号だけを
 載せます。本文・隠れていた文章・置換した値は載りません。`verify` が、そのあとの
 一致を確かめます。
+
+---
+
+## 👥 Cohort
+
+**Cohort**タブは、フォルダ内の提出物を並べて比較します。文書は Gate と同じ
+Lens／Referee のレーン、`.py` は Scope、残りのソース言語は汎用レーンで観測し、
+出力は Gate と同じく `handoff/`（受領書のみ）と `local/`（報告一式）に分けます。
+
+1. CLI: `python3 sieve_tray.py cohort <入力フォルダ> -o <出力先>`
+2. `handoff/` を渡し、`local/` は手元に残す。
+3. あとで確かめる: `python3 sieve_tray.py verify <handoff>/cohort-receipt.json`
+
+提出物のファイル名に氏名が含まれるときは、`--no-paths` を付けてください（受領書は連番で識別します）。
+
+汎用レーンは、いずれか一方の側でも 700 ‰ に達した組を要確認にします（小さな
+ファイルが大きなファイルにそのまま含まれる場合を見落とさないため）。記録される
+`match_per_mille` は、高い側の値です。要確認の組は観測であり、結論ではありません。
+`verify` の語彙は M1 のままで変更しません。要約の件数の辻褄が合わない Cohort の
+受領書は、記録として読み取れない受領書と同じ `receipt_unreadable` で報告されます。
+
+報告の中で一致箇所は文字の位置で示されます（トークンではなく文字）。トークンを
+数えるのは基準文書の除去比率（各提出物のトークンのうち、基準文書の除去で
+取り除かれた量）だけです。
 
 ---
 
@@ -200,14 +227,15 @@ Redact が「他は何も変わっていない」ことを証明するレシー�
 ### 方法1: ビルド済みアプリをダウンロード（推奨）
 
 Pythonのインストールは不要です。
-[Releasesページ](https://github.com/neguseatama/sieve-tray/releases)から、
-お使いの環境に合ったものをダウンロードしてください。
+[最新リリース](https://github.com/neguseatama/sieve-tray/releases/latest)から、
+お使いの環境に合ったものをダウンロードしてください。ファイル名はタグから決まり、
+`<version>` はリリース版です。
 
 | プラットフォーム | ファイル |
 |---|---|
-| Windows | `SieveTray-windows.zip` |
-| macOS（Apple Silicon / M系） | `SieveTray-macos-arm64.zip` |
-| macOS（Intel） | `SieveTray-macos-intel.zip` |
+| Windows | `SieveTray-<version>-windows.zip` |
+| macOS（Apple Silicon / M系） | `SieveTray-<version>-macos-arm64.zip` |
+| macOS（Intel） | `SieveTray-<version>-macos-intel.zip` |
 
 展開して`SieveTray.exe` / `SieveTray.app`を起動してください。初回起動時、macOSでは
 「開発元を確認できません」という警告が出ます（未署名ビルドのため想定内です）。
@@ -291,14 +319,15 @@ Path("report.html").write_text(render(result))
 
 ## 🚀 初回起動
 
-[Releases](https://github.com/neguseatama/sieve-tray/releases) からプラットフォームに
+[最新リリース](https://github.com/neguseatama/sieve-tray/releases/latest) からプラットフォームに
 合うzipをダウンロードして展開し、`SieveTray` を起動します。macOSは初回だけ
 Gatekeeperの確認が出ます — **システム設定 → プライバシーとセキュリティ** で
 **このまま開く** を押してください。Windowsは初回だけSmartScreenの確認が出ます —
 **詳細情報** から **実行** を押してください。それ以降は普通に起動します。
 各リリースには成果物の **`SHA256SUMS.txt`** を添えてあるので、初回起動の前に
-`shasum -a 256 SieveTray-macos-arm64.zip`（macOS/Linux）や
-`certutil -hashfile SieveTray-windows.zip SHA256`（Windows）で確かめられます。
+`shasum -a 256 SieveTray-<version>-macos-arm64.zip`（macOS/Linux）や
+`certutil -hashfile SieveTray-<version>-windows.zip SHA256`（Windows）で
+確かめられます。
 
 ---
 

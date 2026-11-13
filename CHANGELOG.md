@@ -1,5 +1,145 @@
 # Changelog
 
+## [2.1.1] - 2026-11-13
+
+### Fixed
+- **The windows leg of the three-OS Test matrix (run #84: 18 failed,
+  five root classes)**: every path string entering a ScanResult, a
+  report and the history takes the canonical POSIX-slash form (the
+  gate-walk idiom, and `_posix_path_str` at the storage boundary) while
+  the engine still opens the native path; the two sample generators pin
+  `ZipInfo.create_system = 3` and write the cohort MANIFEST through
+  `write_bytes`; the mold fixtures are written with fixed LF
+  (`newline=""`); the POSIX-only observation scenarios (the unreadable
+  chmod lane, the mkfifo lane, the keygen 0o600 pin) ride the v1.4.0
+  `os.name == "posix"` idiom; the GUI startup-geometry pins accept the
+  platform layout minimum (`max(decision, minimumSizeHint())`); and the
+  single-image sanitize history pin compares the canonical form the
+  boundary certifies. The repository pins its own checkout
+  normalization (`.gitattributes`: `* text=auto eol=lf`), so every text
+  file checks out in the canonical LF form the byte-pins certify on all
+  three runners.
+- **gate --self-check rides the 0/1/2 exit codes** (CH-T21): 0 = the
+  expected observations matched, 1 = a difference, 2 = could not run -
+  a difference now exits 1 and fails CI, the same contract the cohort
+  leg already had.
+- **GUI wording**: the Gate result gains its placeholder (GU-T06), the
+  About credits Sieve Order and the tagline names the export (GU-T08),
+  the base picker asks for files (GU-T18), the history header fits
+  (GU-T19).
+
+### Changed
+- **The Test workflow rides the three release OS legs** (ubuntu-24.04 /
+  windows-latest / macos-15 on Python 3.12, fail-fast: false): the
+  distributed Windows/macOS builds are tested on their own runners, and
+  the vendored sieve_redact verification is checkout-normalization-proof.
+- **Release trials without publishing**: release.yml gained
+  workflow_dispatch - the three-OS build and the two frozen-artifact
+  self-checks run headlessly (the frozen GUI entry dispatches
+  gate|cohort --self-check to the CLI before QApplication, exit 1/2
+  fails the release) while every Release attach sits behind the push
+  guard.
+- **Release assets take the tag, and the body comes from the
+  CHANGELOG** (the 2026-11-13 ruling): the asset names ride
+  github.ref_name (SieveTray-v2.1.1-windows.zip and siblings), the
+  SHA-256 list and the provenance attestation follow the built zips,
+  and the release body is the CHANGELOG section of the tag version,
+  extracted by tools/extract_changelog.py - a tag without its CHANGELOG
+  section fails the release structurally.
+- **Version notation is unified** (the 2026-11-13 ruling): the README
+  titles carry the release version as their single version literal,
+  downloads point at releases/latest with the asset names described
+  generically, and one test pins pyproject (dynamic attr) ==
+  __version__ == the first CHANGELOG section == both README titles;
+  the six version observation pins follow the bump.
+
+### Note
+- 2.1.0 was published to PyPI only - no GitHub tag/Release was cut for
+  it (the 2026-11-11 ruling: the pre-fix workflow must not turn a
+  v2.1.0 tag into a Release), and PyPI 2.1.0 stays as published. The
+  first GitHub tag/Release is v2.1.1.
+
+## [2.1.0] - 2026-11-10
+
+### Added
+- **Cohort (the M2 comparison lane)**: pick a submissions folder (plus
+  optional base documents) and Cohort compares the submissions against
+  each other - Scope's strip_base_sources removes the base text from
+  each side (the letter §3.5 span contract), the remaining spans are
+  matched, and a pair is flagged when either side reaches 700 per mille
+  (the recorded match_per_mille is the higher of the two sides, so an
+  inclusion is not missed). The result is a local HTML report (en/ja)
+  with the leading line, the marked spans (capped; located by character
+  offsets - characters, not tokens; the only token counts are the
+  base-removal ratios) and a deterministic SVG graph, plus a
+  privacy-checked sharing record: the record identifies items and pairs
+  by sequence number only - submission file names (where the personal
+  names live) never reach the handoff side, while the local report
+  keeps the names. CLI `cohort` (`--base`, `--lang`, `--no-paths`) and
+  a GUI "Compare Submissions / 提出物の比較" tab (the ninth sidebar
+  page) with the comparison run outside the UI thread (busy-bar
+  progress, live engine messages, report/record openers, sample
+  self-check).
+- **Verification**: `verify` recognizes the sieve-cohort receipt (the
+  receipt-only handoff defaults to outputs_only), cross-checks the
+  summary arithmetic in every scope (flagged == listed pairs, per-lane
+  counts, GREEN == total - RED - YELLOW; a record that does not hold
+  together is not_verifiable / summary_inconsistent), hashes the given
+  base files against the recorded settings (settings_unavailable on a
+  mismatch, required for replay when the record has bases), and replays
+  run_cohort with the recorded settings; the verify CLI gains `--base`.
+- **Sample pack**: `samples/cohort/` - the seven shapes (the paraphrased
+  essay pair, the quotes+bibliography pair, the verbatim assignment
+  with --base, the hidden vanish .docx, the unrelated submission, the
+  renamed-identifier .py pair, and the .js pair where the excerpt side
+  alone reaches 937 per mille) with MANIFEST.json (the sha256 list, the
+  run config and the measured expectations - never a digest) and
+  `cohort --self-check` (exit 0 matched / 1 difference / 2 could not
+  run); generate.py rebuilds every file byte-identically.
+- **History**: a dedicated `cohort_runs` allowlist table (no paths, no
+  bodies) wired into run_cohort with the gate rule that a broken
+  storage never fails the run.
+- **Sidebar navigation**: the pages move into a left sidebar
+  (QListWidget + QStackedWidget, 160-240px with elide+tooltip,
+  Ctrl+1..9, last-page restore), and the window gains the geometry
+  restore/reset menu (addendum §3.1).
+
+### Changed
+- **Screen wording (addendum §3.2)**: Gate is "Export for Sharing /
+  共有前の書き出し" and its receipt is the "sharing record /
+  書き出し記録" on the screen; every Gate and Cohort control carries a
+  §3.3 tooltip including the SHA-256 sentence on the fingerprint
+  checkbox. The sidebar rows keep the original 6px padding and every
+  row state names an explicit text colour, so the fixed light sidebar
+  stays readable under an OS dark theme (selected row: explicit
+  background + colour).
+- **Receipt ruling (§2-5, the 2026-11-10 instruction)**: the sharing
+  record identifies items and pairs by sequence number only
+  (include_paths off) while the input fingerprints stay; the READMEs
+  gain the one-line --no-paths advice for CLI runs whose submission
+  file names carry personal names.
+- **Wheel and distribution (§3.10)**: the two sample packs (gate/* and
+  cohort/*) travel in the wheel as package-data, so `gate --self-check`
+  / `cohort --self-check` run from an installed wheel; the distribution
+  smoke runs from the wheel (measured: gate 13/13, cohort 19/19, exit
+  0, in a fresh venv).  The distribution half joins the contract (the
+  2026-11-11 ruling): every release.yml bundle carries both packs
+  (`--add-data "samples/cohort"` on Windows and macOS), the frozen
+  artifact runs both self-checks headlessly right after the build and
+  any exit code but 0 fails the release (measured on Linux: gate 13/13
+  and cohort 19/19, exit 0, with no display available - and the
+  missing-pack state measured at exit 2 / sample_pack_not_available),
+  `workflow_dispatch` joins the tag push for the no-publish trial run
+  (the release attach sits behind the push guard), and the frozen GUI
+  entry dispatches `gate|cohort --self-check` to the CLI before
+  QApplication so a self-check run never opens a window.
+- **Dependency floors**: sieve-scope raised from >=1.3.0 to >=1.5.0 and
+  sieve-referee from >=1.3.0 to >=1.6.0 (sieve-lens stays >=0.22.0) -
+  the cohort lane consumes Scope's strip_base_sources and the letter
+  §3.5 span contract, and Referee's explanation spans, the
+  quotes/bibliography citation split and the 16-char base minimum. All
+  three floors are published on PyPI (measured 2026-11-10).
+
 ## [2.0.0] - 2026-11-08
 
 ### Added

@@ -17,6 +17,7 @@ the .ico/.icns used when packaging with PyInstaller) and a Help > About
 dialog with version info and links to the other Sieve engines.
 """
 
+import re
 import sys
 from pathlib import Path
 from multiprocessing import freeze_support
@@ -31,10 +32,13 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QTableWidget, QTableWidgetItem,
     QTabWidget, QPlainTextEdit, QFileDialog, QMessageBox, QHeaderView,
     QDialog, QFormLayout, QGridLayout, QSpinBox, QDialogButtonBox, QCheckBox,
-    QComboBox, QListWidget, QScrollArea,
+    QComboBox, QListWidget, QListWidgetItem, QScrollArea, QSizePolicy,
+    QStackedWidget, QProgressBar,
 )
 from PySide6.QtGui import (QColor, QIcon, QAction, QPainter, QPixmap,
-                           QFontDatabase)
+                           QFontDatabase, QShortcut, QKeySequence, QPalette)
+
+from PySide6 import QtCore
 
 from sieve_tray import (
     run_scan,
@@ -220,6 +224,52 @@ class CrowdWorker(QObject):
             self.finished.emit(summary)
         except Exception as e:
             self.failed.emit(f"{type(e).__name__}: {e}")
+
+class CohortWorker(QObject):
+    """Runs run_cohort() on a background thread (the same pattern as
+    ScanWorker / SanitizeWorker / CrowdWorker; the §3.9 ruling: the
+    Cohort run leaves the UI thread, so a big comparison never freezes
+    the window).  The run's arguments are captured at start - the
+    worker reads none of the widgets."""
+
+    progress = Signal(str)
+    finished = Signal(object)   # cohort receipt dict
+    failed = Signal(str)
+
+    def __init__(self, input_dir: Path, output_dir: Path, *,
+                 base_paths=None, exclude_quotes: bool = False,
+                 exclude_bibliography: bool = False,
+                 include_paths: bool = True,
+                 include_input_hashes: bool = True,
+                 storage_path=None, lang: str = "en"):
+        super().__init__()
+        self.input_dir = input_dir
+        self.output_dir = output_dir
+        self.base_paths = list(base_paths or [])
+        self.exclude_quotes = exclude_quotes
+        self.exclude_bibliography = exclude_bibliography
+        self.include_paths = include_paths
+        self.include_input_hashes = include_input_hashes
+        self.storage_path = storage_path
+        self.lang = lang
+
+    def run(self):
+        try:
+            from sieve_tray import run_cohort
+            receipt = run_cohort(
+                Path(self.input_dir), Path(self.output_dir),
+                base_paths=[Path(p) for p in self.base_paths] or None,
+                exclude_quotes=self.exclude_quotes,
+                exclude_bibliography=self.exclude_bibliography,
+                include_paths=self.include_paths,
+                include_input_hashes=self.include_input_hashes,
+                storage_path=self.storage_path,
+                lang=self.lang,
+                progress=self.progress.emit)
+            self.finished.emit(receipt)
+        except Exception as e:
+            self.failed.emit(f"{type(e).__name__}: {e}")
+
 
 def normalize_rect(x1, y1, x2, y2):
     """Normalize two drag endpoints into an x/y/w/h dict (direction-
@@ -706,6 +756,7 @@ class AboutDialog(QDialog):
         ("Sieve Lens", "https://github.com/neguseatama/sieve-lens"),
         ("Sieve Scope", "https://github.com/neguseatama/sieve-scope"),
         ("Sieve Referee", "https://github.com/neguseatama/sieve-referee"),
+        ("Sieve Order", "https://github.com/neguseatama/sieve-order"),
         ("Sieve Redact", "https://github.com/neguseatama/sieve-redact"),
         ("Sieve Crowd", "https://github.com/neguseatama/sieve-crowd"),
     ]
@@ -756,7 +807,105 @@ class AboutDialog(QDialog):
         layout.addWidget(close_btn)
 
 
-class GatePage(QWidget):
+
+class _GeoRect:
+    """A plain rectangle (no Qt types) for the pure geometry function."""
+
+    def __init__(self, x=0, y=0, width=0, height=0):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+
+
+class WindowGeometry:
+    """The pure decision result: the client origin and the size."""
+
+    def __init__(self, x, y, width, height):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+
+
+def compute_window_geometry(available_rects, saved=None, *,
+                            max_size=(1100, 720),
+                            min_size=(880, 560)):
+    """The addendum §3.1 window geometry - a pure function (no Qt
+    types): the initial window is 80% of the primary screen's
+    available geometry, capped at max_size, raised to min_size, and a
+    screen smaller than the minimum gets the screen size (fit-exactly);
+    the position is centered with odd remainders to the left/top.
+
+    A saved geometry is restored only when it is valid: it overlaps at
+    least 50% of the window area with some screen's available geometry
+    AND both sides are at least half the minimum (a WM that returns a
+    slightly different frame must not defeat the restore, but a clearly
+    broken value - below half the minimum or off every screen - falls
+    back to the initial decision).
+    """
+    rects = []
+    for r in available_rects or []:
+        def _val(obj, name):
+            v = getattr(obj, name, 0)
+            if callable(v):
+                try:
+                    v = v()
+                except Exception:
+                    v = 0
+            return v or 0
+        rects.append(_GeoRect(_val(r, "x"), _val(r, "y"),
+                              _val(r, "width"), _val(r, "height")))
+    if not rects or rects[0].width <= 0 or rects[0].height <= 0:
+        primary = _GeoRect(0, 0, 1280, 800)
+        rects = [primary]
+    primary = rects[0]
+
+    def _initial():
+        w = min(int(primary.width * 8 // 10), max_size[0])
+        h = min(int(primary.height * 8 // 10), max_size[1])
+        if primary.width < min_size[0] or primary.height < min_size[1]:
+            w = primary.width
+            h = primary.height
+        else:
+            w = max(w, min_size[0])
+            h = max(h, min_size[1])
+        x = primary.x + (primary.width - w) // 2
+        y = primary.y + (primary.height - h) // 2
+        return WindowGeometry(x, y, w, h)
+
+    if saved is None:
+        return _initial()
+    try:
+        sw = int(saved["width"])
+        sh = int(saved["height"])
+        sx = int(saved.get("x", 0))
+        sy = int(saved.get("y", 0))
+    except (TypeError, ValueError, KeyError):
+        return _initial()
+    if sw <= 0 or sh <= 0:
+        return _initial()
+    # validity: overlap >= 50% of the window area with some screen, and
+    # both sides at least half the minimum
+    if sw < min_size[0] // 2 or sh < min_size[1] // 2:
+        return _initial()
+    area = sw * sh
+    window = _GeoRect(sx, sy, sw, sh)
+    ok = False
+    for r in rects:
+        ox = max(0, min(window.x + window.width, r.x + r.width)
+                 - max(window.x, r.x))
+        oy = max(0, min(window.y + window.height, r.y + r.height)
+                 - max(window.y, r.y))
+        if ox * oy * 2 >= area:
+            ok = True
+            break
+    if not ok:
+        return _initial()
+    return WindowGeometry(sx, sy, sw, sh)
+
+
+class GatePage(QScrollArea):
     """The v2.0.0 Gate tab (request §3.6): pick an input folder and an
     output folder, run the Gate, open the report / the handoff folder,
     verify a receipt, run the self-check.  The texts describe the
@@ -766,12 +915,25 @@ class GatePage(QWidget):
         super().__init__(parent)
         self.lang = lang
         self._ = lambda key, **kw: tr(lang, key, **kw)
-        layout = QVBoxLayout(self)
+        # v2.1.0 (addendum §3.1 ruling ③b): the page itself is a scroll
+        # area so the layout's minimum height drops (the M1 tests keep
+        # their direct attribute access on the page object).
+        self.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.setWidgetResizable(True)
+        # addendum 2 §1.2: the page gets narrower by the sidebar's width,
+        # so the layout must be able to shrink the scroll area and let
+        # the content overflow into scrollbars instead
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
 
         grid = QGridLayout()
         grid.addWidget(QLabel(self._("gate_input_label")), 0, 0)
         self.gate_input_edit = QLineEdit()
         self.gate_input_edit.setReadOnly(True)
+        # v2.1.0 (addendum §3.3): the tooltips say what happens and
+        # where it goes; the four must-have points ride verbatim.
+        self.gate_input_edit.setToolTip(self._("gate_input_tooltip"))
         gate_browse = QPushButton(self._("browse_folder"))
         gate_browse.clicked.connect(self.choose_input)
         grid.addWidget(self.gate_input_edit, 0, 1)
@@ -779,6 +941,7 @@ class GatePage(QWidget):
         grid.addWidget(QLabel(self._("gate_output_label")), 1, 0)
         self.gate_output_edit = QLineEdit()
         self.gate_output_edit.setReadOnly(True)
+        self.gate_output_edit.setToolTip(self._("gate_output_tooltip"))
         gate_browse_out = QPushButton(self._("browse_folder"))
         gate_browse_out.clicked.connect(self.choose_output)
         grid.addWidget(self.gate_output_edit, 1, 1)
@@ -786,40 +949,72 @@ class GatePage(QWidget):
         layout.addLayout(grid)
 
         self.redact_label = QLabel(self._("gate_redact_label"))
+        self.redact_label.setWordWrap(True)
         layout.addWidget(self.redact_label)
         self.gate_no_redact_cb = QCheckBox(self._("gate_no_redact"))
+        self.gate_no_redact_cb.setToolTip(self._("gate_no_redact_tooltip"))
         self.gate_no_paths_cb = QCheckBox(self._("gate_no_paths"))
+        self.gate_no_paths_cb.setToolTip(self._("gate_no_paths_tooltip"))
         self.gate_no_input_hashes_cb = QCheckBox(
             self._("gate_no_input_hashes"))
+        self.gate_no_input_hashes_cb.setToolTip(
+            self._("gate_no_input_hashes_tooltip"))
         for cb in (self.gate_no_redact_cb, self.gate_no_paths_cb,
                    self.gate_no_input_hashes_cb):
             layout.addWidget(cb)
 
-        row = QHBoxLayout()
+        row = QGridLayout()
         self.gate_run_button = QPushButton(self._("gate_run_button"))
+        self.gate_run_button.setToolTip(self._("gate_run_tooltip"))
         self.gate_run_button.clicked.connect(self.run_gate)
         self.gate_open_report_button = QPushButton(
             self._("gate_open_report_button"))
+        self.gate_open_report_button.setToolTip(self._("gate_report_tooltip"))
         self.gate_open_report_button.clicked.connect(self.open_report)
         self.gate_open_handoff_button = QPushButton(
             self._("gate_open_handoff_button"))
+        self.gate_open_handoff_button.setToolTip(
+            self._("gate_receipt_tooltip"))
         self.gate_open_handoff_button.clicked.connect(self.open_handoff)
         self.gate_verify_button = QPushButton(
             self._("gate_verify_button"))
+        self.gate_verify_button.setToolTip(self._("gate_verify_tooltip"))
         self.gate_verify_button.clicked.connect(self.verify_receipt)
         self.gate_selfcheck_button = QPushButton(
             self._("gate_selfcheck_button"))
+        self.gate_selfcheck_button.setToolTip(
+            self._("gate_selfcheck_tooltip"))
         self.gate_selfcheck_button.clicked.connect(self.run_self_check)
-        for b in (self.gate_run_button, self.gate_open_report_button,
-                  self.gate_open_handoff_button, self.gate_verify_button,
-                  self.gate_selfcheck_button):
-            row.addWidget(b)
+        # v2.1.0 (addendum 2 §1.2): the page is narrower by the
+        # sidebar's width, so the five buttons wrap into a 2x3 grid -
+        # the button row must not overflow horizontally at the minimum
+        # size (measured 2026-11-10: the one-row layout overflowed the
+        # 682px page viewport by 38px)
+        row.addWidget(self.gate_run_button, 0, 0)
+        row.addWidget(self.gate_open_report_button, 0, 1)
+        row.addWidget(self.gate_open_handoff_button, 0, 2)
+        row.addWidget(self.gate_verify_button, 1, 0)
+        row.addWidget(self.gate_selfcheck_button, 1, 1)
         layout.addLayout(row)
+
+        # v2.1.1 (GU-T06): the empty state carries the §3.4 placeholder,
+        # the same shape as the Cohort page (the 2026-11-11 acceptance
+        # found the Gate side missing it); the run results keep flowing
+        # to the log below
+        self.summary_label = QLabel(self._("gate_summary_placeholder"))
+        self.summary_label.setWordWrap(True)
+        # the §3.4 placeholder colour rides the palette's own
+        # placeholder role, so it stays readable under an OS dark
+        # palette too (the same rule as the Cohort page's)
+        self.summary_label.setForegroundRole(
+            QPalette.ColorRole.PlaceholderText)
+        layout.addWidget(self.summary_label)
 
         self.gate_log = QPlainTextEdit()
         self.gate_log.setReadOnly(True)
         layout.addWidget(self.gate_log, stretch=1)
         self._gate_out = None
+        self.setWidget(content)
 
     def choose_input(self):
         from PySide6.QtWidgets import QFileDialog
@@ -854,6 +1049,10 @@ class GatePage(QWidget):
                 "gate_done", items=receipt["summary"]["items"],
                 produced=receipt["summary"]["produced"],
                 not_produced=receipt["summary"]["not_produced"]))
+            # the receipt is named on the screen (addendum §3.2: 受領書
+            # is the 書き出し記録)
+            self.gate_log.appendPlainText(self._(
+                "gate_receipt_label") + ": handoff/gate-receipt.json")
             self._gate_out = Path(out)
         except Exception as e:  # noqa: BLE001
             self.gate_log.appendPlainText(
@@ -908,6 +1107,271 @@ class GatePage(QWidget):
                 "actual={actual!r}".format(**d))
 
 
+class CohortPage(QScrollArea):
+    """The v2.1.0 Cohort tab (request §3.9): pick a submissions folder,
+    an output folder and optional base documents, choose the
+    exclusions, run the comparison outside the UI thread with a
+    progress display, then open the report / the record folder, verify
+    the comparison record, run the self-check.  The texts speak the
+    operation (addendum §3.2) and every control carries a tooltip
+    (§3.3); the empty result area shows the §3.4 placeholder until the
+    first run replaces it."""
+
+    def __init__(self, lang: str, storage=None, parent=None):
+        super().__init__(parent)
+        self.lang = lang
+        self._ = lambda key, **kw: tr(lang, key, **kw)
+        self.storage = storage
+        # the same page shape as GatePage (§3.1 ruling ③b + addendum 2
+        # §1.2): the page itself is a scroll area with the Ignored
+        # policy so the layout's minimum height stays at/under 560 and
+        # the sidebar's width can be reclaimed by the page.
+        self.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.setWidgetResizable(True)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel(self._("cohort_input_label")), 0, 0)
+        self.cohort_input_edit = QLineEdit()
+        self.cohort_input_edit.setReadOnly(True)
+        self.cohort_input_edit.setPlaceholderText(
+            self._("cohort_input_placeholder"))
+        self.cohort_input_edit.setToolTip(self._("cohort_input_tooltip"))
+        cohort_browse = QPushButton(self._("browse_folder"))
+        cohort_browse.clicked.connect(self.choose_input)
+        grid.addWidget(self.cohort_input_edit, 0, 1)
+        grid.addWidget(cohort_browse, 0, 2)
+        grid.addWidget(QLabel(self._("cohort_output_label")), 1, 0)
+        self.cohort_output_edit = QLineEdit()
+        self.cohort_output_edit.setReadOnly(True)
+        self.cohort_output_edit.setToolTip(self._("cohort_output_tooltip"))
+        cohort_browse_out = QPushButton(self._("browse_folder"))
+        cohort_browse_out.clicked.connect(self.choose_output)
+        grid.addWidget(self.cohort_output_edit, 1, 1)
+        grid.addWidget(cohort_browse_out, 1, 2)
+        grid.addWidget(QLabel(self._("cohort_base_label")), 2, 0)
+        self.cohort_base_edit = QLineEdit()
+        self.cohort_base_edit.setReadOnly(True)
+        self.cohort_base_edit.setToolTip(self._("cohort_base_tooltip"))
+        # v2.1.1 (GU-T18): this picks files (the multi-file picker),
+        # not a folder - the wording says files, and the picker lives
+        # on the page so the acceptance can reach it
+        self.cohort_browse_base = QPushButton(self._("cohort_base_pick"))
+        self.cohort_browse_base.clicked.connect(self.choose_base)
+        grid.addWidget(self.cohort_base_edit, 2, 1)
+        grid.addWidget(self.cohort_browse_base, 2, 2)
+        layout.addLayout(grid)
+
+        self.cohort_quotes_cb = QCheckBox(self._("cohort_quotes_cb"))
+        self.cohort_quotes_cb.setToolTip(self._("cohort_quotes_tooltip"))
+        self.cohort_bib_cb = QCheckBox(self._("cohort_bib_cb"))
+        self.cohort_bib_cb.setToolTip(self._("cohort_bib_tooltip"))
+        layout.addWidget(self.cohort_quotes_cb)
+        layout.addWidget(self.cohort_bib_cb)
+
+        row = QGridLayout()
+        self.cohort_run_button = QPushButton(self._("cohort_run_button"))
+        self.cohort_run_button.setToolTip(self._("cohort_run_tooltip"))
+        self.cohort_run_button.clicked.connect(self.run_cohort)
+        self.cohort_open_report_button = QPushButton(
+            self._("cohort_open_report_button"))
+        self.cohort_open_report_button.setToolTip(
+            self._("cohort_report_tooltip"))
+        self.cohort_open_report_button.clicked.connect(self.open_report)
+        self.cohort_open_local_button = QPushButton(
+            self._("cohort_open_local_button"))
+        self.cohort_open_local_button.setToolTip(
+            self._("cohort_local_tooltip"))
+        self.cohort_open_local_button.clicked.connect(self.open_local)
+        self.cohort_verify_button = QPushButton(
+            self._("cohort_verify_button"))
+        self.cohort_verify_button.setToolTip(self._("cohort_verify_tooltip"))
+        self.cohort_verify_button.clicked.connect(self.verify_record)
+        self.cohort_selfcheck_button = QPushButton(
+            self._("cohort_selfcheck_button"))
+        self.cohort_selfcheck_button.setToolTip(
+            self._("cohort_selfcheck_tooltip"))
+        self.cohort_selfcheck_button.clicked.connect(self.run_self_check)
+        # the same 2x3 wrap as the Gate page (addendum 2 §1.2: no
+        # horizontal overflow at the minimum size)
+        row.addWidget(self.cohort_run_button, 0, 0)
+        row.addWidget(self.cohort_open_report_button, 0, 1)
+        row.addWidget(self.cohort_open_local_button, 0, 2)
+        row.addWidget(self.cohort_verify_button, 1, 0)
+        row.addWidget(self.cohort_selfcheck_button, 1, 1)
+        layout.addLayout(row)
+
+        # the progress display (the §3.9 ruling): a busy bar plus the
+        # live messages - the engine reports the item count up front
+        # and the phases as they happen, and no percentage is invented
+        self.cohort_progress = QProgressBar()
+        self.cohort_progress.setRange(0, 0)  # busy: the engine gives no %
+        self.cohort_progress.setVisible(False)
+        layout.addWidget(self.cohort_progress)
+
+        self.summary_label = QLabel(self._("cohort_summary_placeholder"))
+        self.summary_label.setWordWrap(True)
+        # the §3.4 placeholder colour rides the palette's own
+        # placeholder role, so it stays readable under an OS dark
+        # palette too (the same rule as the sidebar's fixed colours)
+        self.summary_label.setForegroundRole(
+            QPalette.ColorRole.PlaceholderText)
+        layout.addWidget(self.summary_label)
+
+        self.cohort_log = QPlainTextEdit()
+        self.cohort_log.setReadOnly(True)
+        layout.addWidget(self.cohort_log, stretch=1)
+
+        self._cohort_out = None
+        self._cohort_base_paths = []
+        self._cohort_thread: QThread | None = None
+        self._cohort_worker: CohortWorker | None = None
+        self.setWidget(content)
+
+    # -- folder pickers ------------------------------------------------
+
+    def choose_input(self):
+        d = QFileDialog.getExistingDirectory(
+            self, self._("cohort_input_label"))
+        if d:
+            self.cohort_input_edit.setText(d)
+
+    def choose_output(self):
+        d = QFileDialog.getExistingDirectory(
+            self, self._("cohort_output_label"))
+        if d:
+            self.cohort_output_edit.setText(d)
+
+    def choose_base(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, self._("cohort_base_label"))
+        if files:
+            self._cohort_base_paths = files
+            self.cohort_base_edit.setText(", ".join(
+                str(Path(f).name) for f in files))
+
+    # -- the run (outside the UI thread, §3.9 ruling) -------------------
+
+    def run_cohort(self):
+        inp = self.cohort_input_edit.text()
+        out = self.cohort_output_edit.text()
+        if not inp or not out:
+            return
+        if self._cohort_thread is not None and \
+                self._cohort_thread.isRunning():
+            return
+        self._cohort_set_running(True)
+        self._cohort_thread = QThread(self)
+        self._cohort_worker = CohortWorker(
+            Path(inp), Path(out),
+            base_paths=self._cohort_base_paths,
+            exclude_quotes=self.cohort_quotes_cb.isChecked(),
+            exclude_bibliography=self.cohort_bib_cb.isChecked(),
+            include_paths=False, include_input_hashes=True,
+            storage_path=(self.storage.db_path
+                          if self.storage is not None else None),
+            lang=self.lang)
+        self._cohort_worker.moveToThread(self._cohort_thread)
+        self._cohort_thread.started.connect(self._cohort_worker.run)
+        self._cohort_worker.progress.connect(
+            self.cohort_log.appendPlainText)
+        self._cohort_worker.finished.connect(
+            self._on_cohort_finished)
+        self._cohort_worker.failed.connect(self._on_cohort_failed)
+        self._cohort_worker.finished.connect(self._cohort_thread.quit)
+        self._cohort_worker.failed.connect(self._cohort_thread.quit)
+        self._cohort_thread.finished.connect(self._cohort_thread.deleteLater)
+        self._cohort_thread.start()
+
+    def _cohort_set_running(self, running: bool):
+        self.cohort_run_button.setEnabled(not running)
+        self.cohort_progress.setVisible(running)
+
+    def _on_cohort_finished(self, receipt: dict):
+        self._cohort_set_running(False)
+        s = receipt.get("summary") or {}
+        self.cohort_log.appendPlainText(self._(
+            "cohort_record_label") + ": handoff/cohort-receipt.json")
+        self.cohort_log.appendPlainText(self._(
+            "cohort_done", items=s.get("items", 0),
+            compared=s.get("compared", 0),
+            not_compared=s.get("not_compared", 0),
+            flagged=s.get("flagged", 0)))
+        self.summary_label.setText(self._(
+            "cohort_done", items=s.get("items", 0),
+            compared=s.get("compared", 0),
+            not_compared=s.get("not_compared", 0),
+            flagged=s.get("flagged", 0)))
+        self.summary_label.setForegroundRole(QPalette.ColorRole.Text)
+        self._cohort_out = Path(self.cohort_output_edit.text())
+
+    def _on_cohort_failed(self, message: str):
+        self._cohort_set_running(False)
+        self.cohort_log.appendPlainText(message)
+
+    def shutdown_thread(self):
+        """closeEvent help: wind the background comparison down before
+        the window tears the thread reference apart (the same pattern
+        as the scan / sanitize / crowd threads)."""
+        if self._cohort_thread is not None and \
+                self._cohort_thread.isRunning():
+            self._cohort_thread.quit()
+            self._cohort_thread.wait(5000)
+
+    # -- the results ---------------------------------------------------
+
+    def open_report(self):
+        if self._cohort_out is None:
+            return
+        from sieve_tray import open_report_gate
+        open_report_gate(self._cohort_out / "local" / "cohort-report.html")
+
+    def open_local(self):
+        if self._cohort_out is None:
+            return
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl.fromLocalFile(
+            str(self._cohort_out / "local")))
+
+    def verify_record(self):
+        from sieve_tray import verify_gate
+        if self._cohort_out is None:
+            return
+        try:
+            result = verify_gate(
+                self._cohort_out / "handoff" / "cohort-receipt.json",
+                input_dir=(Path(self.cohort_input_edit.text())
+                           if self.cohort_input_edit.text() else None),
+                base_paths=self._cohort_base_paths or None)
+            self.cohort_log.appendPlainText(self._(
+                "cohort_verify_done", overall=result["overall"],
+                scope=result["scope"]))
+        except Exception as e:  # noqa: BLE001
+            self.cohort_log.appendPlainText(
+                f"{type(e).__name__}: {e}")
+
+    def run_self_check(self):
+        from sieve_tray import cohort_self_check
+        result = cohort_self_check()
+        self.show_selfcheck_result(result)
+
+    def show_selfcheck_result(self, result: dict) -> None:
+        if "error" in result:
+            self.cohort_log.appendPlainText(self._(
+                "cohort_selfcheck_unavailable", detail=result["detail"]))
+            return
+        self.cohort_log.appendPlainText(self._(
+            "cohort_selfcheck_done", matching=result["matching"],
+            expected=result["expected"]))
+        for d in result.get("differences", []):
+            self.cohort_log.appendPlainText(
+                "  {file}: {field} expected={expected!r} "
+                "actual={actual!r}".format(**d))
+
+
 class MainWindow(QMainWindow):
     def __init__(self, storage: Storage | None = None, lang=None):
         super().__init__()
@@ -920,11 +1384,20 @@ class MainWindow(QMainWindow):
         self._ = lambda key, **kw: tr(self.lang, key, **kw)
 
         self.setWindowTitle(self._("window_title"))
-        self.resize(1050, 720)
+        self._pending_geometry = None
+        self._apply_window_geometry()
 
         icon_path = resource_path("assets/icon.png")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
+
+        # v2.1.0 (addendum §3.1): the Window menu sits left of Help and
+        # offers the reset-to-initial-size action (macOS NoRole).
+        window_menu = self.menuBar().addMenu(self._("window_menu"))
+        reset_action = QAction(self._("window_reset_action"), self)
+        reset_action.setMenuRole(QAction.NoRole)
+        reset_action.triggered.connect(self._reset_window_geometry)
+        window_menu.addAction(reset_action)
 
         help_menu = self.menuBar().addMenu(self._("help_menu"))
         about_action = QAction(self._("about_action"), self)
@@ -973,8 +1446,49 @@ class MainWindow(QMainWindow):
         picker_row.addWidget(settings_btn)
         layout.addLayout(picker_row)
 
-        # --- results / history tabs ---
-        self.tabs = QTabWidget()
+        # --- results / history navigation -----------------------------
+        # v2.1.0 (addendum 2 = §3.15): the tab row becomes a left sidebar
+        # (a QListWidget equivalent) and a right page stack.  The pages
+        # themselves, the top scan row and the log are unchanged (§1.4).
+        # The selected row carries an explicit background and text
+        # colour: naming ::item:selected at all makes Qt drop the OS
+        # highlight, so without it the selected row paints its white
+        # text over the light sidebar background and the row (e.g. the
+        # tail pages) turns near-invisible (measured 2026-11-10).
+        # The 2026-11-10 follow-up: the rows return to the
+        # original 6px padding (26px rows - nine rows still fit the
+        # 323-329px viewport, and 20px rows are cramped click targets),
+        # and because the sidebar background is a FIXED #f5f6f8, every
+        # row state names an explicit text colour - under an OS dark
+        # palette the palette text would turn white and vanish on that
+        # light background (normal, disabled and selected alike; the
+        # background itself stays fixed, so one colour set serves both
+        # palettes - the dark-palette offscreen renders prove it).
+        self.sidebar = QListWidget()
+        self.sidebar.setObjectName("page_sidebar")
+        self.sidebar.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarAlwaysOff)
+        self.sidebar.setTextElideMode(QtCore.Qt.ElideRight)
+        self.sidebar.setUniformItemSizes(True)
+        self.sidebar.setStyleSheet(
+            "#page_sidebar { background: #f5f6f8; }"
+            "#page_sidebar::item { padding: 6px 8px;"
+            " color: #1a2029; }"
+            "#page_sidebar::item:selected { font-weight: bold;"
+            " border-left: 3px solid #334455;"
+            " background: #dbe3ec; color: #1a2029; }"
+            "#page_sidebar::item:disabled { color: #82898f; }")
+        self.sidebar.setAccessibleName("page navigation")
+        self.sidebar.currentRowChanged.connect(
+            self._on_sidebar_row_changed)
+        self.pages = QStackedWidget()
+        self._page_keys: list = []
+        self._page_name_keys: dict = {}
+        for pos in range(1, 10):
+            shortcut = QShortcut(QKeySequence("Ctrl+%d" % pos), self)
+            shortcut.setContext(QtCore.Qt.ApplicationShortcut)
+            shortcut.activated.connect(
+                lambda pos=pos: self._select_page_at(pos - 1))
 
         self.doc_table = self._make_table(
             [self._("doc_header_file"), self._("doc_header_mask"),
@@ -985,10 +1499,12 @@ class MainWindow(QMainWindow):
         self.doc_filter_edit.textChanged.connect(self._apply_doc_filter)
         self.doc_flagged_only_cb = QCheckBox(self._("flagged_only"))
         self.doc_flagged_only_cb.stateChanged.connect(self._apply_doc_filter)
-        self._doc_tab_index = self.tabs.addTab(
+        self._add_page(
+            "doc",
             self._make_filterable_tab(
-                self.doc_table, self.doc_filter_edit, self.doc_flagged_only_cb),
-            self._("doc_tab", n=0))
+                self.doc_table, self.doc_filter_edit,
+                self.doc_flagged_only_cb),
+            "doc_tab", n=0)
 
         self.code_table = self._make_table(
             [self._("code_header_a"), self._("code_header_b"),
@@ -997,9 +1513,11 @@ class MainWindow(QMainWindow):
         self.code_filter_edit = QLineEdit()
         self.code_filter_edit.setPlaceholderText(self._("filter_by_filename"))
         self.code_filter_edit.textChanged.connect(self._apply_code_filter)
-        self._code_tab_index = self.tabs.addTab(
-            self._make_filterable_tab(self.code_table, self.code_filter_edit),
-            self._("code_tab", n=0))
+        self._add_page(
+            "code",
+            self._make_filterable_tab(self.code_table,
+                                      self.code_filter_edit),
+            "code_tab", n=0)
 
         self.text_table = self._make_table(
             [self._("text_header_a"), self._("text_header_b"),
@@ -1008,9 +1526,11 @@ class MainWindow(QMainWindow):
         self.text_filter_edit = QLineEdit()
         self.text_filter_edit.setPlaceholderText(self._("filter_by_filename"))
         self.text_filter_edit.textChanged.connect(self._apply_text_filter)
-        self._text_tab_index = self.tabs.addTab(
-            self._make_filterable_tab(self.text_table, self.text_filter_edit),
-            self._("text_tab", n=0))
+        self._add_page(
+            "text",
+            self._make_filterable_tab(self.text_table,
+                                      self.text_filter_edit),
+            "text_tab", n=0)
 
         # v0.8.0: Quantifier Audit tab. One row per flagged sentence
         # across all scanned .txt/.md files. Double-click opens a
@@ -1024,9 +1544,11 @@ class MainWindow(QMainWindow):
         self.audit_filter_edit = QLineEdit()
         self.audit_filter_edit.setPlaceholderText(self._("filter_by_filename"))
         self.audit_filter_edit.textChanged.connect(self._apply_audit_filter)
-        self._audit_tab_index = self.tabs.addTab(
-            self._make_filterable_tab(self.audit_table, self.audit_filter_edit),
-            self._("audit_tab", n=0))
+        self._add_page(
+            "audit",
+            self._make_filterable_tab(self.audit_table,
+                                      self.audit_filter_edit),
+            "audit_tab", n=0)
 
         self.history_table = self._make_table([
             self._("history_header_timestamp"), self._("history_header_folder"),
@@ -1044,8 +1566,7 @@ class MainWindow(QMainWindow):
         history_layout.setContentsMargins(0, 0, 0, 0)
         history_layout.addWidget(self.history_table, stretch=1)
         history_layout.addWidget(self.history_clear_btn)
-        self._history_tab_index = self.tabs.addTab(
-            history_container, self._("history_tab", n=0))
+        self._add_page("history", history_container, "history_tab", n=0)
         self.sanitize_history_table = self._make_table([
             self._("history_header_timestamp"),
             self._("history_header_folder"),
@@ -1064,9 +1585,8 @@ class MainWindow(QMainWindow):
         sanitize_history_layout.setContentsMargins(0, 0, 0, 0)
         sanitize_history_layout.addWidget(self.sanitize_history_table, stretch=1)
         sanitize_history_layout.addWidget(self.sanitize_history_clear_btn)
-        self._sanitize_history_tab_index = self.tabs.addTab(
-            sanitize_history_container,
-            self._("sanitize_history_tab", n=0))
+        self._add_page("sanitize_history", sanitize_history_container,
+                       "sanitize_history_tab", n=0)
 
         # --- Crowd tab (sieve-crowd integration): select a table,
         # inspect it, edit the k-anonymity config as JSON, measure
@@ -1231,15 +1751,27 @@ class MainWindow(QMainWindow):
         ])
         crowd_layout.addWidget(self.crowd_history_table)
 
-        self._crowd_tab_index = self.tabs.addTab(crowd_page,
-                                                 self._("crowd_tab"))
+        crowd_page = self._wrap_scroll(crowd_page)
+        self._add_page("crowd", crowd_page, "crowd_tab")
 
         # v2.0.0 (M1 Gate): the Gate tab (request §3.6).
         self.gate_page = GatePage(self.lang)
-        self._gate_tab_index = self.tabs.addTab(self.gate_page,
-                                                self._("gate_tab"))
+        self._add_page("gate", self.gate_page, "gate_tab")
 
-        layout.addWidget(self.tabs, stretch=3)
+        # v2.1.0 (request §3.9): the Cohort tab rides the sidebar as the
+        # ninth page (addendum 2 §1.1 order); the run leaves the UI
+        # thread (the §3.9 ruling) and the history rides the existing
+        # storage (§3.7: one allowlisted cohort_runs row per run).
+        self.cohort_page = CohortPage(self.lang, storage=self.storage)
+        self._add_page("cohort", self.cohort_page, "cohort_tab")
+
+        # --- the body: the sidebar on the left, the page on the right
+        body = QWidget()
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.addWidget(self.sidebar)
+        body_layout.addWidget(self.pages, stretch=1)
+        layout.addWidget(body, stretch=3)
 
         # --- log ---
         layout.addWidget(QLabel(self._("log_label")))
@@ -1247,6 +1779,18 @@ class MainWindow(QMainWindow):
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(500)
         layout.addWidget(self.log_view, stretch=1)
+
+        # the last selected page (§1.3): restored from the settings; a
+        # saved key that no longer exists falls back to the first row
+        try:
+            saved = self.storage.get_setting("last_page")
+        except Exception:
+            saved = None
+        if saved in self._page_keys:
+            self.sidebar.setCurrentRow(self._page_keys.index(saved))
+        else:
+            self.sidebar.setCurrentRow(0)
+        self._recalc_sidebar_width()
 
         # --- export row ---
         export_row = QHBoxLayout()
@@ -1261,6 +1805,151 @@ class MainWindow(QMainWindow):
         self._refresh_history_table()
         self._refresh_crowd_history_table()
 
+
+    # ------------------------------------------------------------------
+    # v2.1.0 (addendum §3.1): the window geometry.  The decision lives
+    # in the pure function compute_window_geometry(); the existing
+    # settings table (Storage) is the only save place (no new store).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _wrap_scroll(page):
+        """Wrap a page into a borderless scroll area (the small-window
+        guarantee for the tall pages)."""
+        area = QScrollArea()
+        area.setFrameShape(QScrollArea.Shape.NoFrame)
+        area.setWidgetResizable(True)
+        # addendum 2 §1.2: shrinkable pages (the overflow scrolls)
+        area.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        area.setWidget(page)
+        return area
+
+    def _screen_rects(self):
+        rects = []
+        screen = self.screen()
+        if screen is None:
+            screen = self.windowHandle().screen() \
+                if self.windowHandle() is not None else None
+        if screen is not None:
+            g = screen.availableGeometry()
+            rects.append(_GeoRect(g.x(), g.y(), g.width(), g.height()))
+        return rects
+
+    def _parse_saved_geometry(self):
+        raw = None
+        try:
+            raw = self.storage.get_setting("window_geometry")
+        except Exception:
+            return None
+        if not raw or not isinstance(raw, str):
+            return None
+        m = re.match(r"^(-?\d+)x(-?\d+)(?:([+-]-?\d+)([+-]-?\d+))?$",
+                     raw.strip())
+        if m is None:
+            return None
+        saved = {"width": int(m.group(1)), "height": int(m.group(2))}
+        saved["x"] = int(m.group(3) or 0)
+        saved["y"] = int(m.group(4) or 0)
+        return saved
+
+    def _move_for_client_origin(self, geo):
+        """Position the frame so the CLIENT origin lands at geo (some
+        window systems draw a frame around the client: the offscreen
+        platform shifts the origin by ~2px).  The client origin is the
+        assertion surface of the addendum §3.1 tests."""
+        dx = dy = 0
+        handle = self.windowHandle()
+        if handle is None:
+            # force the platform window so the frame margins are real
+            # before the first show
+            try:
+                self.winId()
+                handle = self.windowHandle()
+            except Exception:
+                handle = None
+        if handle is not None:
+            try:
+                m = handle.frameMargins()
+                dx, dy = m.left(), m.top()
+            except Exception:
+                dx = dy = 0
+        self.move(geo.x - dx, geo.y - dy)
+
+    def _apply_window_geometry(self):
+        geo = compute_window_geometry(self._screen_rects(),
+                                      self._parse_saved_geometry())
+        self.resize(geo.width, geo.height)
+        self._move_for_client_origin(geo)
+
+    def _reset_window_geometry(self):
+        # the menu action: back to the initial size and position, and
+        # the saved value is updated too
+        geo = compute_window_geometry(self._screen_rects(), None)
+        self.resize(geo.width, geo.height)
+        self._move_for_client_origin(geo)
+        self._pending_geometry = None
+
+    # ------------------------------------------------------------------
+    # v2.1.0 (addendum 2 = §3.15): the sidebar navigation.  The pages
+    # register by key; the counted display names, the width recalc and
+    # the last_page restore ride the existing settings store.
+    # ------------------------------------------------------------------
+
+    def _add_page(self, key: str, widget, name_key: str, n=None) -> None:
+        """Register one page in the sidebar order (§1.1).  The item's
+        text is the display name and doubles as the accessible name
+        (Qt's accessibility reads the item text); the tooltip carries
+        the same full text (§1.2)."""
+        name = self._(name_key) if n is None else self._(name_key, n=n)
+        from PySide6.QtGui import QIcon
+        item = QListWidgetItem(name)
+        item.setData(QtCore.Qt.UserRole, key)
+        item.setToolTip(name)
+        self.sidebar.addItem(item)
+        self.pages.addWidget(widget)
+        self._page_keys.append(key)
+        self._page_name_keys[key] = name_key
+
+    def _on_sidebar_row_changed(self, row: int) -> None:
+        if 0 <= row < self.pages.count():
+            self.pages.setCurrentIndex(row)
+
+    def _select_page(self, key: str) -> None:
+        """Select the page by key (the tab-switching calls' successor)."""
+        if key in self._page_keys:
+            self.sidebar.setCurrentRow(self._page_keys.index(key))
+
+    def _select_page_at(self, row: int) -> None:
+        """Ctrl+1..9 (Cmd on macOS): switch by position (§1.3)."""
+        if 0 <= row < self.sidebar.count():
+            self.sidebar.setCurrentRow(row)
+
+    def _set_page_title(self, key: str, n=None) -> None:
+        """The counted display name update (§1.1: 動的に更新する)."""
+        if key not in self._page_name_keys:
+            return
+        name_key = self._page_name_keys[key]
+        name = self._(name_key) if n is None else self._(name_key, n=n)
+        row = self._page_keys.index(key)
+        item = self.sidebar.item(row)
+        if item is not None:
+            item.setText(name)
+            item.setToolTip(name)
+
+    def _recalc_sidebar_width(self) -> None:
+        """The sidebar width (§1.2): the longest item's text width plus
+        padding, held inside 160..240px; the overflow elides and the
+        tooltip carries the full text.  Recalculated when the language
+        changes (each construction picks the new language's names)."""
+        metrics = self.sidebar.fontMetrics()
+        widest = 0
+        for i in range(self.sidebar.count()):
+            widest = max(widest, metrics.horizontalAdvance(
+                self.sidebar.item(i).text()))
+        width = widest + 44
+        width = max(160, min(240, width))
+        self.sidebar.setFixedWidth(width)
+
     def closeEvent(self, event):
         # v1.4.0: the scan temp file is removed at exit (design §3.1).
         if getattr(self, "_scan_temp_path", None) is not None:
@@ -1274,6 +1963,24 @@ class MainWindow(QMainWindow):
         # QThread object here, since by this point Qt may already have
         # deleted it via deleteLater (finished -> deleteLater, wired in
         # start_scan()) if the scan finished normally long ago.
+        # v2.1.0 (addendum §3.1): restore-save into the existing
+        # settings store; a failure never blocks the close itself.
+        try:
+            g = self.geometry()
+            self.storage.set_setting(
+                "window_geometry",
+                "%dx%d%+d%+d" % (g.width(), g.height(), g.x(), g.y()))
+        except Exception:
+            pass
+        # v2.1.0 (addendum 2 §1.3): the last selected page rides the
+        # same settings store; a failure never blocks the close itself.
+        try:
+            row = self.sidebar.currentRow()
+            if 0 <= row < len(self._page_keys):
+                self.storage.set_setting("last_page",
+                                         self._page_keys[row])
+        except Exception:
+            pass
         if self._scan_running and self._thread is not None:
             self._thread.quit()
             self._thread.wait(5000)
@@ -1283,6 +1990,10 @@ class MainWindow(QMainWindow):
         if getattr(self, "_crowd_thread", None) is not None:
             self._crowd_thread.quit()
             self._crowd_thread.wait(5000)
+        # v2.1.0 (request §3.9): the Cohort comparison winds down like
+        # the other background threads.
+        if getattr(self, "cohort_page", None) is not None:
+            self.cohort_page.shutdown_thread()
         super().closeEvent(event)
 
     @staticmethod
@@ -1532,10 +2243,10 @@ class MainWindow(QMainWindow):
         self.code_table.setRowCount(0)
         self.text_table.setRowCount(0)
         self.audit_table.setRowCount(0)
-        self.tabs.setTabText(self._doc_tab_index, self._("doc_tab", n=0))
-        self.tabs.setTabText(self._code_tab_index, self._("code_tab", n=0))
-        self.tabs.setTabText(self._text_tab_index, self._("text_tab", n=0))
-        self.tabs.setTabText(self._audit_tab_index, self._("audit_tab", n=0))
+        self._set_page_title("doc", n=0)
+        self._set_page_title("code", n=0)
+        self._set_page_title("text", n=0)
+        self._set_page_title("audit", n=0)
 
     def _on_scan_finished(self, result: ScanResult):
         """Main-thread adapter for the scan worker's finished
@@ -1604,8 +2315,7 @@ class MainWindow(QMainWindow):
             if bg is not None:
                 for col in range(3):
                     self.doc_table.item(row, col).setBackground(bg)
-        self.tabs.setTabText(
-            self._doc_tab_index, self._("doc_tab", n=len(result.doc_results)))
+        self._set_page_title("doc", n=len(result.doc_results))
         self.doc_table.setSortingEnabled(True)
         self._apply_doc_filter()
 
@@ -1619,8 +2329,7 @@ class MainWindow(QMainWindow):
             self.code_table.setItem(row, 2, QTableWidgetItem(p["mask"]))
             for col in range(3):
                 self.code_table.item(row, col).setBackground(FLAGGED_BG)
-        self.tabs.setTabText(
-            self._code_tab_index, self._("code_tab", n=len(result.code_pairs)))
+        self._set_page_title("code", n=len(result.code_pairs))
         self.code_table.setSortingEnabled(True)
         self._apply_code_filter()
 
@@ -1639,8 +2348,7 @@ class MainWindow(QMainWindow):
             fg = SIGNAL_FG.get(p["signal"])
             if fg is not None:
                 self.text_table.item(row, 2).setForeground(fg)
-        self.tabs.setTabText(
-            self._text_tab_index, self._("text_tab", n=len(result.text_pairs)))
+        self._set_page_title("text", n=len(result.text_pairs))
         self.text_table.setSortingEnabled(True)
         self._apply_text_filter()
 
@@ -1669,8 +2377,7 @@ class MainWindow(QMainWindow):
             fg = SIGNAL_FG.get(a["signal"])
             if fg is not None:
                 self.audit_table.item(row, 2).setForeground(fg)
-        self.tabs.setTabText(
-            self._audit_tab_index, self._("audit_tab", n=len(result.audit_results)))
+        self._set_page_title("audit", n=len(result.audit_results))
         self.audit_table.setSortingEnabled(True)
         self._apply_audit_filter()
 
@@ -1875,9 +2582,7 @@ class MainWindow(QMainWindow):
                     str(r["integrity_bad_count"])))
             self.sanitize_history_table.item(row, 0).setData(
                 Qt.UserRole, r["id"])
-        self.tabs.setTabText(
-            self._sanitize_history_tab_index,
-            self._("sanitize_history_tab", n=len(rows)))
+        self._set_page_title("sanitize_history", n=len(rows))
         self.sanitize_history_table.setSortingEnabled(True)
 
     def _refresh_history_table(self):
@@ -1901,8 +2606,7 @@ class MainWindow(QMainWindow):
                 row, 6, QTableWidgetItem(str(r.audit_count)))
             # stash the run id on the row for double-click lookup
             self.history_table.item(row, 0).setData(Qt.UserRole, r.id)
-        self.tabs.setTabText(
-            self._history_tab_index, self._("history_tab", n=len(runs)))
+        self._set_page_title("history", n=len(runs))
         self.history_table.setSortingEnabled(True)
         self._refresh_sanitize_history_table()
 
@@ -1954,7 +2658,7 @@ class MainWindow(QMainWindow):
             pairs=len(result.code_pairs), tpairs=len(result.text_pairs),
             audit=len(result.audit_results)))
         self.export_btn.setEnabled(True)
-        self.tabs.setCurrentIndex(self._doc_tab_index)
+        self._select_page("doc")
 
     # ------------------------------------------------------------------
     # Crowd tab (sieve-crowd integration): select a table, inspect it,
@@ -2411,6 +3115,23 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    # v2.1.0 (request §3.10, the 2026-11-11 ruling): the frozen
+    # distribution app runs its own self-checks headlessly - release.yml
+    # starts the built artifact with `gate --self-check` / `cohort
+    # --self-check` right after the build and fails the release when
+    # the exit code is 1 or 2 (0 = the expected observations matched).
+    # The dispatch sits before QApplication, so a self-check run never
+    # opens a window; the GUI launches only without those arguments.
+    # The stdout/stderr guard covers the --windowed builds, where the
+    # streams may be None and the self-check's prints would crash.
+    if len(sys.argv) > 2 and sys.argv[1] in ("gate", "cohort") \
+            and "--self-check" in sys.argv[2:]:
+        if sys.stdout is None:
+            sys.stdout = open(os.devnull, "w", encoding="utf-8")
+        if sys.stderr is None:
+            sys.stderr = open(os.devnull, "w", encoding="utf-8")
+        from sieve_tray import _gate_main
+        sys.exit(_gate_main(sys.argv[1:]))
     app = QApplication(sys.argv)
     icon_path = resource_path("assets/icon.png")
     if icon_path.exists():

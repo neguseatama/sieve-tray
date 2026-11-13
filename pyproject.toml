@@ -20,7 +20,14 @@ requires-python = ">=3.10"
 # consumes visible_text (and the charset diagnostics shape added in
 # 0.22.0); 0.22.0 is published and its UTF-8 results are byte-identical
 # to 0.21.2, so the scan molds are unaffected.
-dependencies = ["sieve-lens>=0.22.0", "sieve-scope>=1.3.0", "sieve-referee>=1.3.0"]
+# v2.1.0 (M2 Cohort, request §3.13): bumped sieve-scope from >=1.3.0 to
+# >=1.5.0 (the cohort lane consumes strip_base_sources and the letter
+# §3.5 span contract) and sieve-referee from >=1.3.0 to >=1.6.0 (the
+# explanation spans, the quotes/bibliography citation split and the
+# 16-char base minimum).  All three floors are published on PyPI
+# (measured 2026-11-10: the 1.5.0 / 1.6.0 / 0.22.0 wheels install in a
+# fresh venv and expose the APIs the suite pins).
+dependencies = ["sieve-lens>=0.22.0", "sieve-scope>=1.5.0", "sieve-referee>=1.6.0"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -47,7 +54,13 @@ sieve-tray = "sieve_tray:main"
 sieve-tray-gui = "sieve_tray_gui:main"
 
 [tool.setuptools]
-packages = ["sieve_crowd", "sieve_order"]
+# 2.1.0 (request §3.10, CH-T14): the two sample packs travel in the
+# wheel so the `gate --self-check` / `cohort --self-check` runs work
+# from an installed wheel without the repo tree.  samples is one plain
+# package (no __init__.py inside gate/ or cohort/ - the pack contents
+# must stay byte-identical to the generator's output), the files ride
+# as package-data.
+packages = ["sieve_crowd", "sieve_order", "samples"]
 py-modules = ["sieve_tray", "sieve_tray_gui", "sieve_tray_storage", "sieve_tray_i18n", "sieve_redact"]
 # v1.1.0 (design doc §3.8-F): the vendored sieve_crowd may carry data files
 # (.json etc.) in a future vendor update (v1.2.0). Declaring the patterns
@@ -61,6 +74,7 @@ py-modules = ["sieve_tray", "sieve_tray_gui", "sieve_tray_storage", "sieve_tray_
 
 [tool.setuptools.package-data]
 sieve_crowd = ["*.json", "*.txt", "*.csv"]
+"samples" = ["gate/*", "cohort/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "sieve_tray.__version__" }

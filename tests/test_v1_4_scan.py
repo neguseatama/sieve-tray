@@ -4,7 +4,7 @@ verification means and the dependency floors.
 
 Non-GUI tests run everywhere.  The GUI wiring tests call
 ``pytest.importorskip("PySide6.QtWidgets")`` first: environments
-without a usable Qt (this sandbox has no libEGL, CI without the gui
+without a usable Qt (headless Linux has no libEGL, CI without the gui
 extra) skip them, and the Mac / CI acceptance runs exercise them.
 
 Contracts (design doc §2/§3):
@@ -410,7 +410,7 @@ def test_t11_input_notes_shape_en_ja(tmp_path):
         # measured on a real Qt (v1.4.0 fix1): QTabWidget hides the
         # non-current pages, so the visibility of the notes only means
         # something once the Crowd tab is the current one
-        win.tabs.setCurrentIndex(win._crowd_tab_index)
+        win._select_page("crowd")
         heading = win.crowd_notes_heading
         notes = win.crowd_notes_label
         assert heading.isVisibleTo(win) and notes.isVisibleTo(win)
@@ -441,14 +441,22 @@ def test_t11_input_notes_shape_en_ja(tmp_path):
 def test_t12_release_workflow_hashes_and_attestation_static():
     text = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8")
-    # the existing three-asset build stays
-    for asset in ("SieveTray-windows.zip", "SieveTray-macos-arm64.zip",
-                  "SieveTray-macos-intel.zip"):
+    # the existing three-asset build stays; the asset names are decided
+    # from the tag (the 2026-11-13 ruling) - github.ref_name rides the
+    # matrix, so tag v2.1.1 ships SieveTray-v2.1.1-windows.zip and
+    # its siblings
+    for asset in ("SieveTray-${{ github.ref_name }}-windows.zip",
+                  "SieveTray-${{ github.ref_name }}-macos-arm64.zip",
+                  "SieveTray-${{ github.ref_name }}-macos-intel.zip"):
         assert asset in text
     assert "actions/checkout@" in text and "actions/upload-artifact@" in text
-    # SHA-256 list: generated, uploaded and attached to the release
+    # SHA-256 list: generated from whatever the tag named, uploaded and
+    # attached to the release
     assert "SHA256SUMS.txt" in text
-    assert "sha256sum" in text
+    assert "sha256sum *.zip" in text
+    # the release body is the CHANGELOG section of the tag version
+    assert "tools/extract_changelog.py" in text
+    assert "body_path: release_body.md" in text
     # provenance attestation: the official action and the permissions
     # (measured 2026-11-06: actions/attest@v4 is the action the official
     # README recommends for new implementations - attest-build-provenance
@@ -461,6 +469,73 @@ def test_t12_release_workflow_hashes_and_attestation_static():
     # still tag-only
     assert "tags:" in text
 
+
+# ---------------------------------------------------------------------------
+# 2.1.1: the Test workflow rides the same three OS legs the release
+# build proves (static check, the TR4-T12 shape)
+# ---------------------------------------------------------------------------
+
+def test_ci_workflow_three_os_matrix_static():
+    text = (REPO_ROOT / ".github" / "workflows" / "test.yml").read_text(
+        encoding="utf-8")
+    # the three release OS legs, with the ubuntu pin that dodged the
+    # 26 image migration (run 43053398991: the apt step died with exit
+    # code 100 before the suite ever started on the migrated image)
+    assert "ubuntu-24.04" in text
+    assert "windows-latest" in text
+    assert "macos-15" in text
+    # the matrix drives runs-on; one leg failing must not kill the rest
+    assert "runs-on: ${{ matrix.os }}" in text
+    assert "fail-fast: false" in text
+    # the Qt library install is Linux-only (the PySide6 wheels need
+    # nothing extra on Windows/macOS) and the vendored sieve_redact
+    # check is cross-platform via the python shell (sha256sum /
+    # python3 / curl are not portable across the three runners)
+    assert "if: runner.os == 'Linux'" in text
+    assert "shell: python" in text
+    # the offscreen platform and the pytest invocation stay
+    assert "QT_QPA_PLATFORM: offscreen" in text
+    assert "python -m pytest -v" in text
+
+
+# ---------------------------------------------------------------------------
+# 2.1.1 (three-OS Test matrix, round 2): the vendored-hash verification is
+# checkout-normalization-proof - the windows runner image ships
+# core.autocrlf and its git may hand the hasher CRLF bytes while the pin
+# certifies the canonical LF blob (run 43210414712: windows-latest died on
+# the verify step, exit 1, in 54s, before the suite ever started)
+# ---------------------------------------------------------------------------
+
+def test_ci_workflow_vendor_verify_lf_canonical_static():
+    text = (REPO_ROOT / ".github" / "workflows" / "test.yml").read_text(
+        encoding="utf-8")
+    # the vendored bytes pass through the LF canonical form before hashing
+    assert 'replace(b"\\r\\n", b"\\n")' in text
+    # the normalization is justified where it happens, not buried
+    assert "core.autocrlf" in text
+
+
+# ---------------------------------------------------------------------------
+# 2.1.1 (three-OS Test matrix, round 3): the repo pins its own checkout
+# normalization - the pytest byte-pins hash the disk bytes and the windows
+# runner image's git checks text files out with CRLF, so the pins cannot
+# certify bytes the working tree does not hold (run #83: windows-latest
+# died in "Run tests", exit 1, while ubuntu-24.04 / macos-15 hashing
+# identical bytes passed)
+# ---------------------------------------------------------------------------
+
+def test_repo_gitattributes_pins_lf_checkout_static():
+    attr = REPO_ROOT / ".gitattributes"
+    assert attr.exists(), (
+        ".gitattributes is missing - the working-tree line endings are "
+        "then whatever each runner image's git config makes of the index, "
+        "and the byte-pins cannot certify that")
+    # the pin itself is checkout-normalization-proof, the run-43210414712
+    # shape: assertions run on the canonical LF form
+    text = attr.read_bytes().replace(b"\r\n", b"\n").decode("utf-8")
+    # every text file checks out in the canonical LF form on all three
+    # runners; the binary assets stay byte-exact
+    assert "* text=auto eol=lf" in text
 
 # ---------------------------------------------------------------------------
 # TR4-T13: README (en/ja) - the first-launch section; heading structure
@@ -495,9 +570,10 @@ def test_t13_readme_first_launch_section_en_ja():
 
 def test_t14_dependency_floors_are_published_versions():
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    # v2.1.0 (M2, request §3.13): refreshed to the published engines.
     assert '"sieve-lens>=0.22.0"' in text
-    assert '"sieve-scope>=1.3.0"' in text
-    assert '"sieve-referee>=1.3.0"' in text
+    assert '"sieve-scope>=1.5.0"' in text
+    assert '"sieve-referee>=1.6.0"' in text
 
 
 # ---------------------------------------------------------------------------
@@ -576,19 +652,19 @@ def test_t15_golden_mold_v130_unchanged():
 
 
 # ---------------------------------------------------------------------------
-# TR4-T16: version pin (refreshed at 2.0.0 - the M1 Gate lane; the
-# 1.4.0 section stays in the CHANGELOG)
+# TR4-T16: version pin (refreshed at 2.1.1 - the release round; the
+# 2.1.0 section stays in the CHANGELOG)
 # ---------------------------------------------------------------------------
 
 def test_t16_version_pins():
-    assert sieve_tray.__version__ == "2.0.0"
+    assert sieve_tray.__version__ == "2.1.1"
     # pyproject keeps the single-source wiring (dynamic version read
     # from sieve_tray.__version__)
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'dynamic = ["version"]' in text
     assert 'version = { attr = "sieve_tray.__version__" }' in text
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert "## [2.0.0]" in changelog
+    assert "## [2.1.1]" in changelog
 
 
 # ---------------------------------------------------------------------------

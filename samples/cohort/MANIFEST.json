@@ -1,0 +1,208 @@
+{
+ "items": [
+  {
+   "expect": {
+    "kind": "document",
+    "status": "compared"
+   },
+   "file": "essay_a.docx",
+   "role": "submission",
+   "sha256": "bf17690d509b48b4a4ca7d9e4227763c66f26d359b0d754a73af84a8ab1517ec"
+  },
+  {
+   "expect": {
+    "kind": "document",
+    "status": "compared"
+   },
+   "file": "essay_b.docx",
+   "role": "submission",
+   "sha256": "469b35dacbe6abfb893106e462a7f9e2e921bf0ab2e2fe205acf74aee39b61ff"
+  },
+  {
+   "expect": {
+    "kind": "document",
+    "removed": {
+     "bibliography": {
+      "max": 80,
+      "min": 30
+     },
+     "quotes": {
+      "max": 190,
+      "min": 100
+     }
+    },
+    "status": "compared"
+   },
+   "file": "quote_a.docx",
+   "role": "submission",
+   "sha256": "1863d751ba5eb422648466c975eea75305944cfbe80fae36ef24c247cf96974a"
+  },
+  {
+   "expect": {
+    "kind": "document",
+    "removed": {
+     "bibliography": {
+      "max": 80,
+      "min": 30
+     },
+     "quotes": {
+      "max": 190,
+      "min": 100
+     }
+    },
+    "status": "compared"
+   },
+   "file": "quote_b.docx",
+   "role": "submission",
+   "sha256": "f5b96c0c0649df6b62c561dc580f0d243b651e0670a01e693542c7d0285d45f3"
+  },
+  {
+   "expect": {},
+   "file": "assignment-base.txt",
+   "role": "base",
+   "sha256": "1db9097badee467c2637e7ece7cbb2350badf9b19f4c9f902f4c2619b4601dbf"
+  },
+  {
+   "expect": {
+    "kind": "document",
+    "removed": {
+     "base": {
+      "max": 170,
+      "min": 90
+     }
+    },
+    "status": "compared"
+   },
+   "file": "assignment_user.docx",
+   "role": "submission",
+   "sha256": "ff70159bf93416dca9f61f7d0ed40c7d2a9e7bb89e636f54b15dd984161dd5cc"
+  },
+  {
+   "expect": {
+    "hidden_count_min": 1,
+    "kind": "document",
+    "status": "compared"
+   },
+   "file": "hidden_note.docx",
+   "role": "submission",
+   "sha256": "ee39e05e68de64714d6e56fed58cd616f895393f80fc56db374532217ad6b458"
+  },
+  {
+   "expect": {
+    "kind": "code",
+    "status": "compared"
+   },
+   "file": "unrelated.js",
+   "role": "submission",
+   "sha256": "06eb440df74e25a5aba91825ac8985f79bea728ad0bb95270d017a98aeb4b551"
+  },
+  {
+   "expect": {
+    "kind": "code",
+    "status": "compared"
+   },
+   "file": "calc_v1.py",
+   "role": "submission",
+   "sha256": "7c4ba2d7e5e5c17305edf1fdeb3d476fdf67349330de96733e08530a60f96694"
+  },
+  {
+   "expect": {
+    "kind": "code",
+    "status": "compared"
+   },
+   "file": "calc_v2.py",
+   "role": "submission",
+   "sha256": "f7a37283e21facfd7929778a00024d5dbec5b19a5628cff11af0d2b3b2cd4429"
+  },
+  {
+   "expect": {
+    "kind": "code",
+    "status": "compared"
+   },
+   "file": "report_app.js",
+   "role": "submission",
+   "sha256": "c43b9a323b61c2edf10d673e40b3b5666590c71c58e1d2fdc77bbee9e714f535"
+  },
+  {
+   "expect": {
+    "kind": "code",
+    "status": "compared"
+   },
+   "file": "report_widget.js",
+   "role": "submission",
+   "sha256": "94c91014a8587c91d4d6bcc04931110f7eb23fbfc8305c6d50bc9b3fa9b55961"
+  }
+ ],
+ "pairs": [
+  {
+   "a": "essay_a.docx",
+   "b": "essay_b.docx",
+   "expect": {
+    "class": "RED",
+    "flagged": true,
+    "lane": "referee",
+    "spans_length_min": 100,
+    "spans_min": 1
+   }
+  },
+  {
+   "a": "quote_a.docx",
+   "b": "quote_b.docx",
+   "expect": {
+    "flagged": false
+   }
+  },
+  {
+   "a": "assignment_user.docx",
+   "b": "essay_a.docx",
+   "expect": {
+    "flagged": false
+   }
+  },
+  {
+   "a": "hidden_note.docx",
+   "b": "essay_a.docx",
+   "expect": {
+    "flagged": false
+   }
+  },
+  {
+   "a": "calc_v1.py",
+   "b": "calc_v2.py",
+   "expect": {
+    "flagged": true,
+    "lane": "scope"
+   }
+  },
+  {
+   "a": "report_app.js",
+   "b": "report_widget.js",
+   "expect": {
+    "flagged": true,
+    "lane": "generic",
+    "per_mille_min": 700
+   }
+  },
+  {
+   "a": "report_app.js",
+   "b": "unrelated.js",
+   "expect": {
+    "flagged": false
+   }
+  },
+  {
+   "a": "report_widget.js",
+   "b": "unrelated.js",
+   "expect": {
+    "flagged": false
+   }
+  }
+ ],
+ "run": {
+  "base": [
+   "assignment-base.txt"
+  ],
+  "exclude_bibliography": true,
+  "exclude_quotes": true
+ }
+}

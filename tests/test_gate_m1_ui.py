@@ -1,10 +1,10 @@
 """Tray 2.0.0 Gate GUI wiring (request §3.6).
 
-GUI tests run only where a usable Qt exists (Mac / CI); this sandbox
-has no libEGL, so _require_qt() skips them (the same pattern as
+GUI tests run only where a usable Qt exists (Mac / CI); headless
+Linux has no libEGL, so _require_qt() skips them (the same pattern as
 test_v1_4_scan.py).  Red stage: the Gate tab and its strings arrive
 with the fix commit, so the assertions fail on a machine with Qt until
-then.  The sandbox measurement therefore never exercises this file.
+then.  The headless measurement therefore never exercises this file.
 """
 
 import pytest
@@ -13,11 +13,13 @@ from test_v1_4_scan import _require_qt
 
 
 def _gate_tab(main_window):
-    tabs = main_window.tabs
-    for i in range(tabs.count()):
-        if tabs.tabText(i) == "Gate":
-            return tabs.widget(i)
-    return None
+    # v2.1.0 (addendum 2): the tab row became the sidebar + the page
+    # stack; the Gate page is looked up by its key (the observation is
+    # unchanged: the same controls on the same page)
+    keys = main_window._page_keys
+    if "gate" not in keys:
+        return None
+    return main_window.pages.widget(keys.index("gate"))
 
 
 def test_gate_tab_present(tmp_path):
@@ -59,8 +61,8 @@ def test_gate_tab_i18n(tmp_path):
                              lang=lang)
         try:
             tab = _gate_tab(win)
-            assert tr(lang, "gate_tab") == win.tabs.tabText(
-                win.tabs.indexOf(tab))
+            row = win._page_keys.index("gate")
+            assert tr(lang, "gate_tab") == win.sidebar.item(row).text()
         finally:
             win.close()
 
