@@ -17,14 +17,17 @@ jobs:
   build:
     strategy:
       fail-fast: false
+      # the asset names are decided from the tag (the 2026-11-13
+      # ruling): github.ref_name rides the matrix, so tag v2.1.1 ships
+      # SieveTray-v2.1.1-windows.zip and its siblings
       matrix:
         include:
           - os: windows-latest
-            asset_name: SieveTray-windows.zip
+            asset_name: SieveTray-${{ github.ref_name }}-windows.zip
           - os: macos-15
-            asset_name: SieveTray-macos-arm64.zip
+            asset_name: SieveTray-${{ github.ref_name }}-macos-arm64.zip
           - os: macos-15-intel
-            asset_name: SieveTray-macos-intel.zip
+            asset_name: SieveTray-${{ github.ref_name }}-macos-intel.zip
 
     runs-on: ${{ matrix.os }}
 
@@ -139,9 +142,11 @@ jobs:
           files: dist/${{ matrix.asset_name }}
 
   release-extras:
-    # v1.4.0: the SHA-256 list of the three assets and the artifact
+    # v1.4.0: the SHA-256 list of the assets and the artifact
     # attestation. No code signing / notarization by decision - the
     # verification means are the hash list and the build provenance.
+    # 2.1.1 (the 2026-11-13 ruling): the release body is the CHANGELOG
+    # section of the tag version, extracted before the final attach.
     # Measured 2026-11-06: actions/attest@v4 is the official action for
     # new implementations (attest-build-provenance v4 is its wrapper);
     # attestations are free for public repositories on all current
@@ -158,6 +163,15 @@ jobs:
       attestations: write
       artifact-metadata: write
     steps:
+      - name: Check out the CHANGELOG
+        uses: actions/checkout@v4
+      - name: Extract the CHANGELOG section for the tag
+        if: github.event_name == 'push'
+        run: |
+          # the release body is the [tag] section of CHANGELOG.md; a tag
+          # without its section fails here (exit 1), structurally - the
+          # tag is cut only after the section exists
+          python3 tools/extract_changelog.py "${GITHUB_REF_NAME#v}" > release_body.md
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -167,15 +181,14 @@ jobs:
       - name: Generate SHA256SUMS.txt
         run: |
           cd artifacts
-          sha256sum SieveTray-windows.zip SieveTray-macos-arm64.zip SieveTray-macos-intel.zip > SHA256SUMS.txt
+          # the names carry the tag, so the list rides the built zips
+          sha256sum *.zip > SHA256SUMS.txt
 
       - name: Attest build provenance
         uses: actions/attest@v4
         with:
           subject-path: |
-            artifacts/SieveTray-windows.zip
-            artifacts/SieveTray-macos-arm64.zip
-            artifacts/SieveTray-macos-intel.zip
+            artifacts/*.zip
 
       - name: Upload SHA256SUMS.txt as a build artifact
         uses: actions/upload-artifact@v4
@@ -183,8 +196,9 @@ jobs:
           name: SHA256SUMS.txt
           path: artifacts/SHA256SUMS.txt
 
-      - name: Attach SHA256SUMS.txt to the GitHub Release
+      - name: Attach SHA256SUMS.txt and the CHANGELOG body to the GitHub Release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/SHA256SUMS.txt
+          body_path: release_body.md
