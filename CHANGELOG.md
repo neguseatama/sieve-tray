@@ -1,5 +1,64 @@
 # Changelog
 
+## [2.1.1] - 2026-11-13
+
+### Fixed
+- **The windows leg of the three-OS Test matrix (run #84: 18 failed,
+  five root classes)**: every path string entering a ScanResult, a
+  report and the history takes the canonical POSIX-slash form (the
+  gate-walk idiom, and `_posix_path_str` at the storage boundary) while
+  the engine still opens the native path; the two sample generators pin
+  `ZipInfo.create_system = 3` and write the cohort MANIFEST through
+  `write_bytes`; the mold fixtures are written with fixed LF
+  (`newline=""`); the POSIX-only observation scenarios (the unreadable
+  chmod lane, the mkfifo lane, the keygen 0o600 pin) ride the v1.4.0
+  `os.name == "posix"` idiom; the GUI startup-geometry pins accept the
+  platform layout minimum (`max(decision, minimumSizeHint())`); and the
+  single-image sanitize history pin compares the canonical form the
+  boundary certifies. The repository pins its own checkout
+  normalization (`.gitattributes`: `* text=auto eol=lf`), so every text
+  file checks out in the canonical LF form the byte-pins certify on all
+  three runners.
+- **gate --self-check rides the 0/1/2 exit codes** (CH-T21): 0 = the
+  expected observations matched, 1 = a difference, 2 = could not run -
+  a difference now exits 1 and fails CI, the same contract the cohort
+  leg already had.
+- **GUI wording**: the Gate result gains its placeholder (GU-T06), the
+  About credits Sieve Order and the tagline names the export (GU-T08),
+  the base picker asks for files (GU-T18), the history header fits
+  (GU-T19).
+
+### Changed
+- **The Test workflow rides the three release OS legs** (ubuntu-24.04 /
+  windows-latest / macos-15 on Python 3.12, fail-fast: false): the
+  distributed Windows/macOS builds are tested on their own runners, and
+  the vendored sieve_redact verification is checkout-normalization-proof.
+- **Release trials without publishing**: release.yml gained
+  workflow_dispatch - the three-OS build and the two frozen-artifact
+  self-checks run headlessly (the frozen GUI entry dispatches
+  gate|cohort --self-check to the CLI before QApplication, exit 1/2
+  fails the release) while every Release attach sits behind the push
+  guard.
+- **Release assets take the tag, and the body comes from the
+  CHANGELOG** (the 2026-11-13 ruling): the asset names ride
+  github.ref_name (SieveTray-v2.1.1-windows.zip and siblings), the
+  SHA-256 list and the provenance attestation follow the built zips,
+  and the release body is the CHANGELOG section of the tag version,
+  extracted by tools/extract_changelog.py - a tag without its CHANGELOG
+  section fails the release structurally.
+- **Version notation is unified** (the 2026-11-13 ruling): the README
+  titles carry the release version as their single version literal,
+  downloads point at releases/latest with the asset names described
+  generically, and one test pins pyproject (dynamic attr) ==
+  __version__ == the first CHANGELOG section == both README titles;
+  the six version observation pins follow the bump.
+
+### Note
+- 2.1.0 was published to PyPI only - no GitHub tag/Release was cut for
+  it (the 2026-11-11 ruling: the pre-fix workflow must not turn a
+  v2.1.0 tag into a Release), and PyPI 2.1.0 stays as published. The
+  first GitHub tag/Release is v2.1.1.
+
 ## [2.1.0] - 2026-11-10
 
 ### Added

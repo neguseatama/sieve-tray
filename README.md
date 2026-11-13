@@ -1,6 +1,6 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v1.4.0
+# Sieve Tray v2.1.1
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
@@ -12,17 +12,17 @@
 > [Sieve Redact](https://github.com/neguseatama/sieve-redact), the masking
 > engine behind the text/image Sanitize actions, and — new in v0.10.0 —
 > [Sieve Crowd](https://github.com/neguseatama/sieve-crowd), the table
-> anonymization engine behind the Anonymize tab. New in v1.4.0, the
-> Anonymize tab also gains a one-click **table observation (`scan`)**:
+> anonymization engine behind the Anonymize tab. The Anonymize tab
+> also carries a one-click **table observation (`scan`)**:
 > Crowd's single-page HTML report of how the table currently looks —
 > roles, groups and hidden-character findings, never cell values —
 > opened straight in your browser. Point it at a folder of
 > submissions and it detects and reports, in one pass, documents containing
 > invisible content or hidden prompts, code pairs with suspicious structural
 > similarity, text pairs that look paraphrased or reused, and sentences that
-> make ungrounded universal claims (hallucination candidates). New in
-> 2.1.0, the **Cohort** tab compares the submissions of a folder against
-> each other and writes a privacy-checked sharing record (`handoff/`);
+> make ungrounded universal claims (hallucination candidates). The
+> **Cohort** tab compares the submissions of a folder against each
+> other and writes a privacy-checked sharing record (`handoff/`);
 > the full report stays on your machine.
 
 [![Test](https://github.com/neguseatama/sieve-tray/actions/workflows/test.yml/badge.svg)](https://github.com/neguseatama/sieve-tray/actions/workflows/test.yml)
@@ -88,7 +88,7 @@ next sequential label (`[REDACTED]1`, `[REDACTED]2`, ...).
 
 ## 👥 Cohort
 
-Cohort (2.1.0) compares the submissions of a folder side by side:
+The **Cohort** tab compares the submissions of a folder side by side:
 documents go through the same Lens/Referee lanes as Gate, `.py` files
 through Scope, and the remaining source languages through the generic
 lane. The output splits the same way - `handoff/` carries the receipt
@@ -259,13 +259,15 @@ Redact removes it with a receipt that proves nothing else changed.
 ### Option 1: Download a pre-built app (recommended)
 
 No Python required. Download the build for your platform from the
-[Releases page](https://github.com/neguseatama/sieve-tray/releases):
+[latest release](https://github.com/neguseatama/sieve-tray/releases/latest) -
+the asset names are decided from the tag, and `<version>` below is the
+release version:
 
 | Platform | Asset |
 |---|---|
-| Windows | `SieveTray-windows.zip` |
-| macOS (Apple Silicon / M-series) | `SieveTray-macos-arm64.zip` |
-| macOS (Intel) | `SieveTray-macos-intel.zip` |
+| Windows | `SieveTray-<version>-windows.zip` |
+| macOS (Apple Silicon / M-series) | `SieveTray-<version>-macos-arm64.zip` |
+| macOS (Intel) | `SieveTray-<version>-macos-intel.zip` |
 
 Unzip and run `SieveTray.exe` / `SieveTray.app`. On first launch, macOS will
 warn that the developer can't be verified (the app isn't code-signed yet) —
@@ -352,15 +354,16 @@ Path("report.html").write_text(render(result))
 ## 🚀 First launch
 
 Download the zip for your platform from the
-[Releases](https://github.com/neguseatama/sieve-tray/releases) page, unzip
-it, and run `SieveTray`. macOS shows its Gatekeeper note once — open
+[latest release](https://github.com/neguseatama/sieve-tray/releases/latest),
+unzip it, and run `SieveTray`. macOS shows its Gatekeeper note once — open
 **System Settings → Privacy & Security** and click **Open Anyway**;
 Windows shows its SmartScreen note once — click **More info** →
 **Run anyway**; after that the app starts normally. Each release also
 publishes a `SHA256SUMS.txt` list next to the assets, so you can verify
-the download before the first start — `shasum -a 256 SieveTray-macos-arm64.zip`
-(macOS/Linux) or `certutil -hashfile SieveTray-windows.zip SHA256`
-(Windows) — and compare it with the list.
+the download before the first start — `shasum -a 256
+SieveTray-<version>-macos-arm64.zip` (macOS/Linux) or `certutil -hashfile
+SieveTray-<version>-windows.zip SHA256` (Windows) — and compare it with
+the list.
 
 ---
 
