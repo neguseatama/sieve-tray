@@ -15,6 +15,7 @@ column exists; if skipped rows start being saved, a column is added
 (recorded in PLAN-v0.6).
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -164,7 +165,11 @@ def test_run_image_sanitize_refreshes_immediately(window, tmp_path):
     t = window.sanitize_history_table
     assert t.rowCount() == 1, \
         "single-image sanitize must refresh the history immediately"
-    assert t.item(0, 2).text() == str(cfg)
+    # the table mirrors the storage boundary, which takes the canonical
+    # POSIX-slash form (sieve_tray_storage._posix_path_str, stage 7c /
+    # run #85's windows leg): compare against the same canonical form
+    # instead of the native str() - identity on POSIX.
+    assert t.item(0, 2).text() == str(cfg).replace(os.sep, "/")
     assert t.item(0, 4).text() == "1 (1)"
     assert window.sidebar.item(
         window._page_keys.index("sanitize_history")).text() == tr(
