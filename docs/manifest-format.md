@@ -262,3 +262,40 @@ changed / removed / added / moved が 1 件でもある差分 = `1`、
 チェックサム）と `check_code` 節を持ち、`receipt_version` は 1 のまま
 （キーのない処理記録は 2.1.1 までと同じ形・同じ digest）。
 主張の範囲は §2 冒頭のとおり限定される（C13）。
+
+## 7. `--verify-page` が書くページと `verify_page` 節
+
+`manifest` と `pack` は `--verify-page` を受けます（§3.5）。
+
+- ページは 1 つの `handoff/verify.html`。**処理記録の前に書く**
+  （処理記録が最後の書き出しという規則を保つ）。外部の読み込み・
+  通信・フォントの参照はなく、ファイル一覧（`path` / `bytes` /
+  `sha256` と、§1 のフォルダ全体チェックサム）を
+  `<script id="seal-data" type="application/json">` として埋め込む。
+  埋め込む JSON は、`sort_keys` の整列・`ensure_ascii=False`・
+  空白なし（§3 の正準形）に `s/</\\u003c/; s/>/\\u003e/; s/&/\\u0026/`
+  を施したもの（名前が閉じタグを挟めないようにする。置換後も有効な
+  JSON で、値は変わらない）。
+- SHA-256 は、ページ内の純 JavaScript 実装（`<script id=
+  "seal-sha256-core">`）で計算する。標準の暗号 API が使える環境でも
+  こちらを使う（挙動を 1 つに固定）。既知の値 4 種（空文字列・`abc`・
+  64 バイト境界・100 万個の `a`）で検算できる（SL-T12）。
+- ページが確かめるのはファイル一覧の一致のみ
+  （same / changed / missing / extra を画面に表示。送信はない）。
+  **照合コード（HMAC）は、ページでは確かめない**（1 行でその旨を
+  表示する）。
+- `--verify-page` を付けた実行の処理記録は、次の任意節を 1 つ足す。
+
+```json
+"verify_page": {"name": "verify.html", "sha256": "sha256:…64 桁…"}
+```
+
+  `sha256` は、書いたページのバイト列そのものの SHA-256。節は
+  digest の計算対象に入る（§3 どおり、body 全体から `digest` を除いた
+  文字列の SHA-256。`check_code` と同じく、後から足す節ではないので
+  順序は `check_code` → `digest` の前に確定する）。
+- `--verify-page` を付けない実行は、ページを書かず、処理記録にも節を
+  足さない（2.1.1 までとバイト等価）。
+- 拒否（終了符号 2）: 差分（`--against`）に `--verify-page` は付けられない。
+  UTF-8 として読めない名前（`path: null` + `path_hex` の項目）は、
+  ブラウザが再現できないため、ページには乗せられない。

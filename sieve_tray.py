@@ -2164,6 +2164,7 @@ _SEAL_DIFF_STATES = ("same", "changed", "removed", "added", "moved")
 
 
 def run_manifest(input_dir, output_dir, against=None, key_file=None,
+                 verify_page=False,
                  progress: Optional[Callable[[str], None]] = None) -> dict:
     """The `manifest` command (M10/M11): the file list of a folder
     (`items` + `skipped` + `duplicates` + the whole-folder checksum) or,
@@ -2171,11 +2172,17 @@ def run_manifest(input_dir, output_dir, against=None, key_file=None,
     bound by the sha group, first pair in path order only).  The
     receipt is written LAST into handoff/; a manifest has no local
     tree.  --key-file adds the optional check_code section; the
-    receipt_version stays 1."""
+    receipt_version stays 1.  --verify-page (the plain list only, not
+    a diff) writes the self-contained handoff/verify.html BEFORE the
+    receipt and records its sha256 in the optional verify_page
+    section."""
     tell = progress or (lambda _m: None)
     root = Path(input_dir)
     if not root.is_dir():
         raise ValueError("manifest: %s is not a directory" % root)
+    if verify_page and against is not None:
+        raise ValueError("manifest: --verify-page rides the plain file "
+                         "list; it does not ride a diff (--against)")
     out = Path(output_dir)
     key = None
     if key_file is not None:
@@ -2303,6 +2310,14 @@ def run_manifest(input_dir, output_dir, against=None, key_file=None,
             },
         }
 
+    if verify_page:
+        page = _seal_write_verify_page(
+            out, items, receipt["summary"]["overall_sha256"])
+        tell("Manifest: verify page %s"
+             % (out / "handoff" / _SEAL_VERIFY_PAGE_NAME))
+        receipt["verify_page"] = {
+            "name": _SEAL_VERIFY_PAGE_NAME,
+            "sha256": "sha256:" + hashlib.sha256(page).hexdigest()}
     if key is not None:
         receipt["check_code"] = {
             "key_id": _seal_check_key_id(key),
@@ -2614,6 +2629,7 @@ _SEAL_ZLIB_NOTE = "バイト列の一致は、同じ zlib でのみ保証され�
 
 
 def run_pack(input_dir, output_zip, deflate=False, key_file=None,
+             verify_page=False,
              progress: Optional[Callable[[str], None]] = None) -> dict:
     """The `pack` command (P1-P8, P11).  The zip is deterministic:
     entries in relative-path byte order (a directory sorts by its bare
@@ -2711,6 +2727,13 @@ def run_pack(input_dir, output_zip, deflate=False, key_file=None,
             "overall_sha256": overall,
         },
     }
+    if verify_page:
+        page = _seal_write_verify_page(zpath.parent, items, overall)
+        tell("Pack: verify page %s"
+             % (zpath.parent / "handoff" / _SEAL_VERIFY_PAGE_NAME))
+        receipt["verify_page"] = {
+            "name": _SEAL_VERIFY_PAGE_NAME,
+            "sha256": "sha256:" + hashlib.sha256(page).hexdigest()}
     if key is not None:
         receipt["check_code"] = {
             "key_id": _seal_check_key_id(key),
@@ -2723,6 +2746,367 @@ def run_pack(input_dir, output_zip, deflate=False, key_file=None,
     tell("Pack: receipt %s"
          % (zpath.parent / "handoff" / "pack-receipt.json"))
     return receipt
+
+
+# ------------------------------------------------------------------------
+# Seal 2.2 / S6: verify.html (request 3.5).  A single self-contained
+# page for the receiving side: no network, no external reference, no
+# font - the file list rides embedded as application/json and the
+# SHA-256 is a pure-JS core, so the behavior is one fixed
+# implementation even where the standard crypto API exists.  The page
+# compares the picked folder against the list (same / changed /
+# missing / extra, shown on screen only) and never touches the check
+# code - one line says verify does that.  The page is written BEFORE
+# the receipt (the receipt stays the last write) and its sha256 rides
+# in the receipt's optional verify_page section; a run without
+# --verify-page writes nothing and its receipt stays byte-identical
+# to 2.1.1.
+
+_SEAL_VERIFY_PAGE_NAME = "verify.html"
+
+_SEAL_VERIFY_PAGE_TEMPLATE = """<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ファイル一覧の確認 / Check the file list</title>
+<style>
+body { font-family: sans-serif; margin: 1.5rem; color: #1a1a1a; background: #ffffff; }
+h1 { font-size: 1.25rem; }
+#seal-lead { color: #444; }
+#seal-progress { margin: 0.5rem 0; color: #555; }
+#seal-summary { font-size: 1.1rem; margin: 0.5rem 0; }
+#seal-overall { word-break: break-all; color: #555; margin: 0.5rem 0; }
+#seal-note { color: #666; margin: 0.5rem 0; }
+table { border-collapse: collapse; margin-top: 0.5rem; }
+th, td { border: 1px solid #bbb; padding: 0.2rem 0.5rem; text-align: left; }
+td.s-same { color: #16630f; }
+td.s-changed { color: #a25a00; }
+td.s-missing { color: #a1200e; }
+td.s-extra { color: #5b3a92; }
+</style>
+</head>
+<body>
+<h1 id="seal-title"></h1>
+<div id="seal-lead"></div>
+<p><input type="file" id="seal-pick" webkitdirectory multiple></p>
+<div id="seal-progress"></div>
+<div id="seal-summary"></div>
+<div id="seal-overall"></div>
+<div id="seal-note"></div>
+<div id="seal-results"></div>
+<noscript><p>このページには JavaScript が必要です。 / This page needs JavaScript.</p></noscript>
+<script id="seal-data" type="application/json">__SEAL_DATA__</script>
+<script id="seal-sha256-core">
+(function (g) {
+"use strict";
+// Pure SHA-256, bound to no page object: it runs the same in a
+// browser tab and in a plain script runner.  One use per instance
+// (hex() pads the state).
+var K = new Int32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+  0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+  0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+  0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+  0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+  0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+  0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+  0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+  0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]);
+function Sha256() {
+  this.h = new Int32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372,
+    0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+  this.w = new Int32Array(64);
+  this.buf = new Uint8Array(64);
+  this.n = 0;
+  this.len = 0;
+}
+Sha256.prototype.update = function (u8) {
+  var off = 0, i;
+  this.len += u8.length;
+  if (this.n > 0) {
+    var take = Math.min(64 - this.n, u8.length);
+    for (i = 0; i < take; i++) { this.buf[this.n + i] = u8[i]; }
+    this.n += take;
+    off = take;
+    if (this.n === 64) { this._block(this.buf, 0); this.n = 0; }
+  }
+  while (off + 64 <= u8.length) { this._block(u8, off); off += 64; }
+  for (i = off; i < u8.length; i++) { this.buf[this.n++] = u8[i]; }
+  return this;
+};
+Sha256.prototype._block = function (p, off) {
+  var w = this.w, h = this.h, i, x, y, s0, s1, a, b, c, d, e, f, g2, hh;
+  for (i = 0; i < 16; i++) {
+    w[i] = ((p[off + 4 * i] << 24) | (p[off + 4 * i + 1] << 16) |
+            (p[off + 4 * i + 2] << 8) | p[off + 4 * i + 3]) | 0;
+  }
+  for (i = 16; i < 64; i++) {
+    x = w[i - 15]; y = w[i - 2];
+    s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3);
+    s1 = ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10);
+    w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
+  }
+  a = h[0]; b = h[1]; c = h[2]; d = h[3];
+  e = h[4]; f = h[5]; g2 = h[6]; hh = h[7];
+  for (i = 0; i < 64; i++) {
+    var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^
+             ((e >>> 25) | (e << 7));
+    var ch = (e & f) ^ (~e & g2);
+    var t1 = (hh + S1 + ch + K[i] + w[i]) | 0;
+    var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^
+             ((a >>> 22) | (a << 10));
+    var mj = (a & b) ^ (a & c) ^ (b & c);
+    var t2 = (S0 + mj) | 0;
+    hh = g2; g2 = f; f = e; e = (d + t1) | 0;
+    d = c; c = b; b = a; a = (t1 + t2) | 0;
+  }
+  h[0] = (h[0] + a) | 0; h[1] = (h[1] + b) | 0;
+  h[2] = (h[2] + c) | 0; h[3] = (h[3] + d) | 0;
+  h[4] = (h[4] + e) | 0; h[5] = (h[5] + f) | 0;
+  h[6] = (h[6] + g2) | 0; h[7] = (h[7] + hh) | 0;
+};
+Sha256.prototype.hex = function () {
+  var hi = Math.floor(this.len / 536870912);
+  var lo = (this.len % 536870912) * 8;
+  var n = this.n, i, out = "";
+  this.buf[n] = 0x80;
+  n += 1;
+  if (n > 56) {
+    while (n < 64) { this.buf[n] = 0; n += 1; }
+    this._block(this.buf, 0);
+    n = 0;
+  }
+  while (n < 56) { this.buf[n] = 0; n += 1; }
+  this.buf[56] = (hi >>> 24) & 255;
+  this.buf[57] = (hi >>> 16) & 255;
+  this.buf[58] = (hi >>> 8) & 255;
+  this.buf[59] = hi & 255;
+  this.buf[60] = (lo >>> 24) & 255;
+  this.buf[61] = (lo >>> 16) & 255;
+  this.buf[62] = (lo >>> 8) & 255;
+  this.buf[63] = lo & 255;
+  this._block(this.buf, 0);
+  for (i = 0; i < 8; i++) {
+    out += ("00000000" + ((this.h[i] >>> 0).toString(16))).slice(-8);
+  }
+  return out;
+};
+g.Sha256 = Sha256;
+})(typeof globalThis !== "undefined" ? globalThis : this);
+</script>
+<script id="seal-app">
+(function (g) {
+"use strict";
+var T = {
+  ja: {
+    title: "フォルダの中身を、ファイル一覧と比べます",
+    lead: "受け取ったフォルダを選ぶと、中身を 1 つずつ調べて、ファイル一覧と比べます。何も送信しません。",
+    pick: "フォルダを選ぶ",
+    working: "しらべています…",
+    progress: "しらべたファイル: {done} / {total}",
+    same: "一致", changed: "ちがう", missing: "足りない", extra: "余分",
+    allOk: "全部、ファイル一覧と一致しました。",
+    notOk: "ファイル一覧と一致しないものがあります。",
+    overall: "フォルダ全体のチェックサム",
+    note: "照合コードの確認は、Sieve Tray の verify で行います。",
+    colFile: "ファイル", colResult: "けっか", colSize: "サイズ"
+  },
+  en: {
+    title: "Check the folder against its file list",
+    lead: "Pick the folder you received. Each file is read and compared with the file list. Nothing is sent anywhere.",
+    pick: "Choose folder",
+    working: "Working…",
+    progress: "Checked: {done} / {total}",
+    same: "Matches", changed: "Changed", missing: "Missing", extra: "Extra",
+    allOk: "Everything matches the file list.",
+    notOk: "Some files do not match the file list.",
+    overall: "Whole-folder checksum",
+    note: "Check codes are verified with Sieve Tray's verify.",
+    colFile: "File", colResult: "Result", colSize: "Size"
+  }
+};
+function lang() {
+  var l = (g.navigator && g.navigator.language) || "en";
+  return String(l).slice(0, 2).toLowerCase() === "ja" ? "ja" : "en";
+}
+function relPathOf(f) {
+  var rp = f.webkitRelativePath || f.name || "";
+  var i = rp.indexOf("/");
+  return i >= 0 ? rp.slice(i + 1) : rp;
+}
+var CHUNK = 1048576;
+function hashFile(file, onProg) {
+  return new Promise(function (resolve, reject) {
+    var h = new Sha256();
+    var off = 0;
+    function next() {
+      var end = Math.min(off + CHUNK, file.size);
+      var fr = new FileReader();
+      fr.onload = function (ev) {
+        h.update(new Uint8Array(ev.target.result));
+        off = end;
+        if (onProg) { onProg(off, file.size); }
+        if (off < file.size) { next(); } else { resolve(h.hex()); }
+      };
+      fr.onerror = function () { reject(new Error("read error")); };
+      fr.readAsArrayBuffer(file.slice(off, end));
+    }
+    next();
+  });
+}
+function computeResults(data, files, onFileDone) {
+  var byPath = new Map();
+  data.entries.forEach(function (en) { byPath.set(en.path, en); });
+  var seen = new Map();
+  var results = [];
+  var p = Promise.resolve();
+  files.forEach(function (f) {
+    p = p.then(function () {
+      var rel = relPathOf(f);
+      return hashFile(f).then(function (hex) {
+        seen.set(rel, true);
+        if (byPath.has(rel)) {
+          var en = byPath.get(rel);
+          results.push({ path: rel,
+            status: (en.sha256 === hex && en.bytes === f.size)
+                    ? "same" : "changed",
+            bytes: f.size, sha256: hex });
+        } else {
+          results.push({ path: rel, status: "extra",
+            bytes: f.size, sha256: hex });
+        }
+        if (onFileDone) { onFileDone(results.length, files.length); }
+      });
+    });
+  });
+  return p.then(function () {
+    data.entries.forEach(function (en) {
+      if (!seen.has(en.path)) {
+        results.push({ path: en.path, status: "missing",
+          bytes: en.bytes, sha256: en.sha256 });
+      }
+    });
+    var counts = { same: 0, changed: 0, missing: 0, extra: 0 };
+    results.forEach(function (r) { counts[r.status] += 1; });
+    return { counts: counts, results: results,
+             overall: data.overall_sha256 };
+  });
+}
+g.SEAL_VERIFY = { computeResults: computeResults, hashFile: hashFile,
+                  text: T, lang: lang };
+function render(wrap, res, t) {
+  var table = document.createElement("table");
+  var head = document.createElement("tr");
+  [t.colFile, t.colResult, t.colSize].forEach(function (h) {
+    var th = document.createElement("th");
+    th.textContent = h;
+    head.appendChild(th);
+  });
+  table.appendChild(head);
+  res.results.forEach(function (r) {
+    var tr = document.createElement("tr");
+    var c1 = document.createElement("td");
+    c1.textContent = r.path;
+    var c2 = document.createElement("td");
+    c2.textContent = t[r.status];
+    c2.className = "s-" + r.status;
+    var c3 = document.createElement("td");
+    c3.textContent = String(r.bytes);
+    tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3);
+    table.appendChild(tr);
+  });
+  wrap.appendChild(table);
+}
+function init() {
+  var el = document.getElementById("seal-data");
+  var pick = document.getElementById("seal-pick");
+  if (!el || !pick) { return; }
+  var data = JSON.parse(el.textContent);
+  var t = T[lang()];
+  document.title = t.title;
+  document.getElementById("seal-title").textContent = t.title;
+  document.getElementById("seal-lead").textContent = t.lead;
+  pick.setAttribute("aria-label", t.pick);
+  document.getElementById("seal-overall").textContent =
+    t.overall + ": " + data.overall_sha256;
+  document.getElementById("seal-note").textContent = t.note;
+  pick.addEventListener("change", function () {
+    var files = Array.prototype.slice.call(pick.files || []);
+    var prog = document.getElementById("seal-progress");
+    var sum = document.getElementById("seal-summary");
+    var wrap = document.getElementById("seal-results");
+    sum.textContent = "";
+    wrap.textContent = "";
+    if (files.length === 0) { return; }
+    prog.textContent = t.working;
+    computeResults(data, files, function (done, total) {
+      prog.textContent = t.progress.replace("{done}", String(done))
+                                   .replace("{total}", String(total));
+    }).then(function (res) {
+      prog.textContent = t.progress.replace("{done}", String(files.length))
+                                   .replace("{total}", String(files.length));
+      var clean = res.counts.same === data.entries.length &&
+                  res.counts.changed === 0 &&
+                  res.counts.missing === 0 && res.counts.extra === 0;
+      sum.textContent = clean ? t.allOk : t.notOk;
+      render(wrap, res, t);
+    });
+  });
+}
+if (typeof document !== "undefined" && document.addEventListener) {
+  document.addEventListener("DOMContentLoaded", init);
+}
+})(typeof globalThis !== "undefined" ? globalThis : this);
+</script>
+</body>
+</html>
+"""
+
+
+def _seal_verify_page_data(items, overall: str) -> dict:
+    """The embedded file list: path / bytes / sha256 per item (the same
+    list the receipt carries, in the same order) plus the whole-folder
+    checksum.  A name that is not valid UTF-8 cannot ride in the page
+    (no browser can produce it), so the page refuses one (exit 2)."""
+    entries = []
+    for it in items:
+        if it["path"] is None:
+            raise ValueError("verify-page: a name that is not valid "
+                             "UTF-8 cannot ride in the page (%s)"
+                             % it.get("path_hex"))
+        entries.append({"path": it["path"], "bytes": it["bytes"],
+                        "sha256": it["sha256"]})
+    return {"entries": entries, "overall_sha256": overall}
+
+
+def _seal_verify_page_bytes(data: dict) -> bytes:
+    """Render the page: the JSON goes into a script block of type
+    application/json with <, > and & escaped so a file name cannot
+    close the block (each escape stays a valid JSON escape)."""
+    blob = json.dumps(data, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"))
+    blob = (blob.replace("<", "\\u003c").replace(">", "\\u003e")
+            .replace("&", "\\u0026"))
+    html = _SEAL_VERIFY_PAGE_TEMPLATE.replace("__SEAL_DATA__", blob)
+    return html.encode("utf-8")
+
+
+def _seal_write_verify_page(base_dir: Path, items, overall: str) -> bytes:
+    """Render and write handoff/verify.html (request 3.5).  The page is
+    written BEFORE the receipt - the receipt stays the last write.
+    Returns the page bytes."""
+    page = _seal_verify_page_bytes(_seal_verify_page_data(items, overall))
+    _gate_write_atomic(base_dir / "handoff" / _SEAL_VERIFY_PAGE_NAME,
+                       page)
+    return page
 
 
 _SEAL_UNPACK_SYMBOLS = ("absolute_path", "parent_ref", "drive_letter",
@@ -5268,6 +5652,8 @@ def _gate_main(argv: List[str]) -> int:
     m.add_argument("--against", type=Path, default=None)
     m.add_argument("--key-file", type=Path, default=None,
                    metavar="PATH")
+    m.add_argument("--verify-page", action="store_true",
+                   help="also write handoff/verify.html (Seal 2.2)")
     # Seal 2.2 (S3): rename plans (default) or applies (--apply) a
     # closed rule; audit-names reports path + symbol only.
     r = sub.add_parser("rename", help="plan (or apply) a rename rule "
@@ -5292,6 +5678,8 @@ def _gate_main(argv: List[str]) -> int:
     pk.add_argument("--deflate", action="store_true")
     pk.add_argument("--key-file", type=Path, default=None,
                     metavar="PATH")
+    pk.add_argument("--verify-page", action="store_true",
+                    help="also write handoff/verify.html (Seal 2.2)")
     up = sub.add_parser("unpack", help="unpack a checked zip (Seal 2.2)")
     up.add_argument("zip_file", type=Path, nargs="?", default=None)
     up.add_argument("-o", "--output", type=Path, default=None)
@@ -5304,9 +5692,14 @@ def _gate_main(argv: List[str]) -> int:
             parser.error("manifest: %s is not a directory" % args.input_dir)
         if args.against is not None and not args.against.is_dir():
             parser.error("manifest: %s is not a directory" % args.against)
-        receipt = run_manifest(
-            args.input_dir, args.output, against=args.against,
-            key_file=args.key_file, progress=print)
+        try:
+            receipt = run_manifest(
+                args.input_dir, args.output, against=args.against,
+                key_file=args.key_file, verify_page=args.verify_page,
+                progress=print)
+        except ValueError as e:
+            parser.error(str(e))  # exit 2 (a diff with --verify-page,
+            # a name that is not UTF-8)
         print("Receipt digest: %s" % receipt["digest"])
         print("Handoff: %s" % (args.output / "handoff"))
         if args.against is None:
@@ -5357,7 +5750,8 @@ def _gate_main(argv: List[str]) -> int:
         try:
             receipt = run_pack(
                 args.input_dir, args.output, deflate=args.deflate,
-                key_file=args.key_file, progress=print)
+                key_file=args.key_file, verify_page=args.verify_page,
+                progress=print)
         except ValueError as e:
             parser.error(str(e))  # exit 2: the placement is unsafe
         print("Receipt digest: %s" % receipt["digest"])
