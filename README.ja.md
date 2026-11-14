@@ -1,6 +1,6 @@
 [English](README.md) | **日本語**
 
-# Sieve Tray v2.1.1
+# Sieve Tray v2.2.0
 
 **汎用観測ツール — Sieveシリーズのデスクトップフロントエンド**
 

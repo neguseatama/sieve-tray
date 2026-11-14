@@ -663,10 +663,10 @@ class TR2_T11_DependencyFloors(unittest.TestCase):
 
 class TR2_T12_Version140(unittest.TestCase):
     """TR2-T12: version across __version__, pyproject and the
-    CHANGELOG (pin refreshed for the 2.1.1 release)."""
+    CHANGELOG (pin refreshed for the 2.2.0 release)."""
 
     def test_version_is_2_0_0(self):
-        self.assertEqual(sieve_tray.__version__, "2.1.1")
+        self.assertEqual(sieve_tray.__version__, "2.2.0")
 
     def test_pyproject_reads_version_from_module(self):
         text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")

@@ -69,7 +69,7 @@ def test_t02_receipt_frame_and_last_write(tmp_path):
     assert receipt["receipt_version"] == 1
     assert receipt["kind"] == "sieve-manifest"
     assert receipt["tool"] == {"name": "sieve-tray",
-                               "version": "2.1.1"}
+                               "version": "2.2.0"}
     assert receipt["settings"]["against"] is None
     assert _digest_ok(receipt)
     handoff = out / "handoff"

@@ -252,7 +252,7 @@ class TestVersionBump(unittest.TestCase):
     def test_version_is_2_0_0(self):
         # v2.1.1: bumped for the release round. Expectation follows
         # the version bump, not a behavior change.
-        self.assertEqual(sieve_tray.__version__, "2.1.1")
+        self.assertEqual(sieve_tray.__version__, "2.2.0")
 
 
 class TestRunScanGroupsArgument(unittest.TestCase):

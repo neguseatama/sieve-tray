@@ -1,5 +1,107 @@
 # Changelog
 
+## [2.2.0] - 2026-11-14
+
+### Added
+- **File list and check code (`manifest`)**: list a folder into a
+  handoff receipt - every regular file as path/bytes/sha256 in
+  relative POSIX form sorted by UTF-8 name bytes (NFC never applied,
+  a name that is not valid UTF-8 rides as path null + path_hex),
+  duplicates confirmed by real byte comparison, and the whole-folder
+  checksum as the hash tree of docs/manifest-format.md §1.
+  `--against` diffs a folder into the closed five states
+  (same/changed/removed/added/moved, moved pairs bound per sha group
+  with one ambiguous_move per multi-candidate group). The receipt
+  keeps the 2.1.1 frame (receipt_version 1) and is written last; a
+  run without the key stays byte-identical in shape.
+- **Check code (`--key-file`)**: gate/cohort/manifest/pack share the
+  optional key file - the receipt gains the check_code section
+  (key_id = the first 8 HMAC bytes in hex, check_code = HMAC over the
+  whole-folder checksum and the canonical receipt body,
+  docs/manifest-format.md §2). `verify` gains `--key-file` and
+  `--root`, adds exactly two not_verifiable reasons
+  (`code_key_missing` / `code_key_mismatch`) while the file-list
+  check keeps running and its results still land in items, and keeps
+  the 0/1/2 exit codes and the published vocabulary; a real
+  difference still dominates not_verifiable, so the list results are
+  never hidden.
+- **Rename and audit-names**: `rename` plans by default and never
+  touches the source - `--apply` builds the renamed copy at
+  <out>/renamed (the rule fields are closed - seq / seq:width / stem
+  / ext / hash8 / parent - and collisions are detected at the plan
+  stage over exact + casefold + NFC against each other and the
+  existing directories); `audit-names` audits files AND directories
+  with the closed 8 symbols and reports path + symbol only. The
+  handoff carries the rule, the counts and the mapping hash only -
+  the names stay in local/rename-plan.json
+  (docs/rename-procedure.md).
+- **Pack and unpack**: `pack` writes the deterministic zip (entries
+  in bare-path byte order, 1980-01-01 00:00:00 stamps, ZIP_STORED by
+  default, --deflate on file entries only) at `-o` itself next to a
+  handoff/pack-receipt.json carrying zip_sha256 and the
+  manifest-identical whole-folder checksum; `unpack` runs every
+  safety check (absolute path, `..` component, drive letter, and
+  collision over exact/casefold/file-inside-file) BEFORE creating
+  anything and refuses with zero extraction (exit 1, the receipt
+  still written); the roundtrip is byte-identical including empty
+  directories.
+- **verify.html (`--verify-page`)**: manifest/pack can write the
+  self-contained handoff/verify.html BEFORE the receipt and record
+  its sha256 in the optional verify_page section - the file list is
+  embedded as escaped canonical JSON (a file name cannot close the
+  script block), the SHA-256 is a pure-JS core checked against 4
+  known values, and the receiver picks a folder (webkitdirectory)
+  and reads every file through Blob.slice in 1 MiB chunks; same /
+  changed / missing / extra is shown on screen only in plain ja and
+  en - no network, no external references, and the check-code
+  verification stays with Sieve Tray's verify.
+- **Draw (`draw`)**: a verifiable draw over a roster - key(x) =
+  SHA-256(UTF-8(seed) || NUL || x), the items ordered by key bytes
+  and dealt round-robin into k groups (--groups, or --size so the
+  last group can be short); the result with the names lands in
+  local/draw-result.json (written before the receipt) and the
+  receipt carries the roster hash, the public seed, the parameters
+  and the result hash - never the names. docs/draw-procedure.md
+  spells the procedure byte by byte with two measured known values
+  (KV-D1/KV-D2) and the seed warning sentence.
+- **The PDF clause**: the Gate document lane short-circuits a PDF to
+  unobserved / engine_unavailable (detail
+  pdf_visible_extraction_disabled) BEFORE any engine.observe call,
+  regardless of pypdf presence - pypdf's visible extraction ignores
+  the 3 Tr render mode, so observing a PDF is where the invisible
+  text would start to leak.
+- **GUI**: the sidebar grows to twelve pages - the three new pages
+  (en: Manifest & Check Code / Rename / Draw, ja: ファイル一覧と照合コード /
+  名前の整理 / 抽選・班分け) run the real engines behind the same
+  manners (a description written from the actual behavior, a tooltip
+  on every part, a placeholder in the result field), the scan
+  operation row shows on the scan pages only, and the settings ride
+  the menu as a PreferencesRole action (macOS relocates it into the
+  application menu, Windows/Linux keep it in the window menu). The
+  new pages render uncut at the 880x560 minimum under ja/en and a
+  dark palette, and last_page restores them too.
+- **README and docs**: the Gate/Cohort sections are rewritten for the
+  general software-manual style (the old technical paragraphs moved
+  verbatim into docs/receipt-reference.md with one link line in each
+  README), the three new features get sections in the same four
+  manners (what it does, up to 3 numbered steps, one command block,
+  one docs link), and the screenshots are re-shot offscreen at
+  1042x900 for both languages (8 shots) with the icon at width 96.
+
+### Changed
+- **Lens extra**: the dependency is now
+  sieve-lens[html-css-full]>=0.22.0 (the floor unchanged) - measured
+  2026-11-14 in a fresh venv: a bare install cannot observe the
+  hidden HTML text (the item is reported engine_unavailable) while
+  the same input is observed and flagged once tinycss2 + cssselect2
+  are present; pypdf stays out because the Gate PDF lane
+  short-circuits by design with or without it. Both READMEs name the
+  extra packages in the install note.
+- **Screen vocabulary**: the screen strings and the new docs follow
+  the M2 vocabulary ruling (キーファイル / 処理記録); the ja wording
+  drops the legacy words and docs/manifest-format.md says 順序付け
+  (sort key).
+
 ## [2.1.1] - 2026-11-13
 
 ### Fixed

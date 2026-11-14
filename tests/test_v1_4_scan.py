@@ -654,12 +654,12 @@ def test_t15_golden_mold_v130_unchanged():
 
 
 # ---------------------------------------------------------------------------
-# TR4-T16: version pin (refreshed at 2.1.1 - the release round; the
+# TR4-T16: version pin (refreshed at 2.2.0 - the release round; the
 # 2.1.0 section stays in the CHANGELOG)
 # ---------------------------------------------------------------------------
 
 def test_t16_version_pins():
-    assert sieve_tray.__version__ == "2.1.1"
+    assert sieve_tray.__version__ == "2.2.0"
     # pyproject keeps the single-source wiring (dynamic version read
     # from sieve_tray.__version__)
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
