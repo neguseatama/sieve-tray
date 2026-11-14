@@ -34,9 +34,11 @@ import argparse
 import ast
 import builtins
 import hashlib
+import hmac
 import html
 import json
 import os
+import stat as stat_module
 import sys
 import tempfile
 import webbrowser
@@ -1869,6 +1871,101 @@ def _gate_walk(input_dir: Path):
                          else str(rel).replace(os.sep, "/"))
     items.sort(key=_gate_rel_sort_key)
     return items
+
+
+# ------------------------------------------------------------------------
+# Seal 2.2 shared parts: the hash tree (the whole-folder checksum) and
+# the check_code section.  The byte-level spec is docs/manifest-format.md;
+# SL-T01 reads the two known values back from that document, so the
+# document and this implementation cannot drift apart.
+
+def _seal_tree_rows(folder: Path):
+    """One row per child that is a regular file or a directory, mixed
+    into ONE list sorted by (UTF-8 name bytes, kind byte d < f):
+
+        kind NUL name NUL child-checksum LF
+
+    kind is b"f" for a file (child checksum = SHA-256 of the bytes) and
+    b"d" for a directory (child checksum = the same calculation applied
+    recursively; an empty directory hashes to SHA-256(b"")).  Names are
+    used as-is - NFC is never applied - and carried as UTF-8 bytes
+    (surrogateescape gives back the raw bytes of a non-UTF-8 name).
+    Symlinks and special files carry no row; a file that cannot be read
+    carries no row either (the manifest lane records it in skipped).
+    """
+    rows = []
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return rows
+    entries = []
+    for name in names:
+        p = folder / name
+        try:
+            st = os.lstat(p)
+        except OSError:
+            continue
+        if stat_module.S_ISDIR(st.st_mode):
+            entries.append((name.encode("utf-8", "surrogateescape"),
+                            b"d", p))
+        elif stat_module.S_ISREG(st.st_mode):
+            entries.append((name.encode("utf-8", "surrogateescape"),
+                            b"f", p))
+        # symlinks and special files carry no row
+    entries.sort(key=lambda t: (t[0], t[1]))
+    for name_bytes, kind, p in entries:
+        if kind == b"d":
+            child = _seal_overall_sha256(p)
+        else:
+            try:
+                digest = hashlib.sha256()
+                with open(p, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        digest.update(chunk)
+                child = digest.hexdigest()
+            except OSError:
+                continue  # unreadable: no row here; skipped records why
+        rows.append(kind + b"\x00" + name_bytes + b"\x00"
+                    + child.encode("ascii") + b"\n")
+    return rows
+
+
+def _seal_overall_sha256(folder: Path) -> str:
+    """The whole-folder checksum: SHA-256 over the concatenated rows of
+    the folder (docs/manifest-format.md section 1).  An empty folder is
+    SHA-256(b"")."""
+    return hashlib.sha256(b"".join(_seal_tree_rows(folder))).hexdigest()
+
+
+_SEAL_CHECK_KEY_ID_LABEL = b"sieve-check-key-id"
+
+
+def _seal_check_key_id(key: bytes) -> str:
+    """The key identifier: HMAC-SHA256(key, "sieve-check-key-id"),
+    first 8 bytes, 16 lowercase hex characters."""
+    return hmac.new(key, _SEAL_CHECK_KEY_ID_LABEL,
+                    hashlib.sha256).hexdigest()[:16]
+
+
+def _seal_check_code(key: bytes, overall_sha256: str, receipt: dict) -> str:
+    """The check code: HMAC-SHA256 over
+
+        overall_sha256 ASCII (64 bytes) + b":" + canonical JSON of the
+        receipt minus the check_code section and the digest
+
+    The canonical JSON is the same byte string the digest recomputation
+    uses (sorted keys, no spaces, ensure_ascii=False, NO trailing LF -
+    the written file has one, the message does not).  Adding the
+    check_code section therefore keeps the digest of a pre-existing
+    receipt stable: _gate_digest hashes every key except digest.
+    """
+    body = {k: v for k, v in receipt.items()
+            if k not in ("check_code", "digest")}
+    blob = json.dumps(body, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")).encode("utf-8")
+    msg = overall_sha256.encode("ascii") + b":" + blob
+    return "hmac-sha256:" + hmac.new(key, msg,
+                                     hashlib.sha256).hexdigest()
 
 
 def _gate_charset_check(data: bytes):
