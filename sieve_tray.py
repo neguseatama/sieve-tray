@@ -3109,6 +3109,120 @@ def _seal_write_verify_page(base_dir: Path, items, overall: str) -> bytes:
     return page
 
 
+# ------------------------------------------------------------------------
+# Seal 2.2 / S7: draw (request 3.6).  A verifiable draw over a roster:
+# key(x) = SHA-256( UTF-8(seed) || NUL || x ), the items sorted by key
+# bytes then item bytes, dealt round-robin into k groups (k = --groups,
+# or ceil(items / --size)).  The grouping with the names lands in
+# local/draw-result.json (written BEFORE the receipt); the receipt
+# lands in handoff/ LAST and carries the roster hash, the seed, the
+# parameters and the result hash only - never the names.  The claim
+# stays limited: this seed with this roster gives this result - the
+# procedure and the two known values live in docs/draw-procedure.md
+# and SL-T14 reads them back.
+
+def _seal_roster_lines(roster: Path):
+    """The roster: one item per line.  A CRLF terminator is accepted
+    (the CR is a terminator, not item data); the normalized roster is
+    the lines joined with LF plus one trailing LF.  Returns
+    (items, roster_bytes).  An empty roster, a blank line and a roster
+    that is not valid UTF-8 are refused (exit 2)."""
+    raw = roster.read_bytes()
+    lines = raw.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()  # the one trailing LF terminator
+    items = []
+    for ln in lines:
+        if ln.endswith(b"\r"):
+            ln = ln[:-1]
+        if ln == b"":
+            raise ValueError("draw: the roster has an empty line")
+        try:
+            ln.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError("draw: the roster is not valid UTF-8")
+        items.append(ln)
+    if not items:
+        raise ValueError("draw: the roster is empty")
+    return items, b"\n".join(items) + b"\n"
+
+
+def _seal_draw_keys(seed: str, items):
+    """key(x) = SHA-256( UTF-8(seed) || NUL || x ) for every item; the
+    seed is the public string (docs/draw-procedure.md section 2)."""
+    sb = seed.encode("utf-8")
+    return [hashlib.sha256(sb + b"\x00" + x).digest() for x in items]
+
+
+def _seal_draw_order(items, keys):
+    """The deal order: key bytes ascending, ties by item bytes
+    ascending (docs/draw-procedure.md section 2)."""
+    return sorted(range(len(items)),
+                  key=lambda i: (keys[i], items[i]))
+
+
+def run_draw(roster_file, seed, output_dir, groups=None, size=None,
+             progress: Optional[Callable[[str], None]] = None) -> dict:
+    """The `draw` command (request 3.6, SL-T14).  A verifiable draw:
+    the items are ordered by SHA-256(seed || NUL || x) with ties by
+    item bytes and dealt round-robin into k groups (k = --groups, or
+    ceil(items / --size)).  The grouping (with names) lands at
+    local/draw-result.json, written BEFORE the receipt; the receipt is
+    written LAST into handoff/ and carries the roster hash (the lines
+    joined with LF plus one trailing LF), the seed, the parameters and
+    the result hash (the written local file's bytes) - never the
+    names.  Exactly one of --groups and --size is required."""
+    tell = progress or (lambda _m: None)
+    if (groups is None) == (size is None):
+        raise ValueError("draw: exactly one of --groups and --size "
+                         "is required")
+    if groups is not None and groups < 1:
+        raise ValueError("draw: --groups must be 1 or more")
+    if size is not None and size < 1:
+        raise ValueError("draw: --size must be 1 or more")
+    rp = Path(roster_file)
+    if not rp.is_file():
+        raise ValueError("draw: %s is not a file" % rp)
+    out = Path(output_dir)
+    items, roster_bytes = _seal_roster_lines(rp)
+    n = len(items)
+    k = groups if groups is not None else -(-n // size)
+    order = _seal_draw_order(items, _seal_draw_keys(seed, items))
+    names = [x.decode("utf-8") for x in items]
+    groups_list = [[] for _ in range(k)]
+    for pos, i in enumerate(order):
+        groups_list[pos % k].append(names[i])
+    result = {"groups": groups_list,
+              "ordered": [names[i] for i in order]}
+    local_bytes = _gate_norm_json(result).encode("utf-8")
+    # the result (with the names) is local/ and lands BEFORE the
+    # receipt - the receipt stays the last write
+    _gate_write_atomic(out / "local" / "draw-result.json", local_bytes)
+    tell("Draw: result %s" % (out / "local" / "draw-result.json"))
+    receipt = {
+        "receipt_version": 1,
+        "kind": "sieve-draw",
+        "tool": {"name": "sieve-tray", "version": __version__},
+        "engines": {},
+        "settings": {"seed": seed, "groups": k, "size": size},
+        "items": [],
+        "skipped": [],
+        "summary": {
+            "roster_sha256": "sha256:" +
+                hashlib.sha256(roster_bytes).hexdigest(),
+            "result_sha256": "sha256:" +
+                hashlib.sha256(local_bytes).hexdigest(),
+            "items": n,
+            "groups": k,
+        },
+    }
+    receipt["digest"] = _gate_digest(receipt)
+    _gate_write_atomic(out / "handoff" / "draw-receipt.json",
+                       _gate_norm_json(receipt).encode("utf-8"))
+    tell("Draw: receipt %s" % (out / "handoff" / "draw-receipt.json"))
+    return receipt
+
+
 _SEAL_UNPACK_SYMBOLS = ("absolute_path", "parent_ref", "drive_letter",
                         "collision")
 
@@ -5683,6 +5797,16 @@ def _gate_main(argv: List[str]) -> int:
     up = sub.add_parser("unpack", help="unpack a checked zip (Seal 2.2)")
     up.add_argument("zip_file", type=Path, nargs="?", default=None)
     up.add_argument("-o", "--output", type=Path, default=None)
+    # Seal 2.2 (S7): a verifiable draw over a roster - the names stay
+    # in local/, the receipt carries hashes and parameters only.
+    d = sub.add_parser("draw", help="a verifiable draw over a roster "
+                                    "(Seal 2.2)")
+    d.add_argument("roster", type=Path, nargs="?", default=None)
+    d.add_argument("--seed", required=True, metavar="TEXT")
+    dg = d.add_mutually_exclusive_group(required=True)
+    dg.add_argument("--groups", type=int, metavar="N")
+    dg.add_argument("--size", type=int, metavar="N")
+    d.add_argument("-o", "--output", type=Path, default=None)
     args = parser.parse_args(argv)
 
     if args.cmd == "manifest":
@@ -5757,6 +5881,22 @@ def _gate_main(argv: List[str]) -> int:
         print("Receipt digest: %s" % receipt["digest"])
         print("Zip: %s" % args.output)
         print("Handoff: %s" % (args.output.parent / "handoff"))
+        return 0
+    if args.cmd == "draw":
+        if args.roster is None or args.output is None:
+            parser.error("draw needs a roster and -o/--output")
+        if not args.roster.is_file():
+            parser.error("draw: %s is not a file" % args.roster)
+        try:
+            receipt = run_draw(args.roster, args.seed, args.output,
+                               groups=args.groups, size=args.size,
+                               progress=print)
+        except ValueError as e:
+            parser.error(str(e))  # exit 2 (a malformed roster or
+            # parameter)
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Result: %s" % (args.output / "local"
+                              / "draw-result.json"))
         return 0
     if args.cmd == "unpack":
         if args.zip_file is None or args.output is None:
@@ -5851,7 +5991,7 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] in ("gate", "verify",
                                              "cohort", "manifest",
                                              "rename", "audit-names",
-                                             "pack", "unpack"):
+                                             "pack", "unpack", "draw"):
         sys.exit(_gate_main(sys.argv[1:]))
     parser = argparse.ArgumentParser(prog="sieve-tray")
     parser.add_argument("input_dir", type=Path,
