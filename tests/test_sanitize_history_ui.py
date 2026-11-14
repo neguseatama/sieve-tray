@@ -75,7 +75,12 @@ def test_sanitize_history_tab_structure(window):
     # the count moves 8 -> 9 with the §3.9 Cohort page (the same
     # structure-pin change the addendum 2 §3 ruling permits, reported
     # with the §3.9 commit)
-    assert window.sidebar.count() == 9  # v0.8.0: +1 Audit, v1.0.0: +1 Crowd, v2.0.0: +1 Gate, v2.1.0: +1 Cohort
+    # the count moves 9 -> 12 with the §3.7 pages of 2.2.0 (the same
+    # structure-pin change the addendum 2 §3 ruling permits, reported
+    # with the §3.7 commit)
+    # v0.8.0: +1 Audit, v1.0.0: +1 Crowd, v2.0.0: +1 Gate, v2.1.0: +1 Cohort,
+    # v2.2.0: +1 Manifest, +1 Rename, +1 Draw
+    assert window.sidebar.count() == 12
     label = window.sidebar.item(
         window._page_keys.index("sanitize_history")).text()
     assert label == tr("en", "sanitize_history_tab", n=0), \

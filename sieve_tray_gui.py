@@ -1372,6 +1372,399 @@ class CohortPage(QScrollArea):
                 "actual={actual!r}".format(**d))
 
 
+class ManifestPage(QScrollArea):
+    """The v2.2.0 file-list page (request §3.7): pick an input folder
+    and an output folder, optionally a key file and the browser check
+    page, write the file list, open the handoff / local folder.  The
+    texts describe the actual behavior (addendum §3.2) and every part
+    carries a tooltip (§3.3); the result field carries the §3.4
+    placeholder."""
+
+    def __init__(self, lang: str, parent=None):
+        super().__init__(parent)
+        self.lang = lang
+        self._ = lambda key, **kw: tr(lang, key, **kw)
+        self.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.setWidgetResizable(True)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
+
+        self.desc_label = QLabel(self._("manifest_desc"))
+        self.desc_label.setWordWrap(True)
+        layout.addWidget(self.desc_label)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel(self._("manifest_input_label")), 0, 0)
+        self.manifest_input_edit = QLineEdit()
+        self.manifest_input_edit.setReadOnly(True)
+        self.manifest_input_edit.setToolTip(self._("manifest_input_tooltip"))
+        manifest_browse_in = QPushButton(self._("browse_folder"))
+        manifest_browse_in.setToolTip(self._("manifest_input_tooltip"))
+        manifest_browse_in.clicked.connect(self.choose_input)
+        grid.addWidget(self.manifest_input_edit, 0, 1)
+        grid.addWidget(manifest_browse_in, 0, 2)
+        grid.addWidget(QLabel(self._("manifest_output_label")), 1, 0)
+        self.manifest_output_edit = QLineEdit()
+        self.manifest_output_edit.setReadOnly(True)
+        self.manifest_output_edit.setToolTip(
+            self._("manifest_output_tooltip"))
+        manifest_browse_out = QPushButton(self._("browse_folder"))
+        manifest_browse_out.setToolTip(self._("manifest_output_tooltip"))
+        manifest_browse_out.clicked.connect(self.choose_output)
+        grid.addWidget(self.manifest_output_edit, 1, 1)
+        grid.addWidget(manifest_browse_out, 1, 2)
+        grid.addWidget(QLabel(self._("manifest_key_label")), 2, 0)
+        self.manifest_key_edit = QLineEdit()
+        self.manifest_key_edit.setReadOnly(True)
+        self.manifest_key_edit.setPlaceholderText(
+            self._("manifest_key_placeholder"))
+        self.manifest_key_edit.setToolTip(self._("manifest_key_tooltip"))
+        manifest_browse_key = QPushButton(self._("browse_folder"))
+        manifest_browse_key.setToolTip(self._("manifest_key_tooltip"))
+        manifest_browse_key.clicked.connect(self.choose_key)
+        grid.addWidget(self.manifest_key_edit, 2, 1)
+        grid.addWidget(manifest_browse_key, 2, 2)
+        layout.addLayout(grid)
+
+        self.manifest_verify_page_cb = QCheckBox(
+            self._("manifest_verify_page_cb"))
+        self.manifest_verify_page_cb.setToolTip(
+            self._("manifest_verify_page_tooltip"))
+        layout.addWidget(self.manifest_verify_page_cb)
+
+        row = QHBoxLayout()
+        self.manifest_run_button = QPushButton(self._("manifest_run_button"))
+        self.manifest_run_button.setToolTip(self._("manifest_run_tooltip"))
+        self.manifest_run_button.clicked.connect(self.run_manifest)
+        self.manifest_open_handoff_button = QPushButton(
+            self._("manifest_open_handoff_button"))
+        self.manifest_open_handoff_button.setToolTip(
+            self._("manifest_open_handoff_tooltip"))
+        self.manifest_open_handoff_button.clicked.connect(self.open_handoff)
+        self.manifest_open_local_button = QPushButton(
+            self._("manifest_open_local_button"))
+        self.manifest_open_local_button.setToolTip(
+            self._("manifest_open_local_tooltip"))
+        self.manifest_open_local_button.clicked.connect(self.open_local)
+        row.addWidget(self.manifest_run_button)
+        row.addWidget(self.manifest_open_handoff_button)
+        row.addWidget(self.manifest_open_local_button)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self.summary_label = QLabel(self._("manifest_summary_placeholder"))
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setForegroundRole(
+            QPalette.ColorRole.PlaceholderText)
+        layout.addWidget(self.summary_label)
+
+        self.manifest_log = QPlainTextEdit()
+        self.manifest_log.setReadOnly(True)
+        self.manifest_log.setToolTip(self._("manifest_log_tooltip"))
+        layout.addWidget(self.manifest_log, stretch=1)
+        self._out = None
+        self.setWidget(content)
+
+    def choose_input(self):
+        d = QFileDialog.getExistingDirectory(self,
+                                             self._("manifest_input_label"))
+        if d:
+            self.manifest_input_edit.setText(d)
+
+    def choose_output(self):
+        d = QFileDialog.getExistingDirectory(
+            self, self._("manifest_output_label"))
+        if d:
+            self.manifest_output_edit.setText(d)
+
+    def choose_key(self):
+        d, _filter = QFileDialog.getOpenFileName(
+            self, self._("manifest_key_label"))
+        if d:
+            self.manifest_key_edit.setText(d)
+
+    def run_manifest(self):
+        from sieve_tray import run_manifest
+        inp = self.manifest_input_edit.text()
+        out = self.manifest_output_edit.text()
+        if not inp or not out:
+            return
+        try:
+            receipt = run_manifest(
+                Path(inp), Path(out),
+                key_file=(Path(self.manifest_key_edit.text())
+                          if self.manifest_key_edit.text() else None),
+                verify_page=self.manifest_verify_page_cb.isChecked(),
+                progress=lambda m: self.manifest_log.appendPlainText(m))
+            s = receipt.get("summary") or {}
+            self.summary_label.setText(self._(
+                "manifest_done", items=s.get("items", 0),
+                skipped=s.get("skipped", 0),
+                overall=s.get("overall_sha256", "")))
+            self.summary_label.setForegroundRole(QPalette.ColorRole.Text)
+            self.manifest_log.appendPlainText(self._(
+                "manifest_receipt_label")
+                + ": handoff/manifest-receipt.json")
+            self._out = Path(out)
+        except Exception as e:  # noqa: BLE001
+            self.manifest_log.appendPlainText(
+                f"{type(e).__name__}: {e}")
+
+    def open_handoff(self):
+        if self._out is None:
+            return
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl.fromLocalFile(
+            str(self._out / "handoff")))
+
+    def open_local(self):
+        if self._out is None:
+            return
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl.fromLocalFile(
+            str(self._out / "local")))
+
+
+class RenamePage(QScrollArea):
+    """The v2.2.0 rename page (request §3.7): pick an input folder, an
+    output folder and one rule; the default draws up the plan only,
+    Apply builds the renamed copies.  The texts describe the actual
+    behavior and every part carries a tooltip."""
+
+    def __init__(self, lang: str, parent=None):
+        super().__init__(parent)
+        self.lang = lang
+        self._ = lambda key, **kw: tr(lang, key, **kw)
+        self.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.setWidgetResizable(True)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
+
+        self.desc_label = QLabel(self._("rename_desc"))
+        self.desc_label.setWordWrap(True)
+        layout.addWidget(self.desc_label)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel(self._("rename_input_label")), 0, 0)
+        self.rename_input_edit = QLineEdit()
+        self.rename_input_edit.setReadOnly(True)
+        self.rename_input_edit.setToolTip(self._("rename_input_tooltip"))
+        rename_browse_in = QPushButton(self._("browse_folder"))
+        rename_browse_in.setToolTip(self._("rename_input_tooltip"))
+        rename_browse_in.clicked.connect(self.choose_input)
+        grid.addWidget(self.rename_input_edit, 0, 1)
+        grid.addWidget(rename_browse_in, 0, 2)
+        grid.addWidget(QLabel(self._("rename_output_label")), 1, 0)
+        self.rename_output_edit = QLineEdit()
+        self.rename_output_edit.setReadOnly(True)
+        self.rename_output_edit.setToolTip(self._("rename_output_tooltip"))
+        rename_browse_out = QPushButton(self._("browse_folder"))
+        rename_browse_out.setToolTip(self._("rename_output_tooltip"))
+        rename_browse_out.clicked.connect(self.choose_output)
+        grid.addWidget(self.rename_output_edit, 1, 1)
+        grid.addWidget(rename_browse_out, 1, 2)
+        grid.addWidget(QLabel(self._("rename_pattern_label")), 2, 0)
+        self.rename_pattern_edit = QLineEdit()
+        self.rename_pattern_edit.setPlaceholderText(
+            self._("rename_pattern_placeholder"))
+        self.rename_pattern_edit.setToolTip(self._("rename_pattern_tooltip"))
+        grid.addWidget(self.rename_pattern_edit, 2, 1, 1, 2)
+        layout.addLayout(grid)
+
+        self.rename_apply_cb = QCheckBox(self._("rename_apply_cb"))
+        self.rename_apply_cb.setToolTip(self._("rename_apply_tooltip"))
+        layout.addWidget(self.rename_apply_cb)
+        self.rename_no_paths_cb = QCheckBox(self._("rename_no_paths_cb"))
+        self.rename_no_paths_cb.setToolTip(self._("rename_no_paths_tooltip"))
+        layout.addWidget(self.rename_no_paths_cb)
+
+        row = QHBoxLayout()
+        self.rename_run_button = QPushButton(self._("rename_run_button"))
+        self.rename_run_button.setToolTip(self._("rename_run_tooltip"))
+        self.rename_run_button.clicked.connect(self.run_rename)
+        row.addWidget(self.rename_run_button)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self.summary_label = QLabel(self._("rename_summary_placeholder"))
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setForegroundRole(
+            QPalette.ColorRole.PlaceholderText)
+        layout.addWidget(self.summary_label)
+
+        self.rename_log = QPlainTextEdit()
+        self.rename_log.setReadOnly(True)
+        self.rename_log.setToolTip(self._("rename_log_tooltip"))
+        layout.addWidget(self.rename_log, stretch=1)
+        self.setWidget(content)
+
+    def choose_input(self):
+        d = QFileDialog.getExistingDirectory(self,
+                                             self._("rename_input_label"))
+        if d:
+            self.rename_input_edit.setText(d)
+
+    def choose_output(self):
+        d = QFileDialog.getExistingDirectory(
+            self, self._("rename_output_label"))
+        if d:
+            self.rename_output_edit.setText(d)
+
+    def run_rename(self):
+        from sieve_tray import run_rename
+        inp = self.rename_input_edit.text()
+        out = self.rename_output_edit.text()
+        pattern = self.rename_pattern_edit.text()
+        if not inp or not out or not pattern:
+            return
+        try:
+            receipt = run_rename(
+                Path(inp), Path(out), pattern,
+                apply=self.rename_apply_cb.isChecked(),
+                no_paths=self.rename_no_paths_cb.isChecked(),
+                progress=lambda m: self.rename_log.appendPlainText(m))
+            s = receipt.get("summary") or {}
+            self.summary_label.setText(self._(
+                "rename_done", files=s.get("files", 0),
+                collisions=s.get("collisions", 0)))
+            self.summary_label.setForegroundRole(QPalette.ColorRole.Text)
+        except Exception as e:  # noqa: BLE001
+            self.rename_log.appendPlainText(
+                f"{type(e).__name__}: {e}")
+
+
+class DrawPage(QScrollArea):
+    """The v2.2.0 draw page (request §3.7): pick a roster file, enter
+    the seed and either the number of groups or the members per group,
+    deal the roster.  The names stay in the local folder; the record
+    in the handoff folder carries the checksums and the seed only.
+    The texts describe the actual behavior."""
+
+    def __init__(self, lang: str, parent=None):
+        super().__init__(parent)
+        self.lang = lang
+        self._ = lambda key, **kw: tr(lang, key, **kw)
+        self.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.setWidgetResizable(True)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
+
+        self.desc_label = QLabel(self._("draw_desc"))
+        self.desc_label.setWordWrap(True)
+        layout.addWidget(self.desc_label)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel(self._("draw_roster_label")), 0, 0)
+        self.draw_roster_edit = QLineEdit()
+        self.draw_roster_edit.setReadOnly(True)
+        self.draw_roster_edit.setToolTip(self._("draw_roster_tooltip"))
+        draw_browse = QPushButton(self._("browse_folder"))
+        draw_browse.setToolTip(self._("draw_roster_tooltip"))
+        draw_browse.clicked.connect(self.choose_roster)
+        grid.addWidget(self.draw_roster_edit, 0, 1)
+        grid.addWidget(draw_browse, 0, 2)
+        grid.addWidget(QLabel(self._("draw_seed_label")), 1, 0)
+        self.draw_seed_edit = QLineEdit()
+        self.draw_seed_edit.setToolTip(self._("draw_seed_tooltip"))
+        grid.addWidget(self.draw_seed_edit, 1, 1, 1, 2)
+        grid.addWidget(QLabel(self._("draw_groups_label")), 2, 0)
+        self.draw_groups_spin = QSpinBox()
+        self.draw_groups_spin.setRange(0, 999)
+        self.draw_groups_spin.setToolTip(self._("draw_groups_tooltip"))
+        grid.addWidget(self.draw_groups_spin, 2, 1)
+        grid.addWidget(QLabel(self._("draw_size_label")), 3, 0)
+        self.draw_size_spin = QSpinBox()
+        self.draw_size_spin.setRange(0, 999)
+        self.draw_size_spin.setToolTip(self._("draw_size_tooltip"))
+        grid.addWidget(self.draw_size_spin, 3, 1)
+        grid.addWidget(QLabel(self._("draw_output_label")), 4, 0)
+        self.draw_output_edit = QLineEdit()
+        self.draw_output_edit.setReadOnly(True)
+        self.draw_output_edit.setToolTip(self._("draw_output_tooltip"))
+        draw_browse_out = QPushButton(self._("browse_folder"))
+        draw_browse_out.setToolTip(self._("draw_output_tooltip"))
+        draw_browse_out.clicked.connect(self.choose_output)
+        grid.addWidget(self.draw_output_edit, 4, 1)
+        grid.addWidget(draw_browse_out, 4, 2)
+        layout.addLayout(grid)
+
+        row = QHBoxLayout()
+        self.draw_run_button = QPushButton(self._("draw_run_button"))
+        self.draw_run_button.setToolTip(self._("draw_run_tooltip"))
+        self.draw_run_button.clicked.connect(self.run_draw)
+        self.draw_open_local_button = QPushButton(
+            self._("draw_open_local_button"))
+        self.draw_open_local_button.setToolTip(
+            self._("draw_open_local_tooltip"))
+        self.draw_open_local_button.clicked.connect(self.open_local)
+        row.addWidget(self.draw_run_button)
+        row.addWidget(self.draw_open_local_button)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self.summary_label = QLabel(self._("draw_summary_placeholder"))
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setForegroundRole(
+            QPalette.ColorRole.PlaceholderText)
+        layout.addWidget(self.summary_label)
+
+        self.draw_log = QPlainTextEdit()
+        self.draw_log.setReadOnly(True)
+        self.draw_log.setToolTip(self._("draw_log_tooltip"))
+        layout.addWidget(self.draw_log, stretch=1)
+        self._out = None
+        self.setWidget(content)
+
+    def choose_roster(self):
+        d, _filter = QFileDialog.getOpenFileName(
+            self, self._("draw_roster_label"))
+        if d:
+            self.draw_roster_edit.setText(d)
+
+    def choose_output(self):
+        d = QFileDialog.getExistingDirectory(
+            self, self._("draw_output_label"))
+        if d:
+            self.draw_output_edit.setText(d)
+
+    def run_draw(self):
+        from sieve_tray import run_draw
+        roster = self.draw_roster_edit.text()
+        out = self.draw_output_edit.text()
+        seed = self.draw_seed_edit.text()
+        if not roster or not out or not seed:
+            return
+        groups = self.draw_groups_spin.value() or None
+        size = self.draw_size_spin.value() or None
+        try:
+            receipt = run_draw(
+                Path(roster), seed, Path(out),
+                groups=groups, size=size,
+                progress=lambda m: self.draw_log.appendPlainText(m))
+            s = receipt.get("summary") or {}
+            self.summary_label.setText(self._(
+                "draw_done", items=s.get("items", 0),
+                groups=s.get("groups", 0)))
+            self.summary_label.setForegroundRole(QPalette.ColorRole.Text)
+            self._out = Path(out)
+        except Exception as e:  # noqa: BLE001
+            self.draw_log.appendPlainText(
+                f"{type(e).__name__}: {e}")
+
+    def open_local(self):
+        if self._out is None:
+            return
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl.fromLocalFile(
+            str(self._out / "local")))
+
+
 class MainWindow(QMainWindow):
     def __init__(self, storage: Storage | None = None, lang=None):
         super().__init__()
@@ -1398,6 +1791,15 @@ class MainWindow(QMainWindow):
         reset_action.setMenuRole(QAction.NoRole)
         reset_action.triggered.connect(self._reset_window_geometry)
         window_menu.addAction(reset_action)
+        # v2.2.0 (request §3.7): the settings leave the scan row and
+        # ride the menu.  macOS relocates a PreferencesRole action into
+        # the application menu (設定…); Windows/Linux keep it in the
+        # window menu - the host the design ruling names ("ツール" or
+        # the window-menu equivalent; the standard Qt idiom).
+        settings_action = QAction(self._("settings_menu_action"), self)
+        settings_action.setMenuRole(QAction.PreferencesRole)
+        settings_action.triggered.connect(self.open_settings)
+        window_menu.addAction(settings_action)
 
         help_menu = self.menuBar().addMenu(self._("help_menu"))
         about_action = QAction(self._("about_action"), self)
@@ -1428,8 +1830,6 @@ class MainWindow(QMainWindow):
         self.run_btn = QPushButton(self._("run_scan"))
         self.run_btn.setEnabled(False)
         self.run_btn.clicked.connect(self.start_scan)
-        settings_btn = QPushButton(self._("settings_button"))
-        settings_btn.clicked.connect(self.open_settings)
         self.sanitize_btn = QPushButton(self._("sanitize_button"))
         self.sanitize_btn.setEnabled(False)
         self.sanitize_btn.clicked.connect(self.sanitize_folder)
@@ -1443,8 +1843,20 @@ class MainWindow(QMainWindow):
         picker_row.addWidget(self.run_btn)
         picker_row.addWidget(self.sanitize_btn)
         picker_row.addWidget(self.sanitize_image_btn)
-        picker_row.addWidget(settings_btn)
-        layout.addLayout(picker_row)
+        # v2.2.0 (request §3.7, the 2026-11-11 plan B ruling): the scan
+        # operation row rides a container of its own so the window can
+        # show it on the scan pages only (doc / code / text / audit)
+        # and hide it on every other page.  The settings button left
+        # the row for the menu (the action above); the buttons keep
+        # their order (input -> run -> result), which the §2-4
+        # measurement already showed.
+        self._scan_page_keys = frozenset(
+            {"doc", "code", "text", "audit"})
+        self.scan_row_widget = QWidget()
+        scan_row_layout = QVBoxLayout(self.scan_row_widget)
+        scan_row_layout.setContentsMargins(0, 0, 0, 0)
+        scan_row_layout.addLayout(picker_row)
+        layout.addWidget(self.scan_row_widget)
 
         # --- results / history navigation -----------------------------
         # v2.1.0 (addendum 2 = §3.15): the tab row becomes a left sidebar
@@ -1765,6 +2177,17 @@ class MainWindow(QMainWindow):
         self.cohort_page = CohortPage(self.lang, storage=self.storage)
         self._add_page("cohort", self.cohort_page, "cohort_tab")
 
+        # v2.2.0 (request §3.7): the three new pages join after the
+        # existing order - the file list and the check code, the
+        # renaming, the draw.  The pages speak the operation; the
+        # product name stays in the README / About (§3.2).
+        self.manifest_page = ManifestPage(self.lang)
+        self._add_page("manifest", self.manifest_page, "manifest_tab")
+        self.rename_page = RenamePage(self.lang)
+        self._add_page("rename", self.rename_page, "rename_tab")
+        self.draw_page = DrawPage(self.lang)
+        self._add_page("draw", self.draw_page, "draw_tab")
+
         # --- the body: the sidebar on the left, the page on the right
         body = QWidget()
         body_layout = QHBoxLayout(body)
@@ -1791,6 +2214,13 @@ class MainWindow(QMainWindow):
         else:
             self.sidebar.setCurrentRow(0)
         self._recalc_sidebar_width()
+        # §3.7 plan B: the scan row starts in the restored page's mode
+        # (the currentRowChanged signal above already set it; this is
+        # the defensive sync for a no-op selection)
+        if self._page_keys:
+            row = max(0, self.sidebar.currentRow())
+            self.scan_row_widget.setVisible(
+                self._page_keys[row] in self._scan_page_keys)
 
         # --- export row ---
         export_row = QHBoxLayout()
@@ -1913,6 +2343,12 @@ class MainWindow(QMainWindow):
     def _on_sidebar_row_changed(self, row: int) -> None:
         if 0 <= row < self.pages.count():
             self.pages.setCurrentIndex(row)
+            # v2.2.0 (request §3.7 plan B): the scan operation row
+            # shows on the scan pages only, and hides on every other
+            # page (the container exists from the row's creation on)
+            if row < len(self._page_keys):
+                self.scan_row_widget.setVisible(
+                    self._page_keys[row] in self._scan_page_keys)
 
     def _select_page(self, key: str) -> None:
         """Select the page by key (the tab-switching calls' successor)."""
