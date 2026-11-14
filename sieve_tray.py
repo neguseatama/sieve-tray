@@ -2366,6 +2366,22 @@ def _gate_item_document(engine, src: Path, data: bytes, suffix: str,
     Redact (label) -> handoff.  HTML rides the extras lane with a
     charset pre-check done here first; a rule-originated css_hidden
     segment fails the item closed (measured)."""
+    # --- PDF short-circuit (Seal 2.2 ruling (2) of 2026-11-14) --------
+    # Gate treats a PDF as unobserved with the reason engine_unavailable
+    # regardless of whether pypdf is installed.  pypdf's visible-text
+    # extraction does not interpret the rendering mode "3 Tr", so
+    # observing a PDF starts a leak (measured: the invisible text rode
+    # into handoff/*.pdf.visible.txt).  Until the engine understands
+    # render modes, the safe side is to not observe and record why -
+    # closed vocabulary only, with a detail.  This is also the standing
+    # behaviour for frozen apps that bundle pypdf transitively.
+    if suffix == ".pdf":
+        item["status"] = "unobserved"
+        item["unobserved_reason"] = "engine_unavailable"
+        item["unobserved_detail"] = "pdf_visible_extraction_disabled"
+        item["lens"] = {"mask": "0000-000"}
+        _gate_finish_item(item, "not_produced", "engine_unavailable")
+        return
     # --- observation
     try:
         if suffix in (".html", ".htm"):
