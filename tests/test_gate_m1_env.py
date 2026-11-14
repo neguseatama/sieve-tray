@@ -362,9 +362,12 @@ def test_t20_dependency_floors():
     # v2.1.0 (M2, request §3.13): the scope/referee floors ride with the
     # cohort lane once the engines are published - refreshed from the
     # M1-era >=1.3.0 observation to the published 1.5.0 / 1.6.0.
-    assert "sieve-lens>=0.22.0" in pyproject
     assert "sieve-scope>=1.5.0" in pyproject
     assert "sieve-referee>=1.6.0" in pyproject
+    # v2.2.0 (Seal, request §3.8-4): the lens dependency carries the
+    # html-css-full extra (tinycss2 + cssselect2) - the floor itself is
+    # unchanged at the published 0.22.0.
+    assert "sieve-lens[html-css-full]>=0.22.0" in pyproject
 
 
 # ---------------------------------------------------------------------------

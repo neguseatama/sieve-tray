@@ -484,11 +484,18 @@ def test_ch_t08_readme_intro_lists_cohort():
 
 
 def test_ch_t08_readme_verify_vocabulary():
+    # Seal 2.2 (request §3.8-1): the README Gate/Cohort sections were
+    # replaced with the addendum wording; the technical words moved
+    # verbatim into docs/receipt-reference.md and both READMEs link
+    # there.
     en = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     ja = (REPO_ROOT / "README.ja.md").read_text(encoding="utf-8")
-    assert "receipt_unreadable" in en
-    assert "receipt_unreadable" in ja
-    assert "辻褄" in ja
+    doc = (REPO_ROOT / "docs" / "receipt-reference.md").read_text(
+        encoding="utf-8")
+    assert "docs/receipt-reference.md" in en
+    assert "docs/receipt-reference.md" in ja
+    assert "receipt_unreadable" in doc
+    assert "辻褄" in doc
 
 
 # ---------------------------------------------------------------------------
@@ -1082,7 +1089,23 @@ def test_ch_t17_dependency_floors():
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "sieve-referee>=1.6.0" in text
     assert "sieve-scope>=1.5.0" in text
-    assert "sieve-lens>=0.22.0" in text
+    # Seal 2.2 (§3.8-4): the lens dependency rides the html-css-full
+    # extra; the floor is still the published 0.22.0.
+    assert "sieve-lens[html-css-full]>=0.22.0" in text
+
+
+def test_ch_t19_readme_spans_unit():
+    # Seal 2.2 (§3.8-1): the README sections were replaced and the
+    # span-unit paragraph moved verbatim into docs/receipt-reference.md
+    # (both READMEs link there).
+    en = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    ja = (REPO_ROOT / "README.ja.md").read_text(encoding="utf-8")
+    doc = (REPO_ROOT / "docs" / "receipt-reference.md").read_text(
+        encoding="utf-8")
+    assert "docs/receipt-reference.md" in en
+    assert "docs/receipt-reference.md" in ja
+    assert "characters" in doc and "tokens" in doc
+    assert "文字" in doc and "トークン" in doc
 
 
 # ---------------------------------------------------------------------------
@@ -1130,16 +1153,9 @@ def test_ch_t18_readme_cohort_section():
 
 # ---------------------------------------------------------------------------
 # CH-T19: the spans unit line (request §3.6 + the 2026-11-09 ruling ②):
-# the README states the unit in one line - documents count characters,
-# code counts tokens.
+# the unit line now lives in docs/receipt-reference.md (the README
+# links there) - the test rides at the ch_t17 block above.
 # ---------------------------------------------------------------------------
-
-def test_ch_t19_readme_spans_unit():
-    en = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    ja = (REPO_ROOT / "README.ja.md").read_text(encoding="utf-8")
-    assert "characters" in en and "tokens" in en
-    assert "文字" in ja and "トークン" in ja
-
 
 # ---------------------------------------------------------------------------
 # CH-T20: the release workflow runs the two self-checks on each OS's

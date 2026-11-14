@@ -63,44 +63,91 @@ Crowdへ、サニタイズ操作はテキスト・画像エディタを通じて
 
 ---
 
-## 🚪 Gate
+## 🚪 Gate（共有前の書き出し）
 
-Gate は M1 の検疫レーンです。フォルダを選ぶと、1 回で文書の見えている部分だけを
-取り出し、個人情報を出現順の連番（`[REDACTED]1`、`[REDACTED]2`、...）に置き換え、
-隠れていた文章に AI への指示らしい表現がないかを観測し、出力を渡す物（`handoff/`）
-と手元に残す物（`local/`）に分けます。受領書で、あとから一致を確かめられます。
+フォルダを選ぶだけで、AI や他の人に渡す前の処理を、まとめて行います。
 
-1. CLI: `python3 sieve_tray.py gate <入力フォルダ> -o <出力先>`
-2. `handoff/` を渡し、`local/` は手元に残す。
-3. あとで確かめる: `python3 sieve_tray.py verify <handoff>/gate-receipt.json`
+- 文書から、画面に見えているテキストだけを取り出す
+- 氏名・メールアドレスなどの個人情報を、`[REDACTED]1`、`[REDACTED]2` … に置き換える
+- 見えない文字（背景と同じ色の文字など）に、AI へのプロンプトが隠されていないか調べる
 
-受領書（`handoff/gate-receipt.json`）には件数・ハッシュ・閉じた語彙の符号だけを
-載せます。本文・隠れていた文章・置換した値は載りません。`verify` が、そのあとの
-一致を確かめます。
+出力は 2 つのフォルダに分かれます。
 
----
+- `handoff/` … 渡してよいファイル
+- `local/` … 手元に残すファイル（詳しいレポート）
 
-## 👥 Cohort
+`handoff/` には処理記録（`gate-receipt.json`）も入ります。載るのは件数とチェックサムだけで、本文や氏名は載りません。あとで `verify` を実行すると、渡したファイルが書き出したときのままか確認できます。
 
-**Cohort**タブは、フォルダ内の提出物を並べて比較します。文書は Gate と同じ
-Lens／Referee のレーン、`.py` は Scope、残りのソース言語は汎用レーンで観測し、
-出力は Gate と同じく `handoff/`（受領書のみ）と `local/`（報告一式）に分けます。
+```
+python3 sieve_tray.py gate <入力フォルダ> -o <出力先>
+python3 sieve_tray.py verify <出力先>/handoff/gate-receipt.json
+```
 
-1. CLI: `python3 sieve_tray.py cohort <入力フォルダ> -o <出力先>`
-2. `handoff/` を渡し、`local/` は手元に残す。
-3. あとで確かめる: `python3 sieve_tray.py verify <handoff>/cohort-receipt.json`
+## 👥 Cohort（提出物の比較）
 
-提出物のファイル名に氏名が含まれるときは、`--no-paths` を付けてください（受領書は連番で識別します）。
+フォルダに集めた提出物を総当たりで比べて、似ているペアを見つけます。
 
-汎用レーンは、いずれか一方の側でも 700 ‰ に達した組を要確認にします（小さな
-ファイルが大きなファイルにそのまま含まれる場合を見落とさないため）。記録される
-`match_per_mille` は、高い側の値です。要確認の組は観測であり、結論ではありません。
-`verify` の語彙は M1 のままで変更しません。要約の件数の辻褄が合わない Cohort の
-受領書は、記録として読み取れない受領書と同じ `receipt_unreadable` で報告されます。
+- 文書 … 文章の重なりを調べる
+- Python … 変数名を変えてあっても、同じ構造を見つける
+- そのほかのプログラミング言語 … 共通の方法で調べる（小さなファイルが大きなファイルにそのまま含まれている場合も見つかる）
 
-報告の中で一致箇所は文字の位置で示されます（トークンではなく文字）。トークンを
-数えるのは基準文書の除去比率（各提出物のトークンのうち、基準文書の除去で
-取り除かれた量）だけです。
+結果は、Gate と同じく `handoff/`（処理記録だけ）と `local/`（比較レポート）に出ます。レポートには、似ているペアと、重なっている場所（何文字目から何文字目か）が載ります。似ているペアは「確認する候補」で、不正の判定ではありません。
+
+課題文やテンプレートなど、全員に共通する資料は「基準となる資料」に指定すると、重なりから除外されます。
+
+```
+python3 sieve_tray.py cohort <入力フォルダ> -o <出力先>
+python3 sieve_tray.py verify <出力先>/handoff/cohort-receipt.json
+```
+
+ファイル名に氏名が入っているときは `--no-paths` を付けてください。処理記録では、ファイルを連番で区別します。
+
+処理記録の語彙や重なりの数え方の詳細は、[docs/receipt-reference.md](docs/receipt-reference.md) にあります。
+
+## 📋 ファイル一覧と照合コード
+
+フォルダの中身を 1 つの表にまとめて書き出し、あとで確かめられるようにします。表には各ファイルのチェックサムとサイズが載り、フォルダ全体のチェックサムも付きます。`--key-file` を付けると照合コードが付き、確認には同じキーファイルが必要になります。
+
+1. フォルダを指定して実行する（差分は `--against`、照合コードは `--key-file`）
+2. `handoff/` の処理記録を渡し、`local/` は手元に残す
+3. 受け取った側は `verify` で一致を確かめる
+
+```
+python3 sieve_tray.py manifest <入力フォルダ> -o <出力先>
+python3 sieve_tray.py manifest <A> --against <B> -o <出力先>
+python3 sieve_tray.py verify <出力先>/handoff/manifest-receipt.json
+```
+
+処理記録の形と照合コードの規則の詳細は、[docs/manifest-format.md](docs/manifest-format.md) にあります。
+
+## 🧹 名前の整理
+
+ファイル名を決まった規則で整える計画を作り、確認してから適用できます。元のフォルダはそのまま変えず、整えた複製を別に作ります。
+
+1. `--pattern` で規則を指定して実行し、計画を確認する
+2. 問題なければ `--apply` で複製を作る
+3. 名前が氏名を含むときは `--no-paths` を付ける（処理記録は連番で識別する）
+
+```
+python3 sieve_tray.py rename <入力フォルダ> --pattern '{stem}_{seq:3}{ext}' -o <出力先>
+python3 sieve_tray.py rename <入力フォルダ> --pattern '{stem}_{seq:3}{ext}' --apply -o <出力先>
+```
+
+規則に書けるフィールドは `{seq}`・`{stem}`・`{ext}`・`{hash8}`・`{parent}` の 5 種（`{seq:3}` のように桁数を指定できます）で、名前の衝突は実行の前に一覧が出ます。規則と処理記録の詳細は、[docs/rename-procedure.md](docs/rename-procedure.md) にあります。
+
+## 🎲 抽選・班分け
+
+名簿と公開の seed から、誰でも同じ結果を出せる抽選を行います。順番は seed から決まり、班はラウンドロビンで配られます。
+
+1. 名簿（1 行に 1 件）を用意する
+2. `--seed` に文字列を指定し、`--groups` か `--size` のどちらかで分け方を決める
+3. 結果は `local/`、処理記録は `handoff/` に出る（処理記録に氏名は載らない）
+
+```
+python3 sieve_tray.py draw <名簿> --seed <文字列> --groups 3 -o <出力先>
+```
+
+手順と検算の方法の詳細は、[docs/draw-procedure.md](docs/draw-procedure.md) にあります。
 
 ---
 
@@ -201,7 +248,7 @@ Redact が「他は何も変わっていない」ことを証明するレシー�
   （`.csv`/`.json`/`.xml`/`.xlsx`・v1.3.0 から Excel と CP932 に対応）を
   同梱のSieve Crowdエンジンへ渡します。列の調査
   （異なり数・一意率・提案役割）、測定実行による処理前後の単独レコード数比較、
-  仮名鍵の生成、そして決定論的な匿名化（入力・出力レコード数・除外件数・
+  仮名化キーの生成、そして決定論的な匿名化（入力・出力レコード数・除外件数・
   達成 k 値・状態を含む機械可読なレシートつき）。保護は、qi として宣言した
   列を知る相手への k-匿名性で、要求した k が達成できない場合エンジンは
   出力ファイルを書かずに拒否します。実行はすべてローカル履歴に保存され、
@@ -238,7 +285,7 @@ Pythonのインストールは不要です。
 | macOS（Intel） | `SieveTray-<version>-macos-intel.zip` |
 
 展開して`SieveTray.exe` / `SieveTray.app`を起動してください。初回起動時、macOSでは
-「開発元を確認できません」という警告が出ます（未署名ビルドのため想定内です）。
+「開発元を確認できません」という警告が出ます（想定内です）。
 **システム設定 → プライバシーとセキュリティ**から「このまま開く」を選んでください。
 Windowsでも同様にSmartScreenの警告が出ることがあります。「詳細情報 → 実行」を
 選んでください。
@@ -254,6 +301,8 @@ python3 sieve_tray_gui.py
 ```
 
 Python 3.10〜3.13が必要です（PySide6はまだ3.14に対応していません）。
+
+インストールには、HTML の見えない文字を調べるための CSS 解析（tinycss2・cssselect2）が、Sieve Lens の追加ライブラリとして一緒に入ります。
 
 コアのみ（GUIなし、CLI利用・スクリプト用途向け）:
 
@@ -337,9 +386,9 @@ Gatekeeperの確認が出ます — **システム設定 → プライバシー�
 |---|---|
 | ![メインウィンドウ](docs/screenshots/main-window-ja.png) | ![匿名化タブ](docs/screenshots/anonymize-tab-ja.png) |
 
-| Aboutダイアログ | 設定ダイアログ |
+| ファイル一覧と照合コード | 抽選・班分け |
 |---|---|
-| ![Aboutダイアログ](docs/screenshots/about-dialog-ja.png) | ![設定ダイアログ](docs/screenshots/settings-dialog-ja.png) |
+| ![ファイル一覧と照合コード](docs/screenshots/manifest-page-ja.png) | ![抽選・班分け](docs/screenshots/draw-page-ja.png) |
 
 ---
 
@@ -371,8 +420,8 @@ CIはpushのたびにこのテストスイートを実行し（Ubuntu上でPytho
 3. **Sieve Refereeの`reason`（判定理由）はUI言語に関わらず日本語のみ。** エンジンの
    類似度閾値が日本語テキストを前提に調整されているため。詳細ダイアログにはその旨を
    明記した上で表示する
-4. **配布ビルドは未署名。** Windows SmartScreenとmacOS Gatekeeperが初回起動時に
-   警告を出す。未署名ビルドとしては想定内の挙動
+4. **配布ビルドは開発元の確認ができません。** Windows SmartScreenとmacOS Gatekeeperが初回起動時に
+   警告を出す。想定内の挙動
 5. **観測ツールであって、判定ツールではない**（Sieve Lens・Sieve Scope・Sieve
    Refereeから継承した姿勢）。フラグは「人間の確認が必要」という意味であり、「不正が
    確定した」という意味ではない
@@ -421,7 +470,7 @@ CIはpushのたびにこのテストスイートを実行し（Ubuntu上でPytho
 
 ## 🎨 アプリケーションアイコン
 
-![アプリケーションアイコン](assets/icon.png)
+<img src="assets/icon.png" width="96" alt="アプリケーションアイコン">
 
 デザイン：[AURA_HYSTERICA](http://www.maroon.dti.ne.jp/clover-hp/)
 

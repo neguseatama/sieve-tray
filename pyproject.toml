@@ -27,7 +27,15 @@ requires-python = ">=3.10"
 # 16-char base minimum).  All three floors are published on PyPI
 # (measured 2026-11-10: the 1.5.0 / 1.6.0 / 0.22.0 wheels install in a
 # fresh venv and expose the APIs the suite pins).
-dependencies = ["sieve-lens>=0.22.0", "sieve-scope>=1.5.0", "sieve-referee>=1.6.0"]
+# v2.2.0 (Seal, request §3.8-4): sieve-lens gains the html-css-full
+# extra (tinycss2 + cssselect2).  Measured 2026-11-14 in a fresh venv:
+# a bare install cannot observe the hidden HTML text (the HTML item is
+# reported with not_produced_reason engine_unavailable) while the same
+# input is observed and flagged with the extra; pypdf stays out because
+# the Gate PDF lane is short-circuited by design
+# (pdf_visible_extraction_disabled) with or without pypdf.  The extra
+# floors (tinycss2>=1.1, cssselect2>=0.7) are published on PyPI.
+dependencies = ["sieve-lens[html-css-full]>=0.22.0", "sieve-scope>=1.5.0", "sieve-referee>=1.6.0"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

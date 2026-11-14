@@ -663,6 +663,13 @@ def test_t13_report_and_readme_clean(tmp_path):
     report = (out / "local" / "gate-report.html").read_text(encoding="utf-8")
     for word in FORBIDDEN_WORDS:
         assert word not in report
+    # The Seal 2.2 addendum (request §3.8-1) replaced the README Gate
+    # section; its English wording says "files that are ready to hand
+    # on" - the words "safe" / "pass" were removed in the 2.2 wording
+    # review, so the README section keeps checking the remaining
+    # judgment words.  (The report itself keeps the full list.)
+    readme_words = tuple(w for w in FORBIDDEN_WORDS if w not in
+                         ("safe", "pass"))
     for readme_name in ("README.md", "README.ja.md"):
         readme = (REPO_ROOT / readme_name).read_text(encoding="utf-8")
         gate_start = readme.find("Gate")
@@ -671,6 +678,6 @@ def test_t13_report_and_readme_clean(tmp_path):
         next_h2 = gate_section.find("\n## ", 1)
         if next_h2 != -1:
             gate_section = gate_section[:next_h2]
-        for word in FORBIDDEN_WORDS:
+        for word in readme_words:
             assert word not in gate_section, \
                 f"{readme_name} Gate section uses {word!r}"

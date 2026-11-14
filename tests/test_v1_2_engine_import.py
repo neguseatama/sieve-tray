@@ -647,8 +647,10 @@ class TR2_T11_DependencyFloors(unittest.TestCase):
     def test_lens_floor_is_0220(self):
         # v2.0.0 (M1 Gate): raised to the published 0.22.0 (Gate
         # consumes visible_text; UTF-8 results stay byte-identical).
+        # v2.2.0 (Seal, §3.8-4): the dependency rides the html-css-full
+        # extra - the floor itself is unchanged.
         deps = _load_pyproject()["project"]["dependencies"]
-        self.assertIn("sieve-lens>=0.22.0", deps)
+        self.assertIn("sieve-lens[html-css-full]>=0.22.0", deps)
 
     def test_other_floors_match_measurement(self):
         deps = _load_pyproject()["project"]["dependencies"]

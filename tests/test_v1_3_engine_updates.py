@@ -1086,9 +1086,11 @@ class TR3_T18_DependencyFloorsStayPublished(unittest.TestCase):
             proj = tomllib.load(fh)["project"]
         # v2.1.0 (M2, request §3.13): the floors are the published
         # engines (scope 1.5.0 / referee 1.6.0 on PyPI at the raise).
+        # v2.2.0 (Seal, §3.8-4): the lens dependency carries the
+        # html-css-full extra - the floor is still the published 0.22.0.
         self.assertEqual(
             proj["dependencies"],
-            ["sieve-lens>=0.22.0", "sieve-scope>=1.5.0",
+            ["sieve-lens[html-css-full]>=0.22.0", "sieve-scope>=1.5.0",
              "sieve-referee>=1.6.0"])
         gui = proj["optional-dependencies"]["gui"]
         self.assertIn("Pillow>=10.0", gui)

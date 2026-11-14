@@ -571,7 +571,9 @@ def test_t13_readme_first_launch_section_en_ja():
 def test_t14_dependency_floors_are_published_versions():
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     # v2.1.0 (M2, request §3.13): refreshed to the published engines.
-    assert '"sieve-lens>=0.22.0"' in text
+    # v2.2.0 (Seal, §3.8-4): the lens dependency rides the
+    # html-css-full extra; the floor stays the published 0.22.0.
+    assert '"sieve-lens[html-css-full]>=0.22.0"' in text
     assert '"sieve-scope>=1.5.0"' in text
     assert '"sieve-referee>=1.6.0"' in text
 

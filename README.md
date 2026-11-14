@@ -66,52 +66,91 @@ Sanitize actions put Sieve Redact behind the text and image editors.
 
 ---
 
-## 🚪 Gate
+## 🚪 Gate (Export for Sharing)
 
-Gate is the M1 quarantine lane: pick a folder, and in a single run it keeps
-only the visible text of your documents, replaces personal data with
-sequential labels, observes the hidden text for AI-instruction
-vocabulary, and splits the output into `handoff/` (what you hand over)
-and `local/` (what stays here) with a verifiable receipt.
+Pick a folder, and Gate gets it ready to hand to an AI or to other people.
 
-1. CLI: `python3 sieve_tray.py gate <input folder> -o <output folder>`
-2. Hand over the `handoff/` folder; keep `local/` for yourself.
-3. Re-check later: `python3 sieve_tray.py verify <handoff>/gate-receipt.json`
+- Extracts only the text that is visible in each document
+- Replaces personal information such as names and email addresses with `[REDACTED]1`, `[REDACTED]2`, …
+- Checks for prompts aimed at an AI hidden in invisible text (text in the same color as the background, for example)
 
-The receipt (`handoff/gate-receipt.json`) records counts, hashes and the
-closed-vocabulary codes of the run - never document bodies, hidden text
-or the replaced values. `verify` re-checks the outputs against it.
-The anonymization uses Redact's label mode: each occurrence gets the
-next sequential label (`[REDACTED]1`, `[REDACTED]2`, ...).
+Output is split into two folders:
 
----
+- `handoff/` — files that are ready to hand on
+- `local/` — files you keep (the detailed report)
 
-## 👥 Cohort
+`handoff/` also holds a receipt (`gate-receipt.json`). It contains only counts and checksums — no text, no names. Run `verify` later to confirm the files you handed over are exactly what was exported.
 
-The **Cohort** tab compares the submissions of a folder side by side:
-documents go through the same Lens/Referee lanes as Gate, `.py` files
-through Scope, and the remaining source languages through the generic
-lane. The output splits the same way - `handoff/` carries the receipt
-only, `local/` keeps the full report.
+```
+python3 sieve_tray.py gate <input-folder> -o <output-folder>
+python3 sieve_tray.py verify <output-folder>/handoff/gate-receipt.json
+```
 
-1. CLI: `python3 sieve_tray.py cohort <input folder> -o <output folder>`
-2. Hand over the `handoff/` folder; keep `local/` for yourself.
-3. Re-check later: `python3 sieve_tray.py verify <handoff>/cohort-receipt.json`
+## 👥 Cohort (Compare Submissions)
 
-If the submission file names carry personal names, pass `--no-paths` (the record identifies items by sequence number).
+Cohort compares every submission in a folder against every other and finds pairs that look alike.
 
-The generic lane flags a pair when either side reaches 700 ‰ (either
-side, so that a small file contained in a larger one is not missed);
-the recorded `match_per_mille` is the higher of the two sides. The
-flagged pairs are an observation, not a judgment. `verify` keeps the
-M1 vocabulary unchanged: a Cohort receipt whose summary counts do not
-hold together is reported with the existing `receipt_unreadable` word,
-like any receipt that cannot be read as a record.
+- Documents — compares the text
+- Python — finds the same structure even when variable names were changed
+- Other programming languages — compared with a common method (a small file contained whole inside a larger one is found too)
 
-In the report, matched spans are located by character offsets
-(characters, not tokens); the only token counts are the base-removal
-ratios - how many of each submission's tokens the base stripping
-removed.
+As with Gate, output goes to `handoff/` (the receipt only) and `local/` (the comparison report). The report lists the similar pairs and where they overlap (from which character to which character). A similar pair is a candidate to check, not a verdict of misconduct.
+
+If every submission shares some material, such as an assignment text or a template, name it as the base document and it is left out of the overlap.
+
+```
+python3 sieve_tray.py cohort <input-folder> -o <output-folder>
+python3 sieve_tray.py verify <output-folder>/handoff/cohort-receipt.json
+```
+
+If file names contain people's names, add `--no-paths`. The receipt then identifies files by sequence number.
+
+Details on the receipt vocabulary and how overlap is counted: [docs/receipt-reference.md](docs/receipt-reference.md).
+
+## 📋 File List and Check Code
+
+Write the contents of a folder out as one table, so it can be checked later. Each entry carries its checksum and size, and the whole folder gets a folder checksum. With `--key-file` a check code is added, and checking it requires the same key file.
+
+1. Run it on the folder (`--against` for a diff, `--key-file` for the check code)
+2. Hand over the receipt in `handoff/`; keep `local/` for yourself
+3. The receiver runs `verify` to confirm the match
+
+```
+python3 sieve_tray.py manifest <input-folder> -o <output-folder>
+python3 sieve_tray.py manifest <A> --against <B> -o <output-folder>
+python3 sieve_tray.py verify <output-folder>/handoff/manifest-receipt.json
+```
+
+Details of the receipt shape and the check code rules: [docs/manifest-format.md](docs/manifest-format.md).
+
+## 🧹 Rename
+
+Build a plan that tidies file names by a fixed rule, check it, then apply it. The original folder is untouched; applying creates a renamed copy.
+
+1. Run it with `--pattern` and read the plan
+2. When the plan looks right, add `--apply` to build the copy
+3. If the names carry people's names, add `--no-paths` (the receipt identifies items by sequence number)
+
+```
+python3 sieve_tray.py rename <input-folder> --pattern '{stem}_{seq:3}{ext}' -o <output-folder>
+python3 sieve_tray.py rename <input-folder> --pattern '{stem}_{seq:3}{ext}' --apply -o <output-folder>
+```
+
+The rule fields are `{seq}`, `{stem}`, `{ext}`, `{hash8}` and `{parent}` (`{seq:3}` sets the digit width); name collisions are listed before anything runs. Details: [docs/rename-procedure.md](docs/rename-procedure.md).
+
+## 🎲 Draw
+
+Draw lots over a roster with a public seed, so anyone can produce the same result. The order comes from the seed and the groups are dealt round-robin.
+
+1. Prepare a roster (one item per line)
+2. Give `--seed` a string, then pick `--groups` or `--size`
+3. The result lands in `local/` and the receipt in `handoff/` (the receipt carries no names)
+
+```
+python3 sieve_tray.py draw <roster> --seed <string> --groups 3 -o <output-folder>
+```
+
+The procedure and how to re-check it by hand: [docs/draw-procedure.md](docs/draw-procedure.md).
 
 ---
 
@@ -287,6 +326,8 @@ python3 sieve_tray_gui.py
 
 Requires Python 3.10–3.13 (PySide6 does not yet support 3.14).
 
+Installing also brings in the CSS analysis (tinycss2, cssselect2) that checks invisible text in HTML, as add-on packages of Sieve Lens.
+
 Core only, no GUI (for CLI usage or scripting):
 
 ```bash
@@ -371,11 +412,11 @@ the list.
 
 | Main window | Anonymize tab |
 |---|---|
-| ![Main window](docs/screenshots/main-window-ja.png) | ![Anonymize tab](docs/screenshots/anonymize-tab-ja.png) |
+| ![Main window](docs/screenshots/main-window-en.png) | ![Anonymize tab](docs/screenshots/anonymize-tab-en.png) |
 
-| About dialog | Settings dialog |
+| File List and Check Code | Draw |
 |---|---|
-| ![About dialog](docs/screenshots/about-dialog-ja.png) | ![Settings dialog](docs/screenshots/settings-dialog-ja.png) |
+| ![File List and Check Code](docs/screenshots/manifest-page-en.png) | ![Draw](docs/screenshots/draw-page-en.png) |
 
 ---
 
@@ -472,7 +513,7 @@ builds Windows/macOS desktop apps on every version tag.
 
 ## 🎨 Application Icon
 
-![Application icon](assets/icon.png)
+<img src="assets/icon.png" width="96" alt="Application icon">
 
 Design: [AURA_HYSTERICA](http://www.maroon.dti.ne.jp/clover-hp/)
 
