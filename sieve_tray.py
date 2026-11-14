@@ -5705,6 +5705,179 @@ def cohort_self_check(progress: ProgressCallback = _silent) -> dict:
             "differences": diffs}
 
 
+# SL-T20 (Seal 2.2, S11): the frozen distribution app runs the
+# manifest/pack/draw self-checks headlessly (release.yml post-processing,
+# the same 0/1/2 exit contract as gate/cohort).  The expectations are
+# the PUBLISHED known values - docs/manifest-format.md section 4 KV-2
+# and docs/draw-procedure.md section 4 KV-D1/KV-D2 (SL-T01/SL-T14 read
+# them back from the docs) - plus the deterministic pack receipt; never
+# a receipt digest (the digest covers tool.version, so it moves with a
+# release).  The inputs are built in a temp folder at run time, so no
+# sample pack has to travel with the frozen app for the three Seal
+# checks.
+_SEAL_KV2_OVERALL = (
+    "06965d1ff8239b8e9efad9c88d05e8624d92ac3dd252d047617c82c0de724a92")
+_SEAL_KV2_ONE_SHA256 = (
+    "2c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806")
+_SEAL_KV2_BETA_SHA256 = (
+    "f2c82decdd7181cf98945929a62598db7e6b477e11f6e0eb0ae97020eff151ad")
+_SEAL_KVD1_ROSTER_SHA256 = (
+    "54e7fd617a3c08ae396cadd191b9e16db655b8c9e0832d35902f7d351b8cd191")
+_SEAL_KVD1_RESULT_SHA256 = (
+    "dae02d918072cb8f225273064beaf5fd284781ebb9ca96d79b3e86520b783413")
+_SEAL_KVD2_ROSTER_SHA256 = (
+    "772e62f2c1ae2609e508d7168a41ad1398189960ebee4991b9443f15fd4fda22")
+_SEAL_KVD2_RESULT_SHA256 = (
+    "49ee187e2cc397886382a4d22c5bfce70a50ace4f4ff5201fbcfc79f014b4ac5")
+
+
+def _seal_self_check_kv2(root: Path) -> None:
+    """The KV-2 fixture (docs/manifest-format.md section 4): beta.txt =
+    b"beta\\n", a/one.txt = b"one\\n", a/empty = an empty directory."""
+    (root / "a" / "empty").mkdir(parents=True)
+    (root / "a" / "one.txt").write_bytes(b"one\n")
+    (root / "beta.txt").write_bytes(b"beta\n")
+
+
+def _seal_self_check_fail(diffs, field, expected, actual):
+    if expected != actual:
+        diffs.append({"field": field, "expected": expected,
+                      "actual": actual})
+
+
+def manifest_self_check(progress: ProgressCallback = _silent) -> dict:
+    """The self-check (SL-T20): list the KV-2 fixture twice with
+    `manifest` and compare the published known values - the
+    whole-folder checksum (KV-2, whose rows include the empty
+    directory), the two file checksums, the byte-ordered paths and the
+    run-to-run determinism.  Returns the gate/cohort shape
+    {"expected": n, "matching": n, "differences": [...]}."""
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "kv2"
+            _seal_self_check_kv2(root)
+            r1 = run_manifest(root, Path(td) / "out1", progress=progress)
+            r2 = run_manifest(root, Path(td) / "out2", progress=progress)
+            by_path = {it["path"]: it for it in r1["items"]}
+    except OSError as e:
+        # the self-check could not run (the 2026-11-10 ruling)
+        return {"error": "self_check_input_unavailable", "detail": str(e)}
+    diffs = []
+    _seal_self_check_fail(diffs, "summary.overall_sha256",
+                          _SEAL_KV2_OVERALL,
+                          r1["summary"]["overall_sha256"])
+    _seal_self_check_fail(diffs, "items",
+                          ["a/one.txt", "beta.txt"],
+                          [it["path"] for it in r1["items"]])
+    _seal_self_check_fail(diffs, "a/one.txt sha256",
+                          _SEAL_KV2_ONE_SHA256,
+                          by_path["a/one.txt"]["sha256"])
+    _seal_self_check_fail(diffs, "beta.txt sha256",
+                          _SEAL_KV2_BETA_SHA256,
+                          by_path["beta.txt"]["sha256"])
+    _seal_self_check_fail(diffs, "determinism (receipt digest)",
+                          r1["digest"], r2["digest"])
+    return {"expected": 5, "matching": 5 - len(diffs),
+            "differences": diffs}
+
+
+def pack_self_check(progress: ProgressCallback = _silent) -> dict:
+    """The self-check (SL-T20): pack the KV-2 fixture twice, compare
+    the deterministic zip bytes, the receipt's zip checksum (the
+    sha256sum-only check), the manifest-identical whole-folder
+    checksum (KV-2) and the entry order, then unpack the zip and
+    re-measure the extracted tree."""
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "kv2"
+            _seal_self_check_kv2(root)
+            (Path(td) / "p1").mkdir()
+            (Path(td) / "p2").mkdir()
+            z1 = Path(td) / "p1" / "SieveTray-selfcheck.zip"
+            z2 = Path(td) / "p2" / "SieveTray-selfcheck.zip"
+            r1 = run_pack(root, z1, progress=progress)
+            r2 = run_pack(root, z2, progress=progress)
+            b1, b2 = z1.read_bytes(), z2.read_bytes()
+            with zipfile.ZipFile(str(z1)) as zf:
+                names = zf.namelist()
+            up = Path(td) / "up"
+            ru = run_unpack(z1, up, progress=progress)
+    except OSError as e:
+        # the self-check could not run (the 2026-11-10 ruling)
+        return {"error": "self_check_input_unavailable", "detail": str(e)}
+    diffs = []
+    _seal_self_check_fail(diffs, "zip determinism",
+                          hashlib.sha256(b1).hexdigest(),
+                          hashlib.sha256(b2).hexdigest())
+    _seal_self_check_fail(diffs, "summary.zip_sha256",
+                          "sha256:" + hashlib.sha256(b1).hexdigest(),
+                          r1["summary"]["zip_sha256"])
+    _seal_self_check_fail(diffs, "summary.overall_sha256",
+                          _SEAL_KV2_OVERALL,
+                          r1["summary"]["overall_sha256"])
+    _seal_self_check_fail(diffs, "zip entries",
+                          ["a/", "a/empty/", "a/one.txt", "beta.txt"],
+                          names)
+    _seal_self_check_fail(diffs, "roundtrip overall_sha256",
+                          _SEAL_KV2_OVERALL,
+                          ru["summary"]["overall_sha256"])
+    return {"expected": 5, "matching": 5 - len(diffs),
+            "differences": diffs}
+
+
+def draw_self_check(progress: ProgressCallback = _silent) -> dict:
+    """The self-check (SL-T20): run `draw` over the two published
+    examples (docs/draw-procedure.md section 4) and compare the roster
+    hashes, the result hashes and the dealt groups; the receipts stay
+    name-free (items/skipped empty) - the names ride only the local
+    result file, read back here in memory."""
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            rp1 = Path(td) / "roster-d1.txt"
+            rp1.write_bytes(b"alice\nbob\ncarol\n")
+            rc1 = run_draw(rp1, "2026-08-demo", Path(td) / "o1",
+                           groups=2, progress=progress)
+            res1 = json.loads((Path(td) / "o1" / "local"
+                               / "draw-result.json").read_text(
+                                   encoding="utf-8"))
+            rp2 = Path(td) / "roster-d2.txt"
+            rp2.write_bytes(b"alice\nbob\ncarol\ndave\nerin\n")
+            rc2 = run_draw(rp2, "2026-winter-demo", Path(td) / "o2",
+                           size=2, progress=progress)
+            res2 = json.loads((Path(td) / "o2" / "local"
+                               / "draw-result.json").read_text(
+                                   encoding="utf-8"))
+    except OSError as e:
+        # the self-check could not run (the 2026-11-10 ruling)
+        return {"error": "self_check_input_unavailable", "detail": str(e)}
+
+    def _sha(rc, field):
+        return rc["summary"][field].split(":", 1)[1]
+
+    diffs = []
+    _seal_self_check_fail(diffs, "KV-D1 roster_sha256",
+                          _SEAL_KVD1_ROSTER_SHA256,
+                          _sha(rc1, "roster_sha256"))
+    _seal_self_check_fail(diffs, "KV-D1 result_sha256",
+                          _SEAL_KVD1_RESULT_SHA256,
+                          _sha(rc1, "result_sha256"))
+    _seal_self_check_fail(diffs, "KV-D1 groups",
+                          [["alice", "bob"], ["carol"]], res1["groups"])
+    _seal_self_check_fail(diffs, "KV-D2 roster_sha256",
+                          _SEAL_KVD2_ROSTER_SHA256,
+                          _sha(rc2, "roster_sha256"))
+    _seal_self_check_fail(diffs, "KV-D2 result_sha256",
+                          _SEAL_KVD2_RESULT_SHA256,
+                          _sha(rc2, "result_sha256"))
+    _seal_self_check_fail(diffs, "KV-D2 groups",
+                          [["erin", "bob"], ["dave", "carol"], ["alice"]],
+                          res2["groups"])
+    _seal_self_check_fail(diffs, "receipts stay name-free",
+                          ([], []), (rc1["items"], rc1["skipped"]))
+    return {"expected": 7, "matching": 7 - len(diffs),
+            "differences": diffs}
+
+
 def _gate_main(argv: List[str]) -> int:
     """The `gate` / `verify` shapes (request §3.6).  Only entered when
     sys.argv[1] is exactly one of those words, so the legacy
@@ -5768,6 +5941,8 @@ def _gate_main(argv: List[str]) -> int:
                    metavar="PATH")
     m.add_argument("--verify-page", action="store_true",
                    help="also write handoff/verify.html (Seal 2.2)")
+    # SL-T20: the frozen app runs the Seal self-checks headlessly
+    m.add_argument("--self-check", action="store_true")
     # Seal 2.2 (S3): rename plans (default) or applies (--apply) a
     # closed rule; audit-names reports path + symbol only.
     r = sub.add_parser("rename", help="plan (or apply) a rename rule "
@@ -5794,6 +5969,8 @@ def _gate_main(argv: List[str]) -> int:
                     metavar="PATH")
     pk.add_argument("--verify-page", action="store_true",
                     help="also write handoff/verify.html (Seal 2.2)")
+    # SL-T20: the frozen app runs the Seal self-checks headlessly
+    pk.add_argument("--self-check", action="store_true")
     up = sub.add_parser("unpack", help="unpack a checked zip (Seal 2.2)")
     up.add_argument("zip_file", type=Path, nargs="?", default=None)
     up.add_argument("-o", "--output", type=Path, default=None)
@@ -5802,14 +5979,28 @@ def _gate_main(argv: List[str]) -> int:
     d = sub.add_parser("draw", help="a verifiable draw over a roster "
                                     "(Seal 2.2)")
     d.add_argument("roster", type=Path, nargs="?", default=None)
-    d.add_argument("--seed", required=True, metavar="TEXT")
-    dg = d.add_mutually_exclusive_group(required=True)
+    # the seed and the groups/size pair are validated in the dispatch
+    # branch (the closed refusals stay exit 2), so `--self-check` can
+    # run without them (SL-T20)
+    d.add_argument("--seed", default=None, metavar="TEXT")
+    dg = d.add_mutually_exclusive_group(required=False)
     dg.add_argument("--groups", type=int, metavar="N")
     dg.add_argument("--size", type=int, metavar="N")
     d.add_argument("-o", "--output", type=Path, default=None)
+    # SL-T20: the frozen app runs the Seal self-checks headlessly
+    d.add_argument("--self-check", action="store_true")
     args = parser.parse_args(argv)
 
     if args.cmd == "manifest":
+        if args.self_check:
+            # SL-T20: the same exit contract as gate/cohort (the
+            # 2026-11-10 ruling): 0 = the expected values matched,
+            # 1 = a difference, 2 = the self-check could not run
+            result = manifest_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
         if args.input_dir is None or args.output is None:
             parser.error("manifest needs an input folder and -o/--output")
         if not args.input_dir.is_dir():
@@ -5867,6 +6058,15 @@ def _gate_main(argv: List[str]) -> int:
             print("Handoff: %s" % (args.output / "handoff"))
         return 0
     if args.cmd == "pack":
+        if args.self_check:
+            # SL-T20: the same exit contract as gate/cohort (the
+            # 2026-11-10 ruling): 0 = the expected values matched,
+            # 1 = a difference, 2 = the self-check could not run
+            result = pack_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
         if args.input_dir is None or args.output is None:
             parser.error("pack needs an input folder and -o/--output")
         if not args.input_dir.is_dir():
@@ -5883,8 +6083,22 @@ def _gate_main(argv: List[str]) -> int:
         print("Handoff: %s" % (args.output.parent / "handoff"))
         return 0
     if args.cmd == "draw":
+        if args.self_check:
+            # SL-T20: the same exit contract as gate/cohort (the
+            # 2026-11-10 ruling): 0 = the expected values matched,
+            # 1 = a difference, 2 = the self-check could not run
+            result = draw_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
         if args.roster is None or args.output is None:
             parser.error("draw needs a roster and -o/--output")
+        if args.seed is None:
+            parser.error("draw needs --seed")
+        if (args.groups is None) == (args.size is None):
+            parser.error("draw: exactly one of --groups and --size "
+                         "is required")
         if not args.roster.is_file():
             parser.error("draw: %s is not a file" % args.roster)
         try:

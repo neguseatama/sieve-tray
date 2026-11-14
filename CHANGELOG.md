@@ -87,6 +87,14 @@
   manners (what it does, up to 3 numbered steps, one command block,
   one docs link), and the screenshots are re-shot offscreen at
   1042x900 for both languages (8 shots) with the icon at width 96.
+- **The frozen app runs the three Seal self-checks (SL-T20)**:
+  release.yml's post-processing starts the built artifact with
+  `manifest --self-check` / `pack --self-check` / `draw --self-check`
+  on every OS leg after gate/cohort - each builds a small known input
+  in a temp folder at run time (the published KV-2 / KV-D1 / KV-D2
+  fixtures) and compares the expected values under the same 0/1/2
+  exit contract, so a tagged bundle that cannot list, pack or draw
+  fails the release.
 
 ### Changed
 - **Lens extra**: the dependency is now
