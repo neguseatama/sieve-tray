@@ -41,6 +41,7 @@ import os
 import stat as stat_module
 import sys
 import tempfile
+import unicodedata
 import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -2275,6 +2276,293 @@ def run_manifest(input_dir, output_dir, against=None, key_file=None,
                        _gate_norm_json(receipt).encode("utf-8"))
     tell("Manifest: receipt %s"
          % (out / "handoff" / "manifest-receipt.json"))
+    return receipt
+
+
+# ------------------------------------------------------------------------
+# Seal 2.2 / S3: rename and audit-names (request 3.1 R1-R8).  rename
+# never touches the source (the plan is the default; --apply builds a
+# renamed copy at -o); audit-names reports path + symbol only.  Spec:
+# docs/manifest-format.md stays the byte-level home of the checksums;
+# the name rules live here and in the docstrings.
+
+_SEAL_WIN_RESERVED = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + ["COM%d" % i for i in range(0, 10)]
+    + ["LPT%d" % i for i in range(1, 10)])
+_SEAL_WIN_FORBIDDEN_CHARS = frozenset('<>:"|?*\\')
+_SEAL_NAME_SYMBOL_ORDER = (
+    "not_utf8_name", "reserved_name_win", "forbidden_char_win",
+    "trailing_dot_or_space", "too_long_name", "too_long_path",
+    "case_collision", "normalization_collision")
+
+
+def _seal_name_symbols(name: str, rel: str, siblings) -> List[str]:
+    """The pure name classifier (closed 8 symbols, in the closed
+    order).  ``name`` is the basename as the OS returned it (possibly
+    with surrogates), ``rel`` the relative POSIX path, ``siblings`` the
+    other names in the same directory (for the two collision symbols).
+    A >255-byte basename cannot exist on a Linux disk, which is why
+    this is a pure function: macOS/Windows-sourced names go through the
+    very same classifier.  The report carries path + symbol only - the
+    classifier never says how to fix a name."""
+    found = set()
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        found.add("not_utf8_name")
+    base = name.rsplit(".", 1)[0] if "." in name else name
+    if base.upper() in _SEAL_WIN_RESERVED or \
+            name.upper() in _SEAL_WIN_RESERVED:
+        found.add("reserved_name_win")
+    if any(c in _SEAL_WIN_FORBIDDEN_CHARS for c in name) or \
+            any(ord(c) < 0x20 for c in name):
+        found.add("forbidden_char_win")
+    if name.endswith(".") or name.endswith(" "):
+        found.add("trailing_dot_or_space")
+    if len(name.encode("utf-8", "surrogateescape")) > 255:
+        found.add("too_long_name")
+    if len(rel.encode("utf-8", "surrogateescape")) > 240:
+        found.add("too_long_path")
+    try:
+        fold = name.casefold()
+    except Exception:
+        fold = name
+    for other in siblings:
+        if other == name:
+            continue
+        if other.casefold() == fold:
+            found.add("case_collision")
+        try:
+            if unicodedata.normalize("NFC", other) == \
+                    unicodedata.normalize("NFC", name):
+                found.add("normalization_collision")
+        except Exception:
+            pass
+    return [s for s in _SEAL_NAME_SYMBOL_ORDER if s in found]
+
+
+def _seal_name_walk(root: Path):
+    """Every entry of the tree (files, directories, symlinks, special
+    files - all of them have a NAME worth auditing), as (rel, name,
+    dir_of_rel, siblings) in relative-path byte order."""
+    entries = []
+    for dirpath, dirs, names in os.walk(root, topdown=True,
+                                        followlinks=False):
+        dirs.sort()
+        names.sort()
+        here = [n for n in dirs] + [n for n in names]
+        for name in here:
+            full = Path(dirpath) / name
+            rel = full.relative_to(root).as_posix()
+            entries.append((rel, name, Path(dirpath), here))
+    entries.sort(key=lambda t: _seal_path_sort_key(t[0]))
+    return entries
+
+
+def run_audit_names(folder, out=None, no_paths=False,
+                    progress: Optional[Callable[[str], None]] = None
+                    ) -> dict:
+    """The `audit-names` command (R4-R6): report every name that would
+    not travel safely, with the closed 8 symbols and nothing else - no
+    fixes, no advice.  Files and directories are both audited; a name
+    that is not valid UTF-8 rides as path: null + path_hex."""
+    tell = progress or (lambda _m: None)
+    root = Path(folder)
+    if not root.is_dir():
+        raise ValueError("audit-names: %s is not a directory" % root)
+    tell("Audit-names: walking %s" % root)
+    items = []
+    sym_counts = {}
+    for rel, name, _parent, siblings in _seal_name_walk(root):
+        syms = _seal_name_symbols(name, rel, siblings)
+        for s in syms:
+            sym_counts[s] = sym_counts.get(s, 0) + 1
+        entry = {} if no_paths else _seal_path_json(rel)
+        if no_paths:
+            entry["seq"] = len(items) + 1
+        entry["symbols"] = syms
+        items.append(entry)
+    receipt = {
+        "receipt_version": 1,
+        "kind": "sieve-audit-names",
+        "tool": {"name": "sieve-tray", "version": __version__},
+        "engines": {},
+        "settings": {"no_paths": bool(no_paths)},
+        "items": items,
+        "summary": {"items": len(items), "symbols": sym_counts},
+    }
+    receipt["digest"] = _gate_digest(receipt)
+    if out is not None:
+        _gate_write_atomic(Path(out) / "handoff"
+                           / "audit-names-receipt.json",
+                           _gate_norm_json(receipt).encode("utf-8"))
+        tell("Audit-names: receipt %s"
+             % (Path(out) / "handoff" / "audit-names-receipt.json"))
+    return receipt
+
+
+_SEAL_RENAME_FIELDS = ("seq", "stem", "ext", "hash8", "parent")
+
+
+def _seal_parse_pattern(pattern: str):
+    """Compile the closed rename rule (R2): {seq}, {seq:width},
+    {stem}, {ext}, {hash8}, {parent} - nothing else exists.  Returns
+    (literal_parts, field_parts) where field_parts entries are
+    (field, width_or_None); unknown or malformed fields are refused."""
+    literals, fields = [], []
+    buf = []
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "{":
+            end = pattern.find("}", i)
+            if end < 0:
+                raise ValueError("rename: malformed rule near %r"
+                                 % pattern[i:])
+            token = pattern[i + 1:end]
+            if token in _SEAL_RENAME_FIELDS:
+                fields.append((token, None))
+            elif token.startswith("seq:") and \
+                    token[4:].isdigit() and int(token[4:]) > 0:
+                fields.append(("seq", int(token[4:])))
+            else:
+                raise ValueError("rename: unknown rule field {%s}"
+                                 % token)
+            literals.append("".join(buf))
+            buf = []
+            i = end + 1
+        else:
+            buf.append(c)
+            i += 1
+    literals.append("".join(buf))
+    return literals, fields
+
+
+def run_rename(folder, out, pattern, apply=False, no_paths=False,
+               progress: Optional[Callable[[str], None]] = None) -> dict:
+    """The `rename` command (R1-R3, R7-R8).  The default is a plan
+    only: nothing on disk changes.  --apply builds the renamed tree at
+    <out>/renamed (a copy: the source stays byte-identical).  A
+    collision is detected at the plan stage, reported as
+    rename_collision, and the apply refuses - nothing is created, no
+    automatic renaming exists.  The handoff receipt carries the rule,
+    the counts and the mapping HASH only - names never ride in the
+    handoff; the mapping table is local/rename-plan.json and
+    --no-paths turns its from-side into seq numbers."""
+    tell = progress or (lambda _m: None)
+    root = Path(folder)
+    if not root.is_dir():
+        raise ValueError("rename: %s is not a directory" % root)
+    literals, fields = _seal_parse_pattern(pattern)
+    items, _skipped = _seal_manifest_scan(root)
+    mapping = []
+    new_rels = []
+    for idx, it in enumerate(items, start=1):
+        rel = it["path"] if it["path"] is not None else None
+        if rel is None:
+            # a non-UTF-8 name cannot take a {stem}/{ext} rule: it is
+            # reported as a collision of the closed kind instead
+            mapping.append({"from": "#%d" % idx, "to": None})
+            new_rels.append(None)
+            continue
+        p = Path(rel)
+        parent_dir = p.parent.as_posix()
+        vals = {}
+        for field, width in fields:
+            if field == "seq":
+                vals.setdefault((field, width),
+                                ("%0*d" % (width, idx) if width
+                                 else str(idx)))
+            elif field == "stem":
+                vals.setdefault((field, width), p.stem)
+            elif field == "ext":
+                vals.setdefault((field, width), p.suffix)
+            elif field == "hash8":
+                vals.setdefault((field, width), it["sha256"][:8])
+            elif field == "parent":
+                vals.setdefault((field, width),
+                                p.parent.name if parent_dir != "." else "")
+        pieces = []
+        for j, (field, width) in enumerate(fields):
+            pieces.append(literals[j])
+            pieces.append(vals[(field, width)])
+        pieces.append(literals[-1])
+        new_name = "".join(pieces)
+        new_rel = (parent_dir + "/" + new_name) \
+            if parent_dir != "." else new_name
+        mapping.append({"from": rel, "to": new_rel})
+        new_rels.append(new_rel)
+
+    # --- collisions: two files onto one destination path (exact,
+    # casefold, or NFC), or a file onto an existing directory path
+    collisions = 0
+    seen = {}
+    dir_rels = set()
+    for dirpath, dirs, _names in os.walk(root):
+        for d in dirs:
+            dr = (Path(dirpath) / d).relative_to(root).as_posix()
+            dir_rels.add(dr)
+    for nr in new_rels:
+        if nr is None:
+            collisions += 1
+            continue
+        keys = (nr, nr.casefold(),
+                unicodedata.normalize("NFC", nr))
+        if any(k in seen for k in keys):
+            collisions += 1
+        else:
+            for k in keys:
+                seen[k] = True
+            if nr in dir_rels:
+                collisions += 1
+    collision_flag = ["rename_collision"] if collisions else []
+
+    mapping_blob = json.dumps(mapping, ensure_ascii=False,
+                              sort_keys=True, separators=(",", ":")) \
+        .encode("utf-8")
+    if no_paths:
+        # R7: the shareable plan speaks in seq numbers on the from-side
+        mapping = [{"from": "#%d" % (i + 1), "to": m["to"]}
+                   for i, m in enumerate(mapping)]
+    receipt = {
+        "receipt_version": 1,
+        "kind": "sieve-rename",
+        "tool": {"name": "sieve-tray", "version": __version__},
+        "engines": {},
+        "settings": {"pattern": pattern, "apply": bool(apply),
+                     "no_paths": bool(no_paths)},
+        "items": [],
+        "summary": {
+            "files": len(mapping),
+            "collisions": collisions,
+            "collision": collision_flag,
+            "mapping_sha256": "sha256:"
+            + hashlib.sha256(mapping_blob).hexdigest(),
+        },
+    }
+    receipt["digest"] = _gate_digest(receipt)
+    out = Path(out)
+    plan = {"pattern": pattern, "apply": bool(apply),
+            "mapping": mapping}
+    _gate_write_atomic(out / "local" / "rename-plan.json",
+                       _gate_norm_json(plan).encode("utf-8"))
+    if not collisions and apply:
+        dst = out / "renamed"
+        for it, (m, nr) in zip(items, zip(mapping, new_rels)):
+            if nr is None:
+                continue
+            target = dst / nr
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(it["_abs"], "rb") as src_fh, \
+                    open(target, "wb") as dst_fh:
+                for chunk in iter(lambda: src_fh.read(1 << 20), b""):
+                    dst_fh.write(chunk)
+        tell("Rename: built the renamed tree at %s" % dst)
+    _gate_write_atomic(out / "handoff" / "rename-receipt.json",
+                       _gate_norm_json(receipt).encode("utf-8"))
+    tell("Rename: receipt %s"
+         % (out / "handoff" / "rename-receipt.json"))
     return receipt
 
 
@@ -4586,6 +4874,21 @@ def _gate_main(argv: List[str]) -> int:
     m.add_argument("--against", type=Path, default=None)
     m.add_argument("--key-file", type=Path, default=None,
                    metavar="PATH")
+    # Seal 2.2 (S3): rename plans (default) or applies (--apply) a
+    # closed rule; audit-names reports path + symbol only.
+    r = sub.add_parser("rename", help="plan (or apply) a rename rule "
+                                      "(Seal 2.2)")
+    r.add_argument("input_dir", type=Path, nargs="?", default=None)
+    r.add_argument("--pattern", required=True, metavar="RULE")
+    r.add_argument("--apply", action="store_true")
+    r.add_argument("-o", "--output", type=Path, default=None)
+    r.add_argument("--no-paths", action="store_true")
+    an = sub.add_parser("audit-names",
+                        help="report the names that would not travel "
+                             "safely (Seal 2.2)")
+    an.add_argument("input_dir", type=Path, nargs="?", default=None)
+    an.add_argument("-o", "--output", type=Path, default=None)
+    an.add_argument("--no-paths", action="store_true")
     args = parser.parse_args(argv)
 
     if args.cmd == "manifest":
@@ -4608,6 +4911,38 @@ def _gate_main(argv: List[str]) -> int:
         s = receipt["summary"]
         dirty = s["changed"] + s["removed"] + s["added"] + s["moved"]
         return 0 if dirty == 0 else 1
+    if args.cmd == "rename":
+        if args.input_dir is None or args.output is None:
+            parser.error("rename needs an input folder and -o/--output")
+        if not args.input_dir.is_dir():
+            parser.error("rename: %s is not a directory" % args.input_dir)
+        try:
+            receipt = run_rename(
+                args.input_dir, args.output, args.pattern,
+                apply=args.apply, no_paths=args.no_paths,
+                progress=print)
+        except ValueError as e:
+            parser.error(str(e))  # exit 2: the rule itself is invalid
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Plan: %s" % (args.output / "local" / "rename-plan.json"))
+        if receipt["summary"]["collision"]:
+            return 1  # rename_collision: the apply refused
+        return 0
+    if args.cmd == "audit-names":
+        if args.input_dir is None:
+            parser.error("audit-names needs an input folder")
+        if not args.input_dir.is_dir():
+            parser.error("audit-names: %s is not a directory"
+                         % args.input_dir)
+        receipt = run_audit_names(
+            args.input_dir, out=args.output, no_paths=args.no_paths,
+            progress=print)
+        if args.output is None:
+            print(_gate_norm_json(receipt), end="")
+        else:
+            print("Receipt digest: %s" % receipt["digest"])
+            print("Handoff: %s" % (args.output / "handoff"))
+        return 0
     if args.cmd == "cohort":
         if args.self_check:
             # the exit codes (the 2026-11-10 ruling): 0 = the expected
@@ -4683,7 +5018,8 @@ def main():
     # `<input folder> -o report.html` shape keeps working unchanged
     # (a folder literally named `gate` is passed as `./gate`).
     if len(sys.argv) > 1 and sys.argv[1] in ("gate", "verify",
-                                             "cohort", "manifest"):
+                                             "cohort", "manifest",
+                                             "rename", "audit-names"):
         sys.exit(_gate_main(sys.argv[1:]))
     parser = argparse.ArgumentParser(prog="sieve-tray")
     parser.add_argument("input_dir", type=Path,
