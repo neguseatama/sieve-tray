@@ -1977,6 +1977,43 @@ def _seal_check_code(key: bytes, overall_sha256: str, receipt: dict) -> str:
                                      hashlib.sha256).hexdigest()
 
 
+# The verify not_verifiable reasons (C8): the published 5 stay, the
+# Seal round adds exactly two words - code_key_missing (C9) and
+# code_key_mismatch (C10).  The item reasons (7) and the overall words
+# (match / differs / not_verifiable) stay closed.
+SEAL_NOT_VERIFIABLE_REASONS = frozenset({
+    "handoff_incomplete", "receipt_unreadable",
+    "receipt_version_unsupported", "receipt_digest_mismatch",
+    "settings_unavailable",
+    "code_key_missing", "code_key_mismatch"})
+
+
+def _seal_check_code_verdict(obj, key):
+    """The verify-side check code verdict (C9/C10/C11).  obj is a
+    receipt dict, key the key bytes or None.  Returns:
+      None                       - nothing to confirm (no section) or
+                                   the code confirmed with the key;
+      ("not_verifiable", word)   - the code cannot be confirmed;
+      ("differs_item", item)     - the value is wrong against the
+                                   matching key (C11's check_code item).
+    The claim stays limited: the code only tells that a key holder
+    made the receipt - it says nothing about who that was."""
+    cc = obj.get("check_code")
+    if not cc:
+        return None
+    if key is None:
+        return ("not_verifiable", "code_key_missing")
+    if _seal_check_key_id(key) != cc.get("key_id"):
+        return ("not_verifiable", "code_key_mismatch")
+    overall = (obj.get("summary") or {}).get("overall_sha256")
+    if not overall:
+        return ("not_verifiable", "receipt_unreadable")
+    if _seal_check_code(key, overall, obj) != cc.get("value"):
+        return ("differs_item",
+                {"path": "check_code", "reason": "check_code_differs"})
+    return None
+
+
 # ------------------------------------------------------------------------
 # Seal 2.2 / S2: the manifest command (request 3.1 M1-M11).  The file
 # list of a folder, its duplicates, and the diff against a second
@@ -3103,7 +3140,7 @@ def run_gate(input_dir: Path, output_dir: Path, *,
              redact_config=None, no_redact: bool = False,
              crowd_config=None, include_paths: bool = True,
              include_input_hashes: bool = True,
-             storage_path=None) -> dict:
+             storage_path=None, key_file=None) -> dict:
     """The M1 Gate (request §3.1): one pass over a folder, producing
     handoff/ + local/ + the normalized receipt.  Returns the receipt
     dict (with its digest).
@@ -3242,6 +3279,18 @@ def run_gate(input_dir: Path, output_dir: Path, *,
             "status": status_counts,
         },
     }
+    if key_file is not None:
+        # C5/C1: a keyed gate binds the input folder's whole checksum
+        # (the S1 hash tree) and carries the optional check_code
+        # section; an unkeyed run keeps the 2.1.1 shape byte for byte
+        key = Path(key_file).read_bytes()
+        receipt["summary"]["overall_sha256"] = \
+            _seal_overall_sha256(Path(input_dir))
+        receipt["check_code"] = {
+            "key_id": _seal_check_key_id(key),
+            "value": _seal_check_code(
+                key, receipt["summary"]["overall_sha256"], receipt),
+        }
     receipt["digest"] = _gate_digest(receipt)
 
     # --- the receipt is written last (request §3.1)
@@ -4083,7 +4132,7 @@ def run_cohort(input_dir: Path, output_dir: Path, *,
                include_paths: bool = True,
                include_input_hashes: bool = True,
                storage_path=None, lang: str = "en",
-               progress=None) -> dict:
+               progress=None, key_file=None) -> dict:
     """The M2 Cohort (request §3.1): compare the submissions of a
     folder side by side and write handoff/ (the receipt only) +
     local/ (the report).  Returns the receipt dict (with its digest).
@@ -4370,6 +4419,18 @@ def run_cohort(input_dir: Path, output_dir: Path, *,
                 "pair references an unknown item: %s" % (exc,))
         receipt["pairs"] = sorted(
             receipt["pairs"], key=lambda p: (p["a"], p["b"]))
+    if key_file is not None:
+        # C5: a keyed cohort binds the input folder's whole checksum
+        # and carries the optional check_code section (receipt_version
+        # stays 1); an unkeyed run keeps the 2.1.1 shape
+        key = Path(key_file).read_bytes()
+        receipt["summary"]["overall_sha256"] = \
+            _seal_overall_sha256(Path(input_dir))
+        receipt["check_code"] = {
+            "key_id": _seal_check_key_id(key),
+            "value": _seal_check_code(
+                key, receipt["summary"]["overall_sha256"], receipt),
+        }
     receipt["digest"] = _gate_digest(receipt)
     pairs = receipt["pairs"]
     blob = _gate_norm_json(receipt)
@@ -4647,7 +4708,8 @@ def _cohort_summary_consistent(obj: dict) -> bool:
 
 
 def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
-                scope=None, redact_config=None, base_paths=None) -> dict:
+                scope=None, redact_config=None, base_paths=None,
+                key_file=None) -> dict:
     """Re-check a run (request §3.4).  scope is always reported:
     outputs_only / inputs_and_outputs / replay.  overall is
     match / differs / not_verifiable; the CLI maps it to exit codes
@@ -4689,6 +4751,68 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
     if obj.get("digest") != _gate_digest(obj):
         result["overall"] = "not_verifiable"
         result["not_verifiable_reason"] = "receipt_digest_mismatch"
+        return result
+    # the check code key (C14): the file-list checks run with or
+    # without it; the code itself is confirmed only with it
+    key = None
+    if key_file is not None:
+        try:
+            key = Path(key_file).read_bytes()
+        except OSError:
+            result["overall"] = "not_verifiable"
+            result["not_verifiable_reason"] = "settings_unavailable"
+            return result
+    if obj.get("kind") in ("sieve-manifest", "sieve-manifest-diff",
+                           "sieve-pack"):
+        # the Seal list receipts (C9): the list check runs without a
+        # key; the code verdict rides on top (C10/C11)
+        result["scope"] = scope or ("root" if input_dir is not None
+                                    else "receipt_only")
+        items = []
+        root = Path(input_dir) if input_dir is not None else None
+        if root is not None:
+            if not root.is_dir():
+                result["overall"] = "not_verifiable"
+                result["not_verifiable_reason"] = "settings_unavailable"
+                return result
+            if obj["kind"] == "sieve-manifest":
+                want = {it["path"]: it for it in obj.get("items", [])}
+                present = {}
+                for r, _d, names in os.walk(root, followlinks=False):
+                    for n in names:
+                        rel = (Path(r) / n).relative_to(root).as_posix()
+                        present[rel] = True
+                for rel, it in want.items():
+                    p = root / rel
+                    if not p.is_file() or p.is_symlink():
+                        items.append({"path": rel,
+                                      "reason": "input_missing"})
+                        continue
+                    got = hashlib.sha256(p.read_bytes()).hexdigest()
+                    if got != it.get("sha256"):
+                        items.append({"path": rel,
+                                      "reason": "input_changed"})
+                for rel in present:
+                    if rel not in want:
+                        items.append({"path": rel,
+                                      "reason": "item_added"})
+            # the whole-folder checksum binds the directories too
+            got_overall = _seal_overall_sha256(root)
+            if got_overall != (obj.get("summary") or {}).get(
+                    "overall_sha256"):
+                items.append({"path": ".", "reason": "input_changed"})
+            items.sort(key=lambda e: e["path"])
+        verdict = _seal_check_code_verdict(obj, key)
+        if verdict and verdict[0] == "differs_item":
+            items.append(verdict[1])
+        result["items"] = items
+        if items:
+            result["overall"] = "differs"
+        elif verdict:
+            result["overall"] = "not_verifiable"
+            result["not_verifiable_reason"] = verdict[1]
+        else:
+            result["overall"] = "match"
         return result
     if scope is None:
         if output_dir is not None and input_dir is not None:
@@ -4816,17 +4940,22 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
             result["not_verifiable_reason"] = "settings_unavailable"
             return result
         csettings = obj.get("settings") or {}
-        with tempfile.TemporaryDirectory() as td:
-            receipt2 = run_cohort(
-                Path(input_dir), Path(td) / "out",
-                base_paths=bases or None,
-                exclude_quotes=bool(csettings.get("exclude_quotes")),
-                exclude_bibliography=bool(
-                    csettings.get("exclude_bibliography")),
-                include_paths=bool(csettings.get("include_paths", True)),
-                include_input_hashes=bool(
-                    csettings.get("include_input_hashes", True)))
-        if receipt2["digest"] != obj.get("digest"):
+        if obj.get("check_code") is not None and key is None:
+            receipt2 = None  # the replay cannot reproduce a keyed run
+        else:
+            with tempfile.TemporaryDirectory() as td:
+                receipt2 = run_cohort(
+                    Path(input_dir), Path(td) / "out",
+                    base_paths=bases or None,
+                    exclude_quotes=bool(csettings.get("exclude_quotes")),
+                    exclude_bibliography=bool(
+                        csettings.get("exclude_bibliography")),
+                    include_paths=bool(
+                        csettings.get("include_paths", True)),
+                    include_input_hashes=bool(
+                        csettings.get("include_input_hashes", True)),
+                    key_file=key_file)
+        if receipt2 is not None and receipt2["digest"] != obj.get("digest"):
             for it2 in receipt2["items"]:
                 ident = _gate_verify_item_ident(it2)
                 ident["reason"] = "replay_differs"
@@ -4858,7 +4987,9 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
                 red.get("config_sha256") is None,
                 include_paths=settings.get("include_paths", True),
                 include_input_hashes=settings.get(
-                    "include_input_hashes", True))
+                    "include_input_hashes", True),
+                key_file=(key_file if obj.get("check_code") is not None
+                          else None))
         if receipt2["digest"] != obj.get("digest"):
             for it2 in receipt2["items"]:
                 ident = _gate_verify_item_ident(it2)
@@ -4876,15 +5007,29 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
             reasons.append(entry)
 
     # deduplicate: an item keeps at most one reason, replay_differs and
-    # engine_version_differs included (the comparison never stops)
+    # engine_version_differs included (the comparison never stops).
+    # The check code verdict is taken BEFORE this loop - its local
+    # `key` tuple would shadow the key bytes (C9/C10/C11: the verdict
+    # rides on top of the folder checks and decides the overall only
+    # when the folder itself matched).
+    cc_verdict = _seal_check_code_verdict(obj, key)
     dedup = {}
     for entry in reasons:
         key = (entry.get("path"), entry.get("index"))
         if key not in dedup:
             dedup[key] = entry
     result["items"] = list(dedup.values())
-    result["overall"] = "differs" if result["items"] else "match"
-    result["not_verifiable_reason"] = None
+    if cc_verdict and cc_verdict[0] == "differs_item":
+        result["items"].append(cc_verdict[1])
+    if result["items"]:
+        result["overall"] = "differs"
+        result["not_verifiable_reason"] = None
+    elif cc_verdict:
+        result["overall"] = "not_verifiable"
+        result["not_verifiable_reason"] = cc_verdict[1]
+    else:
+        result["overall"] = "match"
+        result["not_verifiable_reason"] = None
     return result
 
 
@@ -5079,6 +5224,8 @@ def _gate_main(argv: List[str]) -> int:
     g.add_argument("--no-paths", action="store_true")
     g.add_argument("--no-input-hashes", action="store_true")
     g.add_argument("--self-check", action="store_true")
+    g.add_argument("--key-file", type=Path, default=None,
+                   metavar="PATH")
     v = sub.add_parser("verify", help="verify a Gate/Cohort receipt")
     v.add_argument("receipt", type=Path)
     v.add_argument("input_dir", nargs="?", type=Path, default=None)
@@ -5088,6 +5235,12 @@ def _gate_main(argv: List[str]) -> int:
     # §3.7: the Cohort base files for the settings check and the replay
     v.add_argument("--base", action="append", default=None,
                    metavar="PATH")
+    # Seal 2.2 (S5): the verify extension (C14) - the key file for the
+    # check code and --root as the named folder form
+    v.add_argument("--key-file", type=Path, default=None,
+                   metavar="PATH")
+    v.add_argument("--root", type=Path, default=None,
+                   help="the folder to check the list against")
     # v2.1.0 (M2 Cohort): the cohort subcommand joins gate and verify;
     # the legacy shape and the M1 shapes stay byte-identical.
     c = sub.add_parser("cohort", help="compare the submissions of a "
@@ -5104,6 +5257,8 @@ def _gate_main(argv: List[str]) -> int:
     c.add_argument("--self-check", action="store_true")
     c.add_argument("--lang", default="en", choices=("en", "ja"),
                    help="the report language (default: en)")
+    c.add_argument("--key-file", type=Path, default=None,
+                   metavar="PATH")
     # Seal 2.2 (S2): the manifest subcommand joins gate/verify/cohort;
     # the output placement rules are the gate ones (an -o folder with a
     # handoff/ inside), except a manifest keeps no local/ tree.
@@ -5242,7 +5397,7 @@ def _gate_main(argv: List[str]) -> int:
             exclude_bibliography=args.exclude_bibliography,
             include_paths=not args.no_paths,
             include_input_hashes=not args.no_input_hashes,
-            lang=args.lang)
+            lang=args.lang, key_file=args.key_file)
         print("Receipt digest: %s" % receipt["digest"])
         print("Handoff: %s" % (args.output / "handoff"))
         print("Report:  %s" % (args.output / "local"
@@ -5270,15 +5425,19 @@ def _gate_main(argv: List[str]) -> int:
             redact_config=args.redact_config, no_redact=args.no_redact,
             crowd_config=args.crowd_config,
             include_paths=not args.no_paths,
-            include_input_hashes=not args.no_input_hashes)
+            include_input_hashes=not args.no_input_hashes,
+            key_file=args.key_file)
         print("Receipt digest: %s" % receipt["digest"])
         print("Handoff: %s" % (args.output / "handoff"))
         print("Report:  %s" % (args.output / "local" / "gate-report.html"))
         return 0
     result = verify_gate(
-        args.receipt, input_dir=args.input_dir, output_dir=args.output,
+        args.receipt,
+        input_dir=(args.input_dir if args.input_dir is not None
+                   else args.root),
+        output_dir=args.output,
         scope=args.scope, redact_config=args.redact_config,
-        base_paths=args.base)
+        base_paths=args.base, key_file=args.key_file)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return {"match": 0, "differs": 1,
             "not_verifiable": 2}[result["overall"]]

@@ -234,3 +234,31 @@ printf 'd\x00a\x00%s\nf\x00beta.txt\x00f2c82decdd7181cf98945929a62598db7e6b477e1
 CLI の終了符号: 単独モードと差異なしの差分 = `0`、
 changed / removed / added / moved が 1 件でもある差分 = `1`、
 実行不能 = `2`。
+
+---
+
+## 6. `verify` の拡張（§2 の確認のしかた）
+
+`verify <処理記録> [--key-file <キー>] [--root <フォルダ>]` は、
+既存の語彙（overall = `match` / `differs` / `not_verifiable`・
+項目理由 7 種・終了符号 0/1/2）を保ったまま、次だけを足す:
+
+- `not_verifiable` の理由に 2 語を追加（§2.4）:
+  `code_key_missing`（処理記録が `check_code` 節を持ち、キーが渡らない。
+  **ファイル一覧の一致確認は、この場合でも行われ、その結果が items に載る**）、
+  `code_key_mismatch`（キー識別子が合わない。値の一致不一致は報告しない）。
+- 照合コードの値が、合うキーで再計算した結果と違うとき:
+  既存の `differs` に `{"path": "check_code", "reason":
+  "check_code_differs"}` の 1 行として載る（C11）。
+- 実差異があるときは `differs` が `not_verifiable` に勝つ
+  （一覧の確認結果を隠さないため）。
+- `--root` は `manifest` / `pack` の処理記録をフォルダに対して確かめる:
+  項目ごとの有無・サイズ・SHA-256（既存の理由語 `input_missing` /
+  `input_changed` / `item_added`）と、§1 の全体チェックサムの再計算
+  （合わなければ `.` が `input_changed`）。
+
+`gate` / `cohort` / `manifest` / `pack` は共通の `--key-file` を受ける（C5）。
+キーが渡された実行だけが `summary.overall_sha256`（入力フォルダの §1
+チェックサム）と `check_code` 節を持ち、`receipt_version` は 1 のまま
+（キーのない処理記録は 2.1.1 までと同じ形・同じ digest）。
+主張の範囲は §2 冒頭のとおり限定される（C13）。
