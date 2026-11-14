@@ -1891,13 +1891,14 @@ def _seal_tree_rows(folder: Path):
     used as-is - NFC is never applied - and carried as UTF-8 bytes
     (surrogateescape gives back the raw bytes of a non-UTF-8 name).
     Symlinks and special files carry no row; a file that cannot be read
-    carries no row either (the manifest lane records it in skipped).
+    and a directory that cannot be listed carry no row either (the
+    manifest lane records them in skipped).
     """
     rows = []
     try:
         names = sorted(os.listdir(folder))
     except OSError:
-        return rows
+        return None  # unlistable: no row for this directory
     entries = []
     for name in names:
         p = folder / name
@@ -1915,7 +1916,10 @@ def _seal_tree_rows(folder: Path):
     entries.sort(key=lambda t: (t[0], t[1]))
     for name_bytes, kind, p in entries:
         if kind == b"d":
-            child = _seal_overall_sha256(p)
+            sub = _seal_tree_rows(p)
+            if sub is None:
+                continue  # unlistable directory: no row
+            child = hashlib.sha256(b"".join(sub)).hexdigest()
         else:
             try:
                 digest = hashlib.sha256()
@@ -1934,7 +1938,10 @@ def _seal_overall_sha256(folder: Path) -> str:
     """The whole-folder checksum: SHA-256 over the concatenated rows of
     the folder (docs/manifest-format.md section 1).  An empty folder is
     SHA-256(b"")."""
-    return hashlib.sha256(b"".join(_seal_tree_rows(folder))).hexdigest()
+    rows = _seal_tree_rows(folder)
+    if rows is None:
+        rows = []  # an unlistable root hashes like an empty one
+    return hashlib.sha256(b"".join(rows)).hexdigest()
 
 
 _SEAL_CHECK_KEY_ID_LABEL = b"sieve-check-key-id"
@@ -1966,6 +1973,309 @@ def _seal_check_code(key: bytes, overall_sha256: str, receipt: dict) -> str:
     msg = overall_sha256.encode("ascii") + b":" + blob
     return "hmac-sha256:" + hmac.new(key, msg,
                                      hashlib.sha256).hexdigest()
+
+
+# ------------------------------------------------------------------------
+# Seal 2.2 / S2: the manifest command (request 3.1 M1-M11).  The file
+# list of a folder, its duplicates, and the diff against a second
+# folder.  Spec: docs/manifest-format.md (sections 1, 2 and 5).
+
+def _seal_rel_of(root: Path, full: Path) -> str:
+    """The relative POSIX form of a walked path (request 3.1 M1)."""
+    return full.relative_to(root).as_posix()
+
+
+def _seal_path_json(rel: str, extra: Optional[dict] = None) -> dict:
+    """One path field for the receipt JSON.  Paths are used as-is (NFC
+    is never applied); a path that is not valid UTF-8 cannot ride in a
+    JSON string, so it is recorded as path: null plus path_hex (the
+    raw bytes in hex) - the same treatment audit-names uses."""
+    entry = {} if extra is None else dict(extra)
+    try:
+        rel.encode("utf-8")
+        entry["path"] = rel
+    except UnicodeEncodeError:
+        entry["path"] = None
+        entry["path_hex"] = rel.encode("utf-8",
+                                       "surrogateescape").hex()
+    return entry
+
+
+def _seal_path_sort_key(rel: str) -> bytes:
+    return rel.encode("utf-8", "surrogateescape")
+
+
+def _seal_manifest_scan(root: Path):
+    """One walk over the tree: (items, skipped).  Items are the regular
+    files ({path / path_hex, bytes, sha256} + the private _abs path);
+    skipped carries every symlink (symlink_skipped), every non-regular
+    special file (not_applicable) and every file or directory that
+    cannot be read (unreadable) - closed vocabulary only, one walk."""
+    items, skipped = [], []
+
+    def _unlistable(err):
+        rel = err.filename
+        try:
+            rel = _seal_rel_of(root, Path(err.filename))
+        except Exception:
+            rel = str(err.filename)
+        skipped.append(_seal_path_json(rel, {"reason": "unreadable"}))
+
+    for dirpath, dirs, names in os.walk(root, topdown=True,
+                                        followlinks=False, onerror=_unlistable):
+        dirs.sort()
+        names.sort()
+        keep = []
+        for name in dirs:
+            full = Path(dirpath) / name
+            rel = _seal_rel_of(root, full)
+            if os.path.islink(full):
+                skipped.append(_seal_path_json(
+                    rel, {"reason": "symlink_skipped"}))
+            else:
+                keep.append(name)
+        dirs[:] = keep
+        for name in names:
+            full = Path(dirpath) / name
+            rel = _seal_rel_of(root, full)
+            if os.path.islink(full):
+                skipped.append(_seal_path_json(
+                    rel, {"reason": "symlink_skipped"}))
+                continue
+            try:
+                st = os.lstat(full)
+                if not stat_module.S_ISREG(st.st_mode):
+                    skipped.append(_seal_path_json(
+                        rel, {"reason": "not_applicable"}))
+                    continue
+                digest = hashlib.sha256()
+                size = 0
+                with open(full, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        digest.update(chunk)
+                        size += len(chunk)
+            except OSError:
+                skipped.append(_seal_path_json(
+                    rel, {"reason": "unreadable"}))
+                continue
+            item = _seal_path_json(rel, {"bytes": size,
+                                         "sha256": digest.hexdigest()})
+            item["_abs"] = full
+            items.append(item)
+    items.sort(key=lambda it: _seal_path_sort_key(it["path"]
+                                                  if it["path"] is not None
+                                                  else it["path_hex"]))
+    skipped.sort(key=lambda s: _seal_path_sort_key(s["path"]
+                                                   if s["path"] is not None
+                                                   else s["path_hex"]))
+    return items, skipped
+
+
+def _seal_bytes_equal(f1: Path, f2: Path) -> bool:
+    """The byte comparison that confirms a duplicate group (M6): true
+    only when both files carry the very same bytes."""
+    try:
+        with open(f1, "rb") as a, open(f2, "rb") as b:
+            while True:
+                ca = a.read(1 << 20)
+                cb = b.read(1 << 20)
+                if ca != cb:
+                    return False
+                if not ca:
+                    return True
+    except OSError:
+        return False
+
+
+def _seal_duplicate_groups(items):
+    """Complete duplicates: group the items by sha256, confirm every
+    group by byte comparison (M6), and report the surviving groups with
+    their ascending paths."""
+    by_sha = {}
+    for it in items:
+        by_sha.setdefault(it["sha256"], []).append(it)
+    groups = []
+    for sha, cands in sorted(by_sha.items()):
+        if len(cands) < 2:
+            continue
+        remaining = sorted(cands, key=lambda it: _seal_path_sort_key(
+            it["path"] if it["path"] is not None else it["path_hex"]))
+        while len(remaining) >= 2:
+            ref = remaining[0]
+            group = [ref]
+            rest = []
+            for c in remaining[1:]:
+                if _seal_bytes_equal(ref["_abs"], c["_abs"]):
+                    group.append(c)
+                else:
+                    rest.append(c)  # sha collision paranoia: re-group
+            if len(group) >= 2:
+                groups.append({
+                    "sha256": sha,
+                    "bytes": ref["bytes"],
+                    "paths": [(it["path"] if it["path"] is not None else
+                               {"path": None, "path_hex": it["path_hex"]})
+                              for it in group],
+                })
+            remaining = rest
+    return groups
+
+
+_SEAL_DIFF_STATES = ("same", "changed", "removed", "added", "moved")
+
+
+def run_manifest(input_dir, output_dir, against=None, key_file=None,
+                 progress: Optional[Callable[[str], None]] = None) -> dict:
+    """The `manifest` command (M10/M11): the file list of a folder
+    (`items` + `skipped` + `duplicates` + the whole-folder checksum) or,
+    with `against`, the diff receipt (the closed 5 states, moved pairs
+    bound by the sha group, first pair in path order only).  The
+    receipt is written LAST into handoff/; a manifest has no local
+    tree.  --key-file adds the optional check_code section; the
+    receipt_version stays 1."""
+    tell = progress or (lambda _m: None)
+    root = Path(input_dir)
+    if not root.is_dir():
+        raise ValueError("manifest: %s is not a directory" % root)
+    out = Path(output_dir)
+    key = None
+    if key_file is not None:
+        key = Path(key_file).read_bytes()
+
+    if against is None:
+        tell("Manifest: scanning %s" % root)
+        items, skipped = _seal_manifest_scan(root)
+        groups = _seal_duplicate_groups(items)
+        overall = _seal_overall_sha256(root)
+        receipt = {
+            "receipt_version": 1,
+            "kind": "sieve-manifest",
+            "tool": {"name": "sieve-tray", "version": __version__},
+            "engines": {},
+            "settings": {"against": None},
+            "items": [{k: v for k, v in it.items() if k != "_abs"}
+                      for it in items],
+            "skipped": skipped,
+            "duplicates": groups,
+            "summary": {
+                "items": len(items),
+                "skipped": len(skipped),
+                "duplicate_groups": len(groups),
+                "duplicate_files": sum(len(g["paths"]) for g in groups),
+                "duplicate_bytes": sum(g["bytes"] * len(g["paths"])
+                                       for g in groups),
+                "overall_sha256": overall,
+            },
+        }
+    else:
+        root_b = Path(against)
+        if not root_b.is_dir():
+            raise ValueError("manifest: %s is not a directory" % root_b)
+        tell("Manifest: diffing %s against %s" % (root, root_b))
+        items_a, _skipped_a = _seal_manifest_scan(root)
+        items_b, _skipped_b = _seal_manifest_scan(root_b)
+        map_a = {(_seal_path_sort_key(it["path"]
+                                       if it["path"] is not None
+                                       else it["path_hex"])): it
+                 for it in items_a}
+        map_b = {(_seal_path_sort_key(it["path"]
+                                       if it["path"] is not None
+                                       else it["path_hex"])): it
+                 for it in items_b}
+        differences = []
+
+        def _entry(state, it, extra=None):
+            e = {"state": state}
+            e.update({k: v for k, v in it.items() if k != "_abs"})
+            if extra:
+                e.update(extra)
+            return e
+
+        # 1) the moved pairs first: per sha group of removed-vs-added,
+        #    only the FIRST pair in path ascending order; the leftovers
+        #    keep their original state and a multi-candidate group
+        #    adds one ambiguous_move
+        rem_by_sha, add_by_sha = {}, {}
+        for pb, it in map_a.items():
+            if pb not in map_b:
+                rem_by_sha.setdefault(it["sha256"], []).append(pb)
+        for pb, it in map_b.items():
+            if pb not in map_a:
+                add_by_sha.setdefault(it["sha256"], []).append(pb)
+        paired_a, paired_b = set(), set()
+        ambiguous = 0
+        for sha in sorted(set(rem_by_sha) & set(add_by_sha)):
+            rem = sorted(rem_by_sha[sha])
+            add = sorted(add_by_sha[sha])
+            paired_a.add(rem[0])
+            paired_b.add(add[0])
+            entry = _entry("moved", map_a[rem[0]], {})
+            it_b = map_b[add[0]]
+            if it_b["path"] is None:
+                entry["path_b"] = None
+                entry["path_b_hex"] = it_b["path_hex"]
+            else:
+                entry["path_b"] = it_b["path"]
+            differences.append((0, rem[0], entry))
+            if len(rem) >= 2 or len(add) >= 2:
+                ambiguous += 1
+        # 2) the A-side states (a path already moved does not reappear)
+        for pb, it in map_a.items():
+            if pb in paired_a:
+                continue
+            if pb not in map_b:
+                differences.append((0, pb, _entry("removed", it)))
+            elif map_b[pb]["sha256"] == it["sha256"]:
+                differences.append((0, pb, _entry("same", it)))
+            else:
+                differences.append((0, pb, _entry("changed", it, {
+                    "sha256_a": it["sha256"],
+                    "sha256_b": map_b[pb]["sha256"]})))
+        # 3) the added paths that no moved pair consumed
+        for pb, it in map_b.items():
+            if pb not in map_a and pb not in paired_b:
+                differences.append((1, pb, _entry("added", it)))
+        # order: A-side entries by their A path bytes; added entries by
+        # their B path bytes after them (both deterministic)
+        differences.sort(key=lambda t: (t[0], t[1]))
+        counts = {s: 0 for s in _SEAL_DIFF_STATES}
+        for _side, _pb, e in differences:
+            counts[e["state"]] += 1
+        receipt = {
+            "receipt_version": 1,
+            "kind": "sieve-manifest-diff",
+            "tool": {"name": "sieve-tray", "version": __version__},
+            "engines": {},
+            "settings": {"against": str(root_b),
+                         "overall_b": _seal_overall_sha256(root_b)},
+            "items": [],
+            "skipped": [],
+            "duplicates": [],
+            "differences": [e for _s, _p, e in differences],
+            "summary": {
+                "items": len(differences),
+                "same": counts["same"],
+                "changed": counts["changed"],
+                "removed": counts["removed"],
+                "added": counts["added"],
+                "moved": counts["moved"],
+                "ambiguous_move": ambiguous,
+                "overall_sha256": _seal_overall_sha256(root),
+            },
+        }
+
+    if key is not None:
+        receipt["check_code"] = {
+            "key_id": _seal_check_key_id(key),
+            "value": _seal_check_code(
+                key, receipt["summary"]["overall_sha256"], receipt),
+        }
+    receipt["digest"] = _gate_digest(receipt)
+    _gate_write_atomic(out / "handoff" / "manifest-receipt.json",
+                       _gate_norm_json(receipt).encode("utf-8"))
+    tell("Manifest: receipt %s"
+         % (out / "handoff" / "manifest-receipt.json"))
+    return receipt
 
 
 def _gate_charset_check(data: bytes):
@@ -4267,8 +4577,37 @@ def _gate_main(argv: List[str]) -> int:
     c.add_argument("--self-check", action="store_true")
     c.add_argument("--lang", default="en", choices=("en", "ja"),
                    help="the report language (default: en)")
+    # Seal 2.2 (S2): the manifest subcommand joins gate/verify/cohort;
+    # the output placement rules are the gate ones (an -o folder with a
+    # handoff/ inside), except a manifest keeps no local/ tree.
+    m = sub.add_parser("manifest", help="list a folder (Seal 2.2)")
+    m.add_argument("input_dir", type=Path, nargs="?", default=None)
+    m.add_argument("-o", "--output", type=Path, default=None)
+    m.add_argument("--against", type=Path, default=None)
+    m.add_argument("--key-file", type=Path, default=None,
+                   metavar="PATH")
     args = parser.parse_args(argv)
 
+    if args.cmd == "manifest":
+        if args.input_dir is None or args.output is None:
+            parser.error("manifest needs an input folder and -o/--output")
+        if not args.input_dir.is_dir():
+            parser.error("manifest: %s is not a directory" % args.input_dir)
+        if args.against is not None and not args.against.is_dir():
+            parser.error("manifest: %s is not a directory" % args.against)
+        receipt = run_manifest(
+            args.input_dir, args.output, against=args.against,
+            key_file=args.key_file, progress=print)
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Handoff: %s" % (args.output / "handoff"))
+        if args.against is None:
+            return 0
+        # a diff with no change is a clean exit; a changed / removed /
+        # added / moved entry (same does not count) is 1 (the verify
+        # family semantics)
+        s = receipt["summary"]
+        dirty = s["changed"] + s["removed"] + s["added"] + s["moved"]
+        return 0 if dirty == 0 else 1
     if args.cmd == "cohort":
         if args.self_check:
             # the exit codes (the 2026-11-10 ruling): 0 = the expected
@@ -4344,7 +4683,7 @@ def main():
     # `<input folder> -o report.html` shape keeps working unchanged
     # (a folder literally named `gate` is passed as `./gate`).
     if len(sys.argv) > 1 and sys.argv[1] in ("gate", "verify",
-                                             "cohort"):
+                                             "cohort", "manifest"):
         sys.exit(_gate_main(sys.argv[1:]))
     parser = argparse.ArgumentParser(prog="sieve-tray")
     parser.add_argument("input_dir", type=Path,

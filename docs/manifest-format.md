@@ -43,8 +43,9 @@ SHA-256 である。
 ### 1.3 計算の規則
 
 - 子は**通常ファイルとディレクトリのみ**。シンボリック リンク、
-  読めないファイル、その他の特殊ファイルは行に入れない
-  （`manifest` コマンドでは別途 `skipped` に記録される）。
+  読めないファイル、一覧（list）できないディレクトリ、その他の
+  特殊ファイルは行に入れない（`manifest` コマンドでは別途
+  `skipped` に記録される）。
 - 空のディレクトリも 1 行を持つ。その子チェックサムは
   SHA-256(空のバイト列) = `e3b0c442…b855`（§4 KV-1）。
 - ルートのチェックサム = ルートの子の行を（1.2 の順で）連結した
@@ -181,3 +182,55 @@ A=$(printf 'd\x00empty\x00e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca49599
 printf 'd\x00a\x00%s\nf\x00beta.txt\x00f2c82decdd7181cf98945929a62598db7e6b477e11f6e0eb0ae97020eff151ad\n' "$A" | sha256sum
 # -> 06965d1ff8239b8e9efad9c88d05e8624d92ac3dd252d047617c82c0de724a92 = KV-2
 ```
+
+---
+
+## 5. `manifest` の処理記録の形
+
+### 5.1 単独モード（`manifest <フォルダ> -o <出力先>`）
+
+外枠は §3 のとおり。`kind` = `sieve-manifest`。節:
+
+- `items`: 通常ファイルのみ。要素 = `{"path", "bytes", "sha256"}`。
+  `path` は出力フォルダから相対の POSIX 形。UTF-8 で書けないパスは
+  `path: null` + `path_hex`（生バイトの 16 進）。順序 = 相対パスの
+  UTF-8 バイト昇順。NFC 正規化はしない。
+- `skipped`: シンボリック リンク = `symlink_skipped`、読めない
+  ファイル/ディレクトリ = `unreadable`、特殊ファイル = `not_applicable`
+  （閉じた語彙のみ・ツリー走査は 1 回）。順序 = パス バイト昇順。
+- `duplicates`: sha256 が同じ群を**バイト比較で確認**した物だけを載せる。
+  要素 = `{"sha256", "bytes", "paths"}`（`paths` はパス昇順）。
+- `summary`: `items` / `skipped` / `duplicate_groups` /
+  `duplicate_files`（群に属するファイルの総数）/ `duplicate_bytes`
+  （群に属するファイルの合計バイト数）/ `overall_sha256`（§1）。
+- `--key-file` があるとき: `digest` の直前に `check_code` 節（§2.3）。
+
+`local/` は作らない。処理記録（`handoff/manifest-receipt.json`）が
+出力先で最後に書かれる物になる。
+
+### 5.2 差分モード（`manifest <A> --against <B> -o <出力先>`）
+
+`kind` = `sieve-manifest-diff`。`items` / `skipped` / `duplicates` は
+空の列。代わりに:
+
+- `differences`: 状態は閉じた 5 種
+  `same / changed / removed / added / moved`。
+  - `same`: `{"state", "path", "bytes", "sha256"}`
+  - `changed`: `{"state", "path", "bytes", "sha256_a", "sha256_b"}`
+  - `removed`: `{"state", "path", "bytes", "sha256"}`（A にのみ）
+  - `added`: `{"state", "path", "bytes", "sha256"}`（B にのみ）
+  - `moved`: `{"state", "path", "path_b", "bytes", "sha256"}`
+- moved 対付け: removed と added を **sha256 の群**ごとに見て、
+  両側に候補がある群で、**パス昇順の最初の 1 対だけ**を moved にする。
+  残りの候補は元の状態（removed / added）のまま残る。
+  候補が複数ある群（どちらかの側が 2 以上）は `ambiguous_move` を
+  1 ずつ加算する。
+- 順序: A 側のパス バイト昇順（moved は A 側パスで並ぶ）。
+  `added` は B 側パス バイト昇順で A 側の列に続く。
+- `settings`: `against`（B のパス）と `overall_b`（B の全体チェックサム）。
+- `summary`: `items`（differences の要素数）/ 5 状態ごとの件数 /
+  `ambiguous_move` / `overall_sha256`（**A 側**の全体チェックサム）。
+
+CLI の終了符号: 単独モードと差異なしの差分 = `0`、
+changed / removed / added / moved が 1 件でもある差分 = `1`、
+実行不能 = `2`。
