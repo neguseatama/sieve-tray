@@ -43,6 +43,7 @@ import sys
 import tempfile
 import unicodedata
 import webbrowser
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -2566,6 +2567,244 @@ def run_rename(folder, out, pattern, apply=False, no_paths=False,
     return receipt
 
 
+# ------------------------------------------------------------------------
+# Seal 2.2 / S4: pack and unpack (request 3.1 P1-P12).  pack writes a
+# deterministic zip; unpack runs every safety check BEFORE creating
+# anything.  The byte-level receipt rules follow the S1/S2 frame.
+
+_SEAL_ZIP_STAMP = (1980, 1, 1, 0, 0, 0)
+_SEAL_ZLIB_NOTE = "バイト列の一致は、同じ zlib でのみ保証されます"
+
+
+def run_pack(input_dir, output_zip, deflate=False, key_file=None,
+             progress: Optional[Callable[[str], None]] = None) -> dict:
+    """The `pack` command (P1-P8, P11).  The zip is deterministic:
+    entries in relative-path byte order (a directory sorts by its bare
+    path and rides with a trailing slash), the timestamp pinned to
+    1980-01-01 00:00:00, create_system 3, external attrs 0o100644 /
+    0o040755 with the DOS directory bit, the UTF-8 flag on non-ASCII
+    names, ZIP_STORED by default and --deflate on file entries only.
+    The zip lands at -o itself (it must be new, its parent must exist,
+    and it must not sit inside the input folder); the receipt lands at
+    the zip's neighbor handoff/pack-receipt.json with zip_sha256 and
+    the manifest's whole-folder checksum.  A file that cannot be read
+    does not enter the zip - it is recorded in skipped."""
+    tell = progress or (lambda _m: None)
+    root = Path(input_dir)
+    if not root.is_dir():
+        raise ValueError("pack: %s is not a directory" % root)
+    zpath = Path(output_zip)
+    if not zpath.parent.is_dir():
+        raise ValueError("pack: the parent of %s does not exist" % zpath)
+    if zpath.exists():
+        raise ValueError("pack: %s already exists (the zip must be new)"
+                         % zpath)
+    try:
+        zpath.resolve().relative_to(root.resolve())
+    except ValueError:
+        pass
+    else:
+        raise ValueError("pack: the zip must not sit inside the input "
+                         "folder (%s)" % zpath)
+    key = None
+    if key_file is not None:
+        key = Path(key_file).read_bytes()
+
+    items, skipped = _seal_manifest_scan(root)
+    # one mixed list of bare rel paths, sorted by UTF-8 bytes; in the
+    # archive a directory carries a trailing slash.  The directories
+    # come from their own walk (an empty directory still packs, a
+    # symlinked or unlistable one does not - the scan records why).
+    entries = []
+    dir_rels = []
+    for dirpath, dirnames, _names in os.walk(root, followlinks=False):
+        for d in sorted(dirnames):
+            full = Path(dirpath) / d
+            if full.is_symlink():
+                continue
+            rel = full.relative_to(root).as_posix()
+            try:
+                os.listdir(full)
+            except OSError:
+                continue
+            dir_rels.append(rel)
+            entries.append((rel, True, None))
+    for it in items:
+        entries.append((it["path"], False, it))
+    entries.sort(key=lambda t: _seal_path_sort_key(t[0]))
+
+    tell("Pack: writing %s" % zpath)
+    with zipfile.ZipFile(zpath, "w",
+                         compression=zipfile.ZIP_STORED) as zf:
+        for rel, is_dir, it in entries:
+            arcname = rel + "/" if is_dir else rel
+            zi = zipfile.ZipInfo(arcname, date_time=_SEAL_ZIP_STAMP)
+            zi.create_system = 3
+            try:
+                arcname.encode("ascii")
+            except UnicodeEncodeError:
+                zi.flag_bits |= 0x800  # the UTF-8 name flag
+            if is_dir:
+                zi.external_attr = (0o040755 << 16) | 0x10
+                zi.compress_type = zipfile.ZIP_STORED  # both flags
+                zf.writestr(zi, b"")
+            else:
+                zi.external_attr = 0o100644 << 16
+                zi.compress_type = (zipfile.ZIP_DEFLATED if deflate
+                                    else zipfile.ZIP_STORED)
+                zf.writestr(zi, it["_abs"].read_bytes())
+    zip_sha = "sha256:" + hashlib.sha256(zpath.read_bytes()).hexdigest()
+    overall = _seal_overall_sha256(root)
+    settings = {"deflate": bool(deflate), "zip": zpath.name}
+    if deflate:
+        settings["note"] = _SEAL_ZLIB_NOTE
+    receipt = {
+        "receipt_version": 1,
+        "kind": "sieve-pack",
+        "tool": {"name": "sieve-tray", "version": __version__},
+        "engines": {},
+        "settings": settings,
+        "items": [],
+        "skipped": [{k: v for k, v in s.items()} for s in skipped],
+        "summary": {
+            "files": len(items),
+            "directories": len(dir_rels),
+            "skipped": len(skipped),
+            "zip_sha256": zip_sha,
+            "overall_sha256": overall,
+        },
+    }
+    if key is not None:
+        receipt["check_code"] = {
+            "key_id": _seal_check_key_id(key),
+            "value": _seal_check_code(key, overall, receipt),
+        }
+    receipt["digest"] = _gate_digest(receipt)
+    # the receipt is the zip's neighbor's handoff/, written last
+    _gate_write_atomic(zpath.parent / "handoff" / "pack-receipt.json",
+                       _gate_norm_json(receipt).encode("utf-8"))
+    tell("Pack: receipt %s"
+         % (zpath.parent / "handoff" / "pack-receipt.json"))
+    return receipt
+
+
+_SEAL_UNPACK_SYMBOLS = ("absolute_path", "parent_ref", "drive_letter",
+                        "collision")
+
+
+def _seal_unpack_checks(infos):
+    """Every safety check (P9) runs before anything is created: an
+    absolute path, a .. component (a backslash counts as a separator),
+    a drive letter, or a collision (an exact duplicate, a casefold
+    duplicate, or a file entry nested inside another file entry).
+    Returns (refused, checked) where refused is a list of
+    {path, symbol} in path byte order."""
+    refused = []
+    seen_exact = set()
+    seen_fold = set()
+    file_names = []
+    for info in infos:
+        name = info.filename
+        sym = None
+        checked = name.replace("\\", "/")
+        if checked.startswith("/"):
+            sym = "absolute_path"
+        else:
+            parts = checked.split("/")
+            if parts and parts[0].endswith(":") and \
+                    len(parts[0]) == 2 and parts[0][0].isalpha():
+                sym = "drive_letter"
+            elif ".." in parts:
+                sym = "parent_ref"
+        if sym is None:
+            is_dir = checked.endswith("/")
+            base = checked.rstrip("/")
+            if base in seen_exact or base.casefold() in seen_fold:
+                sym = "collision"
+            else:
+                if not is_dir:
+                    for fn in file_names:
+                        if base.startswith(fn + "/"):
+                            sym = "collision"
+                            break
+                seen_exact.add(base)
+                seen_fold.add(base.casefold())
+                if not is_dir:
+                    file_names.append(base)
+        if sym is not None:
+            refused.append(_seal_path_json(name, {"symbol": sym}))
+    refused.sort(key=lambda e: _seal_path_sort_key(
+        e["path"] if e["path"] is not None else e["path_hex"]))
+    return refused
+
+
+def run_unpack(zip_path, output_dir,
+               progress: Optional[Callable[[str], None]] = None) -> dict:
+    """The `unpack` command (P9/P10/P12).  Every entry is checked
+    before anything is created; a refusal extracts nothing and still
+    writes the receipt (exit 1 at the CLI).  Our own zips and a
+    foreign zip that passes the same checks are treated alike.  The
+    receipt carries extracted / zip_sha256 / zip_name in settings, the
+    refused entries with the closed 4 symbols, the symbol counts, and
+    - on success - the extracted tree's whole-folder checksum computed
+    BEFORE the receipt is written; an archive-side handoff/ merges and
+    our receipt stays its last word."""
+    tell = progress or (lambda _m: None)
+    zpath = Path(zip_path)
+    if not zpath.is_file():
+        raise ValueError("unpack: %s is not a file" % zpath)
+    out = Path(output_dir)
+    zip_sha = "sha256:" + hashlib.sha256(zpath.read_bytes()).hexdigest()
+    with zipfile.ZipFile(zpath) as zf:
+        infos = list(zf.infolist())
+        refused = _seal_unpack_checks(infos)
+        counts = {s: 0 for s in _SEAL_UNPACK_SYMBOLS}
+        for e in refused:
+            counts[e["symbol"]] += 1
+        receipt = {
+            "receipt_version": 1,
+            "kind": "sieve-unpack",
+            "tool": {"name": "sieve-tray", "version": __version__},
+            "engines": {},
+            "settings": {
+                "extracted": 0,
+                "zip_sha256": zip_sha,
+                "zip_name": zpath.name,
+            },
+            "items": [],
+            "skipped": [],
+            "refused": refused,
+            "summary": {s: counts[s] for s in _SEAL_UNPACK_SYMBOLS},
+        }
+        if refused:
+            # refuse with zero extraction; the receipt is still written
+            receipt["digest"] = _gate_digest(receipt)
+            _gate_write_atomic(out / "handoff" / "unpack-receipt.json",
+                               _gate_norm_json(receipt).encode("utf-8"))
+            tell("Unpack: refused %d entr%s, nothing extracted"
+                 % (len(refused), "y" if len(refused) == 1 else "ies"))
+            return receipt
+        extracted = 0
+        for info in infos:
+            checked = info.filename.replace("\\", "/")
+            target = out / checked
+            if checked.endswith("/"):
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(zf.read(info))
+            extracted += 1
+    receipt["settings"]["extracted"] = extracted
+    # the extracted tree's checksum comes BEFORE the receipt: an
+    # archive-side handoff/ merges and our receipt is the last word
+    receipt["summary"]["overall_sha256"] = _seal_overall_sha256(out)
+    receipt["digest"] = _gate_digest(receipt)
+    _gate_write_atomic(out / "handoff" / "unpack-receipt.json",
+                       _gate_norm_json(receipt).encode("utf-8"))
+    tell("Unpack: %d files into %s" % (extracted, out))
+    return receipt
+
+
 def _gate_charset_check(data: bytes):
     """The series policy (request §3.2, measured against Crowd 0.9.0):
     UTF-8 BOM -> strict UTF-8 -> strict CP932; UTF-16/32 BOMs are
@@ -4889,6 +5128,18 @@ def _gate_main(argv: List[str]) -> int:
     an.add_argument("input_dir", type=Path, nargs="?", default=None)
     an.add_argument("-o", "--output", type=Path, default=None)
     an.add_argument("--no-paths", action="store_true")
+    # Seal 2.2 (S4): pack writes the deterministic zip at -o itself;
+    # unpack checks every entry before creating anything.
+    pk = sub.add_parser("pack", help="pack a folder into a "
+                                     "deterministic zip (Seal 2.2)")
+    pk.add_argument("input_dir", type=Path, nargs="?", default=None)
+    pk.add_argument("-o", "--output", type=Path, default=None)
+    pk.add_argument("--deflate", action="store_true")
+    pk.add_argument("--key-file", type=Path, default=None,
+                    metavar="PATH")
+    up = sub.add_parser("unpack", help="unpack a checked zip (Seal 2.2)")
+    up.add_argument("zip_file", type=Path, nargs="?", default=None)
+    up.add_argument("-o", "--output", type=Path, default=None)
     args = parser.parse_args(argv)
 
     if args.cmd == "manifest":
@@ -4943,6 +5194,33 @@ def _gate_main(argv: List[str]) -> int:
             print("Receipt digest: %s" % receipt["digest"])
             print("Handoff: %s" % (args.output / "handoff"))
         return 0
+    if args.cmd == "pack":
+        if args.input_dir is None or args.output is None:
+            parser.error("pack needs an input folder and -o/--output")
+        if not args.input_dir.is_dir():
+            parser.error("pack: %s is not a directory" % args.input_dir)
+        try:
+            receipt = run_pack(
+                args.input_dir, args.output, deflate=args.deflate,
+                key_file=args.key_file, progress=print)
+        except ValueError as e:
+            parser.error(str(e))  # exit 2: the placement is unsafe
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Zip: %s" % args.output)
+        print("Handoff: %s" % (args.output.parent / "handoff"))
+        return 0
+    if args.cmd == "unpack":
+        if args.zip_file is None or args.output is None:
+            parser.error("unpack needs a zip file and -o/--output")
+        try:
+            receipt = run_unpack(args.zip_file, args.output,
+                                 progress=print)
+        except ValueError as e:
+            parser.error(str(e))
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Handoff: %s" % (args.output / "handoff"))
+        # a refusal is exit 1 (nothing was extracted); success is 0
+        return 1 if receipt["refused"] else 0
     if args.cmd == "cohort":
         if args.self_check:
             # the exit codes (the 2026-11-10 ruling): 0 = the expected
@@ -5019,7 +5297,8 @@ def main():
     # (a folder literally named `gate` is passed as `./gate`).
     if len(sys.argv) > 1 and sys.argv[1] in ("gate", "verify",
                                              "cohort", "manifest",
-                                             "rename", "audit-names"):
+                                             "rename", "audit-names",
+                                             "pack", "unpack"):
         sys.exit(_gate_main(sys.argv[1:]))
     parser = argparse.ArgumentParser(prog="sieve-tray")
     parser.add_argument("input_dir", type=Path,
