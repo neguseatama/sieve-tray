@@ -25,6 +25,8 @@ import pytest
 
 from pathlib import Path
 
+from seal_platform import can_create_names
+
 DOC = Path(__file__).resolve().parent.parent / "docs" / "manifest-format.md"
 
 KV1 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -114,13 +116,18 @@ def test_t01_names_sort_by_utf8_bytes(tmp_path):
 
 
 def test_t01_names_not_nfc_normalized(tmp_path):
-    """NFC is not applied: decomposed and composed names are two files."""
+    """NFC is not applied: decomposed and composed names are two files.
+    A folding or normalizing volume cannot hold the pair - there the
+    lane skips and the pure classifier (SL-T07, the S3 file) carries
+    the normalization_collision symbol on every OS (CI #90, 2026-11-15)."""
     from sieve_tray import _seal_overall_sha256
     d = tmp_path / "nfc"
     d.mkdir()
     nfc = "が.txt"           # U+304C, one codepoint
     dec = "か\u3099.txt"      # U+304B + U+3099, two codepoints
     assert nfc != dec
+    if not can_create_names(tmp_path, [nfc, dec]):
+        pytest.skip("the filesystem folds or normalizes the NFC/NFD pair")
     (d / nfc).write_bytes(b"composed\n")
     (d / dec).write_bytes(b"decomposed\n")
     assert len(os.listdir(d)) == 2
@@ -157,6 +164,9 @@ def test_t01_symlinks_excluded(tmp_path):
     assert _overall(d) == want
 
 
+@pytest.mark.skipif(os.name != "posix",
+                    reason="chmod 000 needs a POSIX disk (Windows keeps "
+                           "the file readable)")
 @pytest.mark.skipif(os.geteuid() == 0 if hasattr(os, "geteuid") else False,
                     reason="an unreadable file is still readable for root")
 def test_t01_unreadable_excluded(tmp_path):

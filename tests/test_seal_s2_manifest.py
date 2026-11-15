@@ -283,6 +283,9 @@ def test_t04_diff_cli_exit_codes(tmp_path, capsys):
     assert rc == 0
 
 
+@pytest.mark.skipif(os.name != "posix",
+                    reason="mkfifo and chmod 000 need a POSIX disk "
+                           "(the CI #90 fix round, 2026-11-15)")
 def test_t02_skipped_special_and_unreadable_dir(tmp_path):
     """One walk records every refusal with the closed vocabulary: a
     FIFO is not_applicable, an unlistable directory is unreadable, and

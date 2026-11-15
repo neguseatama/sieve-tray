@@ -2492,6 +2492,34 @@ def _seal_parse_pattern(pattern: str):
     return literals, fields
 
 
+def _seal_plan_collisions(new_rels, dir_rels=()) -> int:
+    """The plan-stage collision count over the DESTINATION name list
+    (a pure function - the CI #90 fix round, 2026-11-15): two files
+    onto one destination (exact, casefold, or NFC fold), a None
+    destination (a non-UTF-8 source name cannot take a rule), or a
+    destination onto an existing directory path.  run_rename walks the
+    disk only to build the dir_rels argument; the counting itself
+    takes name lists, so the pairs a Windows/macOS disk cannot hold
+    (X.txt/x.txt on a case-folding volume, the NFC/NFD pair) are
+    tested on every OS through this function."""
+    collisions = 0
+    seen = {}
+    for nr in new_rels:
+        if nr is None:
+            collisions += 1
+            continue
+        keys = (nr, nr.casefold(),
+                unicodedata.normalize("NFC", nr))
+        if any(k in seen for k in keys):
+            collisions += 1
+        else:
+            for k in keys:
+                seen[k] = True
+            if nr in dir_rels:
+                collisions += 1
+    return collisions
+
+
 def run_rename(folder, out, pattern, apply=False, no_paths=False,
                progress: Optional[Callable[[str], None]] = None) -> dict:
     """The `rename` command (R1-R3, R7-R8).  The default is a plan
@@ -2549,26 +2577,12 @@ def run_rename(folder, out, pattern, apply=False, no_paths=False,
 
     # --- collisions: two files onto one destination path (exact,
     # casefold, or NFC), or a file onto an existing directory path
-    collisions = 0
-    seen = {}
     dir_rels = set()
     for dirpath, dirs, _names in os.walk(root):
         for d in dirs:
             dr = (Path(dirpath) / d).relative_to(root).as_posix()
             dir_rels.add(dr)
-    for nr in new_rels:
-        if nr is None:
-            collisions += 1
-            continue
-        keys = (nr, nr.casefold(),
-                unicodedata.normalize("NFC", nr))
-        if any(k in seen for k in keys):
-            collisions += 1
-        else:
-            for k in keys:
-                seen[k] = True
-            if nr in dir_rels:
-                collisions += 1
+    collisions = _seal_plan_collisions(new_rels, dir_rels)
     collision_flag = ["rename_collision"] if collisions else []
 
     mapping_blob = json.dumps(mapping, ensure_ascii=False,

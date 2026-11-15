@@ -229,12 +229,16 @@ def test_t12_a_diff_refuses_the_page(tmp_path):
 
 
 def test_t12_a_name_that_is_not_utf8_refuses_the_page(tmp_path):
+    from seal_platform import can_create_names
     d = tmp_path / "src"
     d.mkdir()
     (d / "a.txt").write_bytes(b"x")
-    with open(os.path.join(os.fsencode(str(d)), b"bad\xff.txt"),
-              "wb") as fh:
-        fh.write(b"y")
+    bad = b"bad\xff.txt".decode("utf-8", "surrogateescape")
+    if not can_create_names(tmp_path, [bad]):
+        pytest.skip("this disk refuses a name that is not valid UTF-8 "
+                    "(the not_utf8_name symbol stays covered by the "
+                    "pure classifier on every OS - CI #90, 2026-11-15)")
+    (d / bad).write_bytes(b"y")
     out = tmp_path / "out"
     with pytest.raises(ValueError):
         _run_manifest(d, out, verify_page=True)

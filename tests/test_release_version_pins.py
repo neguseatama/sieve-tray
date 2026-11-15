@@ -57,7 +57,7 @@ def test_changelog_extractor_serves_the_release_body():
     script = REPO_ROOT / "tools" / "extract_changelog.py"
     run = subprocess.run(
         [sys.executable, str(script), sieve_tray.__version__],
-        capture_output=True, text=True)
+        capture_output=True, text=True, encoding="utf-8")
     assert run.returncode == 0, f"exit {run.returncode}: {run.stderr}"
     body = run.stdout
     assert body.strip(), "the release body came back empty"

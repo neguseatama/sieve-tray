@@ -9,6 +9,14 @@ because the release title already carries the tag.  A version with no
 section exits 1 - a tag without its CHANGELOG section fails the release
 structurally, not by publishing an empty body (the 2026-11-13 ruling:
 the release body is built from the CHANGELOG).
+
+The body rides to stdout as UTF-8 BYTES (the CI #90 fix round,
+2026-11-15): the [2.2.0] section carries ja words, and a runner whose
+stdout defaults to a legacy codepage (Windows cp1252 under a captured
+pipe) raised UnicodeEncodeError before a single byte left the process.
+With the bytes form the body is byte-exact on every runner; the
+release-extras step that redirects it into release_body.md runs on
+ubuntu-latest (measured 2026-11-15), and no longer depends on that.
 """
 import re
 import sys
@@ -42,7 +50,11 @@ def main(argv: list) -> int:
         print(f"no '## [{argv[1]}]' section in CHANGELOG.md - cut the tag "
               "only after the section exists", file=sys.stderr)
         return 1
-    sys.stdout.write(body)
+    # UTF-8 bytes, not str: sys.stdout's encoding follows the runner's
+    # locale (cp1252 on a captured Windows pipe) and the section body
+    # is not encodable there - the bytes form is byte-exact everywhere
+    sys.stdout.buffer.write(body.encode("utf-8"))
+    sys.stdout.buffer.flush()
     return 0
 
 

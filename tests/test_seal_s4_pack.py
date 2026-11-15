@@ -167,7 +167,8 @@ def test_t08_cli_end_to_end_and_placement(tmp_path, capsys):
 def test_t08_pack_safety_rules(tmp_path):
     """The zip must be new, its parent must exist, and it must not sit
     inside the input folder (the input's neighbor is the normal
-    shape); an unreadable file goes to skipped, not into the zip."""
+    shape).  These three refusals are universal; the unreadable-file
+    lane is a POSIX-only disk property and lives in its own test."""
     from sieve_tray import run_pack
     src = _make_src(tmp_path)
     with pytest.raises(ValueError):
@@ -178,7 +179,16 @@ def test_t08_pack_safety_rules(tmp_path):
     z.write_bytes(b"occupied")
     with pytest.raises(ValueError):
         run_pack(src, z)                            # not new
-    z.unlink()
+
+
+@pytest.mark.skipif(os.name != "posix",
+                    reason="chmod 000 needs a POSIX disk (Windows keeps "
+                           "the file readable - CI #90, 2026-11-15)")
+def test_t08_unreadable_file_is_skipped(tmp_path):
+    """An unreadable file goes to skipped, not into the zip."""
+    from sieve_tray import run_pack
+    src = _make_src(tmp_path)
+    z = tmp_path / "z.zip"
     secret = src / "secret.bin"
     secret.write_bytes(b"do not pack\n")
     secret.chmod(0o000)
@@ -281,14 +291,22 @@ def test_t09_six_refusal_forms_extract_nothing(tmp_path):
 
 def test_t09_backslash_parent_form_caught(tmp_path):
     """The checks read backslashes as separators too: a\\..\\..\\evil
-    is a parent_ref."""
+    is a parent_ref.  Windows' zipfile replaces the platform separator
+    with / while the ZipInfo is built (zipfile.py: os.sep != "/" ->
+    filename.replace(os.sep, "/")), so on that leg the entry comes
+    back as a/../../evil.txt and on Linux the backslashes survive.
+    The product's recorded form is the authoritative one; the
+    comparison therefore checks the symbol and the path with the
+    separators read as the same separator (CI #90, 2026-11-15)."""
     z = tmp_path / "evil.zip"
     with zipfile.ZipFile(z, "w") as zf:
         zf.writestr("a\\..\\..\\evil.txt", b"e\n")
     out = tmp_path / "out"
     receipt = _run_unpack(z, out)
-    assert receipt["refused"] == [
-        {"path": "a\\..\\..\\evil.txt", "symbol": "parent_ref"}]
+    assert len(receipt["refused"]) == 1
+    entry = receipt["refused"][0]
+    assert entry["symbol"] == "parent_ref"
+    assert entry["path"].replace("\\", "/") == "a/../../evil.txt"
     assert not (out / "evil.txt").exists()
 
 
