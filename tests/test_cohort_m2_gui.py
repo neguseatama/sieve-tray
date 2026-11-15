@@ -570,12 +570,7 @@ def test_gu_t15_structure_invariants(tmp_path):
 # because the ::item:selected style named no background, so Qt drops
 # the OS highlight and paints white text over the light sidebar
 # background.  The fix: tighter row padding + an explicit selected
-# background/text colour.  This test pins both: the nine-page geometry
-# (a regression guard, green before the fix — the same shape as the
-# GU-T14 minimum-height mold) and the two style observables (red before
-# the fix).  The ninth page rides the real _add_page path as the §3.9
-# model; the §3.2 display names are set on the item directly (the i18n
-# table carries them from §3.9).
+# background/text colour.
 #
 # The 2026-11-10 follow-up note: the rows go back to the
 # original 6px padding (26px rows — nine rows ≈ 234px still fit the
@@ -584,51 +579,61 @@ def test_gu_t15_structure_invariants(tmp_path):
 # palette the unselected rows' palette text would turn white on that
 # light background and vanish.  Every row state therefore names an
 # explicit text colour: ::item (normal), ::item:disabled and
-# ::item:selected (the explicit background + colour stay).  The
-# geometry guard is unchanged.
+# ::item:selected (the explicit background + colour stay).
+#
+# The v2.2.0 (§3.7) follow-up: the sidebar grows to twelve pages (the
+# three new pages join after the existing order), so the row-fit
+# guarantee moves from "the scrollbar stays at zero" to "the tail row
+# the user selects auto-scrolls into the viewport and its page
+# renders uncut" - the list scrolling for 12 rows is the standard
+# control behavior (26px rows ≈ 312px still nearly fit the ~330px
+# viewport that grows further when a non-scan page hides the scan
+# row).  The style observables (the dark-palette readability pins)
+# stay unchanged.
 # ---------------------------------------------------------------------------
 
-NINE_PAGE_TAIL = {"en": "Compare Submissions", "ja": "提出物の比較"}
+SEAL_PAGE_TAIL = ("manifest", "rename", "draw")
 
 
-def test_gu_t16_nine_pages_fit_and_selected_visible(tmp_path):
+def test_gu_t16_twelve_pages_style_and_tail_visibility(tmp_path):
     _require_qt()
     import sieve_tray_gui as gui
     from sieve_tray_storage import Storage
-    from PySide6.QtWidgets import QApplication, QWidget
+    from sieve_tray_i18n import tr
+    from PySide6.QtWidgets import QApplication
     for lang in ("en", "ja"):
         win = gui.MainWindow(storage=Storage(tmp_path / ("h_%s.db" % lang)),
                              lang=lang)
         try:
             win.resize(880, 560)
             win.show()
-            # the §3.9 model: the ninth page rides _add_page, the real
-            # registration path, then carries its §3.2 display name
-            win._add_page("cohort", QWidget(), "cohort_tab")
-            item = win.sidebar.item(win._page_keys.index("cohort"))
-            item.setText(NINE_PAGE_TAIL[lang])
-            item.setToolTip(NINE_PAGE_TAIL[lang])
-            win._recalc_sidebar_width()
             sb = win.sidebar
-            assert win._page_keys[-1] == "cohort"
-            assert sb.item(sb.count() - 1).text() == NINE_PAGE_TAIL[lang]
-            # the width rule still holds with the ninth name (§1.2)
+            # the twelve pages of §3.7: the existing order, then the
+            # three new pages with their i18n names (the display
+            # names ride the real _add_page registration)
+            assert sb.count() == 12, (lang, sb.count())
+            for offset, key in enumerate(SEAL_PAGE_TAIL):
+                item = sb.item(sb.count() - 3 + offset)
+                assert item.text() == tr(lang, key + "_tab"), \
+                    (lang, key, item.text())
+            # the width rule still holds with the new names (§1.2)
             assert 160 <= sb.width() <= 240, (lang, sb.width())
-            # nine rows fit the minimum size without scrolling: every
-            # row inside the viewport, the scrollbar range at zero
-            vh = sb.viewport().height()
-            for i in range(sb.count()):
-                r = sb.visualItemRect(sb.item(i))
-                assert r.top() >= 0 and r.bottom() <= vh - 1, \
-                    (lang, i, r.top(), r.bottom(), vh)
-            assert sb.verticalScrollBar().maximum() == 0, lang
-            # the last row stays inside when it is the selected one
+            # the tail row the user selects auto-scrolls into the
+            # viewport (the 12-page list may scroll; the selected row
+            # must not stay hidden)
             win.sidebar.setCurrentRow(sb.count() - 1)
             win.repaint()
             QApplication.processEvents()
+            vh = sb.viewport().height()
             r = sb.visualItemRect(sb.item(sb.count() - 1))
             assert r.top() >= 0 and r.bottom() <= vh - 1, \
-                (lang, "selected", r.top(), r.bottom(), vh)
+                (lang, "tail", r.top(), r.bottom(), vh)
+            # the selected tail page renders uncut at the minimum
+            # size (the §3.7 page-growth guarantee, the GU-T14 mold)
+            page = win.pages.currentWidget()
+            assert page.width() >= 600, (lang, page.width())
+            rendered = page.grab()
+            assert not rendered.isNull() and rendered.width() >= 600
             # the rows keep the original height (the 2026-11-10
             # follow-up: 26px rows fit with room to spare and are not
             # cramped as click targets — the 3px squeeze is reverted)

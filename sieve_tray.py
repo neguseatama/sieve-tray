@@ -34,12 +34,16 @@ import argparse
 import ast
 import builtins
 import hashlib
+import hmac
 import html
 import json
 import os
+import stat as stat_module
 import sys
 import tempfile
+import unicodedata
 import webbrowser
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -48,7 +52,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "2.1.1"
+__version__ = "2.2.0"
 
 
 CODE_EXTS = {".py"}
@@ -1871,6 +1875,1485 @@ def _gate_walk(input_dir: Path):
     return items
 
 
+# ------------------------------------------------------------------------
+# Seal 2.2 shared parts: the hash tree (the whole-folder checksum) and
+# the check_code section.  The byte-level spec is docs/manifest-format.md;
+# SL-T01 reads the two known values back from that document, so the
+# document and this implementation cannot drift apart.
+
+def _seal_tree_rows(folder: Path):
+    """One row per child that is a regular file or a directory, mixed
+    into ONE list sorted by (UTF-8 name bytes, kind byte d < f):
+
+        kind NUL name NUL child-checksum LF
+
+    kind is b"f" for a file (child checksum = SHA-256 of the bytes) and
+    b"d" for a directory (child checksum = the same calculation applied
+    recursively; an empty directory hashes to SHA-256(b"")).  Names are
+    used as-is - NFC is never applied - and carried as UTF-8 bytes
+    (surrogateescape gives back the raw bytes of a non-UTF-8 name).
+    Symlinks and special files carry no row; a file that cannot be read
+    and a directory that cannot be listed carry no row either (the
+    manifest lane records them in skipped).
+    """
+    rows = []
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return None  # unlistable: no row for this directory
+    entries = []
+    for name in names:
+        p = folder / name
+        try:
+            st = os.lstat(p)
+        except OSError:
+            continue
+        if stat_module.S_ISDIR(st.st_mode):
+            entries.append((name.encode("utf-8", "surrogateescape"),
+                            b"d", p))
+        elif stat_module.S_ISREG(st.st_mode):
+            entries.append((name.encode("utf-8", "surrogateescape"),
+                            b"f", p))
+        # symlinks and special files carry no row
+    entries.sort(key=lambda t: (t[0], t[1]))
+    for name_bytes, kind, p in entries:
+        if kind == b"d":
+            sub = _seal_tree_rows(p)
+            if sub is None:
+                continue  # unlistable directory: no row
+            child = hashlib.sha256(b"".join(sub)).hexdigest()
+        else:
+            try:
+                digest = hashlib.sha256()
+                with open(p, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        digest.update(chunk)
+                child = digest.hexdigest()
+            except OSError:
+                continue  # unreadable: no row here; skipped records why
+        rows.append(kind + b"\x00" + name_bytes + b"\x00"
+                    + child.encode("ascii") + b"\n")
+    return rows
+
+
+def _seal_overall_sha256(folder: Path) -> str:
+    """The whole-folder checksum: SHA-256 over the concatenated rows of
+    the folder (docs/manifest-format.md section 1).  An empty folder is
+    SHA-256(b"")."""
+    rows = _seal_tree_rows(folder)
+    if rows is None:
+        rows = []  # an unlistable root hashes like an empty one
+    return hashlib.sha256(b"".join(rows)).hexdigest()
+
+
+_SEAL_CHECK_KEY_ID_LABEL = b"sieve-check-key-id"
+
+
+def _seal_check_key_id(key: bytes) -> str:
+    """The key identifier: HMAC-SHA256(key, "sieve-check-key-id"),
+    first 8 bytes, 16 lowercase hex characters."""
+    return hmac.new(key, _SEAL_CHECK_KEY_ID_LABEL,
+                    hashlib.sha256).hexdigest()[:16]
+
+
+def _seal_check_code(key: bytes, overall_sha256: str, receipt: dict) -> str:
+    """The check code: HMAC-SHA256 over
+
+        overall_sha256 ASCII (64 bytes) + b":" + canonical JSON of the
+        receipt minus the check_code section and the digest
+
+    The canonical JSON is the same byte string the digest recomputation
+    uses (sorted keys, no spaces, ensure_ascii=False, NO trailing LF -
+    the written file has one, the message does not).  Adding the
+    check_code section therefore keeps the digest of a pre-existing
+    receipt stable: _gate_digest hashes every key except digest.
+    """
+    body = {k: v for k, v in receipt.items()
+            if k not in ("check_code", "digest")}
+    blob = json.dumps(body, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")).encode("utf-8")
+    msg = overall_sha256.encode("ascii") + b":" + blob
+    return "hmac-sha256:" + hmac.new(key, msg,
+                                     hashlib.sha256).hexdigest()
+
+
+# The verify not_verifiable reasons (C8): the published 5 stay, the
+# Seal round adds exactly two words - code_key_missing (C9) and
+# code_key_mismatch (C10).  The item reasons (7) and the overall words
+# (match / differs / not_verifiable) stay closed.
+SEAL_NOT_VERIFIABLE_REASONS = frozenset({
+    "handoff_incomplete", "receipt_unreadable",
+    "receipt_version_unsupported", "receipt_digest_mismatch",
+    "settings_unavailable",
+    "code_key_missing", "code_key_mismatch"})
+
+
+def _seal_check_code_verdict(obj, key):
+    """The verify-side check code verdict (C9/C10/C11).  obj is a
+    receipt dict, key the key bytes or None.  Returns:
+      None                       - nothing to confirm (no section) or
+                                   the code confirmed with the key;
+      ("not_verifiable", word)   - the code cannot be confirmed;
+      ("differs_item", item)     - the value is wrong against the
+                                   matching key (C11's check_code item).
+    The claim stays limited: the code only tells that a key holder
+    made the receipt - it says nothing about who that was."""
+    cc = obj.get("check_code")
+    if not cc:
+        return None
+    if key is None:
+        return ("not_verifiable", "code_key_missing")
+    if _seal_check_key_id(key) != cc.get("key_id"):
+        return ("not_verifiable", "code_key_mismatch")
+    overall = (obj.get("summary") or {}).get("overall_sha256")
+    if not overall:
+        return ("not_verifiable", "receipt_unreadable")
+    if _seal_check_code(key, overall, obj) != cc.get("value"):
+        return ("differs_item",
+                {"path": "check_code", "reason": "check_code_differs"})
+    return None
+
+
+# ------------------------------------------------------------------------
+# Seal 2.2 / S2: the manifest command (request 3.1 M1-M11).  The file
+# list of a folder, its duplicates, and the diff against a second
+# folder.  Spec: docs/manifest-format.md (sections 1, 2 and 5).
+
+def _seal_rel_of(root: Path, full: Path) -> str:
+    """The relative POSIX form of a walked path (request 3.1 M1)."""
+    return full.relative_to(root).as_posix()
+
+
+def _seal_path_json(rel: str, extra: Optional[dict] = None) -> dict:
+    """One path field for the receipt JSON.  Paths are used as-is (NFC
+    is never applied); a path that is not valid UTF-8 cannot ride in a
+    JSON string, so it is recorded as path: null plus path_hex (the
+    raw bytes in hex) - the same treatment audit-names uses."""
+    entry = {} if extra is None else dict(extra)
+    try:
+        rel.encode("utf-8")
+        entry["path"] = rel
+    except UnicodeEncodeError:
+        entry["path"] = None
+        entry["path_hex"] = rel.encode("utf-8",
+                                       "surrogateescape").hex()
+    return entry
+
+
+def _seal_path_sort_key(rel: str) -> bytes:
+    return rel.encode("utf-8", "surrogateescape")
+
+
+def _seal_manifest_scan(root: Path):
+    """One walk over the tree: (items, skipped).  Items are the regular
+    files ({path / path_hex, bytes, sha256} + the private _abs path);
+    skipped carries every symlink (symlink_skipped), every non-regular
+    special file (not_applicable) and every file or directory that
+    cannot be read (unreadable) - closed vocabulary only, one walk."""
+    items, skipped = [], []
+
+    def _unlistable(err):
+        rel = err.filename
+        try:
+            rel = _seal_rel_of(root, Path(err.filename))
+        except Exception:
+            rel = str(err.filename)
+        skipped.append(_seal_path_json(rel, {"reason": "unreadable"}))
+
+    for dirpath, dirs, names in os.walk(root, topdown=True,
+                                        followlinks=False, onerror=_unlistable):
+        dirs.sort()
+        names.sort()
+        keep = []
+        for name in dirs:
+            full = Path(dirpath) / name
+            rel = _seal_rel_of(root, full)
+            if os.path.islink(full):
+                skipped.append(_seal_path_json(
+                    rel, {"reason": "symlink_skipped"}))
+            else:
+                keep.append(name)
+        dirs[:] = keep
+        for name in names:
+            full = Path(dirpath) / name
+            rel = _seal_rel_of(root, full)
+            if os.path.islink(full):
+                skipped.append(_seal_path_json(
+                    rel, {"reason": "symlink_skipped"}))
+                continue
+            try:
+                st = os.lstat(full)
+                if not stat_module.S_ISREG(st.st_mode):
+                    skipped.append(_seal_path_json(
+                        rel, {"reason": "not_applicable"}))
+                    continue
+                digest = hashlib.sha256()
+                size = 0
+                with open(full, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        digest.update(chunk)
+                        size += len(chunk)
+            except OSError:
+                skipped.append(_seal_path_json(
+                    rel, {"reason": "unreadable"}))
+                continue
+            item = _seal_path_json(rel, {"bytes": size,
+                                         "sha256": digest.hexdigest()})
+            item["_abs"] = full
+            items.append(item)
+    items.sort(key=lambda it: _seal_path_sort_key(it["path"]
+                                                  if it["path"] is not None
+                                                  else it["path_hex"]))
+    skipped.sort(key=lambda s: _seal_path_sort_key(s["path"]
+                                                   if s["path"] is not None
+                                                   else s["path_hex"]))
+    return items, skipped
+
+
+def _seal_bytes_equal(f1: Path, f2: Path) -> bool:
+    """The byte comparison that confirms a duplicate group (M6): true
+    only when both files carry the very same bytes."""
+    try:
+        with open(f1, "rb") as a, open(f2, "rb") as b:
+            while True:
+                ca = a.read(1 << 20)
+                cb = b.read(1 << 20)
+                if ca != cb:
+                    return False
+                if not ca:
+                    return True
+    except OSError:
+        return False
+
+
+def _seal_duplicate_groups(items):
+    """Complete duplicates: group the items by sha256, confirm every
+    group by byte comparison (M6), and report the surviving groups with
+    their ascending paths."""
+    by_sha = {}
+    for it in items:
+        by_sha.setdefault(it["sha256"], []).append(it)
+    groups = []
+    for sha, cands in sorted(by_sha.items()):
+        if len(cands) < 2:
+            continue
+        remaining = sorted(cands, key=lambda it: _seal_path_sort_key(
+            it["path"] if it["path"] is not None else it["path_hex"]))
+        while len(remaining) >= 2:
+            ref = remaining[0]
+            group = [ref]
+            rest = []
+            for c in remaining[1:]:
+                if _seal_bytes_equal(ref["_abs"], c["_abs"]):
+                    group.append(c)
+                else:
+                    rest.append(c)  # sha collision paranoia: re-group
+            if len(group) >= 2:
+                groups.append({
+                    "sha256": sha,
+                    "bytes": ref["bytes"],
+                    "paths": [(it["path"] if it["path"] is not None else
+                               {"path": None, "path_hex": it["path_hex"]})
+                              for it in group],
+                })
+            remaining = rest
+    return groups
+
+
+_SEAL_DIFF_STATES = ("same", "changed", "removed", "added", "moved")
+
+
+def run_manifest(input_dir, output_dir, against=None, key_file=None,
+                 verify_page=False,
+                 progress: Optional[Callable[[str], None]] = None) -> dict:
+    """The `manifest` command (M10/M11): the file list of a folder
+    (`items` + `skipped` + `duplicates` + the whole-folder checksum) or,
+    with `against`, the diff receipt (the closed 5 states, moved pairs
+    bound by the sha group, first pair in path order only).  The
+    receipt is written LAST into handoff/; a manifest has no local
+    tree.  --key-file adds the optional check_code section; the
+    receipt_version stays 1.  --verify-page (the plain list only, not
+    a diff) writes the self-contained handoff/verify.html BEFORE the
+    receipt and records its sha256 in the optional verify_page
+    section."""
+    tell = progress or (lambda _m: None)
+    root = Path(input_dir)
+    if not root.is_dir():
+        raise ValueError("manifest: %s is not a directory" % root)
+    if verify_page and against is not None:
+        raise ValueError("manifest: --verify-page rides the plain file "
+                         "list; it does not ride a diff (--against)")
+    out = Path(output_dir)
+    key = None
+    if key_file is not None:
+        key = Path(key_file).read_bytes()
+
+    if against is None:
+        tell("Manifest: scanning %s" % root)
+        items, skipped = _seal_manifest_scan(root)
+        groups = _seal_duplicate_groups(items)
+        overall = _seal_overall_sha256(root)
+        receipt = {
+            "receipt_version": 1,
+            "kind": "sieve-manifest",
+            "tool": {"name": "sieve-tray", "version": __version__},
+            "engines": {},
+            "settings": {"against": None},
+            "items": [{k: v for k, v in it.items() if k != "_abs"}
+                      for it in items],
+            "skipped": skipped,
+            "duplicates": groups,
+            "summary": {
+                "items": len(items),
+                "skipped": len(skipped),
+                "duplicate_groups": len(groups),
+                "duplicate_files": sum(len(g["paths"]) for g in groups),
+                "duplicate_bytes": sum(g["bytes"] * len(g["paths"])
+                                       for g in groups),
+                "overall_sha256": overall,
+            },
+        }
+    else:
+        root_b = Path(against)
+        if not root_b.is_dir():
+            raise ValueError("manifest: %s is not a directory" % root_b)
+        tell("Manifest: diffing %s against %s" % (root, root_b))
+        items_a, _skipped_a = _seal_manifest_scan(root)
+        items_b, _skipped_b = _seal_manifest_scan(root_b)
+        map_a = {(_seal_path_sort_key(it["path"]
+                                       if it["path"] is not None
+                                       else it["path_hex"])): it
+                 for it in items_a}
+        map_b = {(_seal_path_sort_key(it["path"]
+                                       if it["path"] is not None
+                                       else it["path_hex"])): it
+                 for it in items_b}
+        differences = []
+
+        def _entry(state, it, extra=None):
+            e = {"state": state}
+            e.update({k: v for k, v in it.items() if k != "_abs"})
+            if extra:
+                e.update(extra)
+            return e
+
+        # 1) the moved pairs first: per sha group of removed-vs-added,
+        #    only the FIRST pair in path ascending order; the leftovers
+        #    keep their original state and a multi-candidate group
+        #    adds one ambiguous_move
+        rem_by_sha, add_by_sha = {}, {}
+        for pb, it in map_a.items():
+            if pb not in map_b:
+                rem_by_sha.setdefault(it["sha256"], []).append(pb)
+        for pb, it in map_b.items():
+            if pb not in map_a:
+                add_by_sha.setdefault(it["sha256"], []).append(pb)
+        paired_a, paired_b = set(), set()
+        ambiguous = 0
+        for sha in sorted(set(rem_by_sha) & set(add_by_sha)):
+            rem = sorted(rem_by_sha[sha])
+            add = sorted(add_by_sha[sha])
+            paired_a.add(rem[0])
+            paired_b.add(add[0])
+            entry = _entry("moved", map_a[rem[0]], {})
+            it_b = map_b[add[0]]
+            if it_b["path"] is None:
+                entry["path_b"] = None
+                entry["path_b_hex"] = it_b["path_hex"]
+            else:
+                entry["path_b"] = it_b["path"]
+            differences.append((0, rem[0], entry))
+            if len(rem) >= 2 or len(add) >= 2:
+                ambiguous += 1
+        # 2) the A-side states (a path already moved does not reappear)
+        for pb, it in map_a.items():
+            if pb in paired_a:
+                continue
+            if pb not in map_b:
+                differences.append((0, pb, _entry("removed", it)))
+            elif map_b[pb]["sha256"] == it["sha256"]:
+                differences.append((0, pb, _entry("same", it)))
+            else:
+                differences.append((0, pb, _entry("changed", it, {
+                    "sha256_a": it["sha256"],
+                    "sha256_b": map_b[pb]["sha256"]})))
+        # 3) the added paths that no moved pair consumed
+        for pb, it in map_b.items():
+            if pb not in map_a and pb not in paired_b:
+                differences.append((1, pb, _entry("added", it)))
+        # order: A-side entries by their A path bytes; added entries by
+        # their B path bytes after them (both deterministic)
+        differences.sort(key=lambda t: (t[0], t[1]))
+        counts = {s: 0 for s in _SEAL_DIFF_STATES}
+        for _side, _pb, e in differences:
+            counts[e["state"]] += 1
+        receipt = {
+            "receipt_version": 1,
+            "kind": "sieve-manifest-diff",
+            "tool": {"name": "sieve-tray", "version": __version__},
+            "engines": {},
+            "settings": {"against": str(root_b),
+                         "overall_b": _seal_overall_sha256(root_b)},
+            "items": [],
+            "skipped": [],
+            "duplicates": [],
+            "differences": [e for _s, _p, e in differences],
+            "summary": {
+                "items": len(differences),
+                "same": counts["same"],
+                "changed": counts["changed"],
+                "removed": counts["removed"],
+                "added": counts["added"],
+                "moved": counts["moved"],
+                "ambiguous_move": ambiguous,
+                "overall_sha256": _seal_overall_sha256(root),
+            },
+        }
+
+    if verify_page:
+        page = _seal_write_verify_page(
+            out, items, receipt["summary"]["overall_sha256"])
+        tell("Manifest: verify page %s"
+             % (out / "handoff" / _SEAL_VERIFY_PAGE_NAME))
+        receipt["verify_page"] = {
+            "name": _SEAL_VERIFY_PAGE_NAME,
+            "sha256": "sha256:" + hashlib.sha256(page).hexdigest()}
+    if key is not None:
+        receipt["check_code"] = {
+            "key_id": _seal_check_key_id(key),
+            "value": _seal_check_code(
+                key, receipt["summary"]["overall_sha256"], receipt),
+        }
+    receipt["digest"] = _gate_digest(receipt)
+    _gate_write_atomic(out / "handoff" / "manifest-receipt.json",
+                       _gate_norm_json(receipt).encode("utf-8"))
+    tell("Manifest: receipt %s"
+         % (out / "handoff" / "manifest-receipt.json"))
+    return receipt
+
+
+# ------------------------------------------------------------------------
+# Seal 2.2 / S3: rename and audit-names (request 3.1 R1-R8).  rename
+# never touches the source (the plan is the default; --apply builds a
+# renamed copy at -o); audit-names reports path + symbol only.  Spec:
+# docs/manifest-format.md stays the byte-level home of the checksums;
+# the name rules live here and in the docstrings.
+
+_SEAL_WIN_RESERVED = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + ["COM%d" % i for i in range(0, 10)]
+    + ["LPT%d" % i for i in range(1, 10)])
+_SEAL_WIN_FORBIDDEN_CHARS = frozenset('<>:"|?*\\')
+_SEAL_NAME_SYMBOL_ORDER = (
+    "not_utf8_name", "reserved_name_win", "forbidden_char_win",
+    "trailing_dot_or_space", "too_long_name", "too_long_path",
+    "case_collision", "normalization_collision")
+
+
+def _seal_name_symbols(name: str, rel: str, siblings) -> List[str]:
+    """The pure name classifier (closed 8 symbols, in the closed
+    order).  ``name`` is the basename as the OS returned it (possibly
+    with surrogates), ``rel`` the relative POSIX path, ``siblings`` the
+    other names in the same directory (for the two collision symbols).
+    A >255-byte basename cannot exist on a Linux disk, which is why
+    this is a pure function: macOS/Windows-sourced names go through the
+    very same classifier.  The report carries path + symbol only - the
+    classifier never says how to fix a name."""
+    found = set()
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        found.add("not_utf8_name")
+    base = name.rsplit(".", 1)[0] if "." in name else name
+    if base.upper() in _SEAL_WIN_RESERVED or \
+            name.upper() in _SEAL_WIN_RESERVED:
+        found.add("reserved_name_win")
+    if any(c in _SEAL_WIN_FORBIDDEN_CHARS for c in name) or \
+            any(ord(c) < 0x20 for c in name):
+        found.add("forbidden_char_win")
+    if name.endswith(".") or name.endswith(" "):
+        found.add("trailing_dot_or_space")
+    if len(name.encode("utf-8", "surrogateescape")) > 255:
+        found.add("too_long_name")
+    if len(rel.encode("utf-8", "surrogateescape")) > 240:
+        found.add("too_long_path")
+    try:
+        fold = name.casefold()
+    except Exception:
+        fold = name
+    for other in siblings:
+        if other == name:
+            continue
+        if other.casefold() == fold:
+            found.add("case_collision")
+        try:
+            if unicodedata.normalize("NFC", other) == \
+                    unicodedata.normalize("NFC", name):
+                found.add("normalization_collision")
+        except Exception:
+            pass
+    return [s for s in _SEAL_NAME_SYMBOL_ORDER if s in found]
+
+
+def _seal_name_walk(root: Path):
+    """Every entry of the tree (files, directories, symlinks, special
+    files - all of them have a NAME worth auditing), as (rel, name,
+    dir_of_rel, siblings) in relative-path byte order."""
+    entries = []
+    for dirpath, dirs, names in os.walk(root, topdown=True,
+                                        followlinks=False):
+        dirs.sort()
+        names.sort()
+        here = [n for n in dirs] + [n for n in names]
+        for name in here:
+            full = Path(dirpath) / name
+            rel = full.relative_to(root).as_posix()
+            entries.append((rel, name, Path(dirpath), here))
+    entries.sort(key=lambda t: _seal_path_sort_key(t[0]))
+    return entries
+
+
+def run_audit_names(folder, out=None, no_paths=False,
+                    progress: Optional[Callable[[str], None]] = None
+                    ) -> dict:
+    """The `audit-names` command (R4-R6): report every name that would
+    not travel safely, with the closed 8 symbols and nothing else - no
+    fixes, no advice.  Files and directories are both audited; a name
+    that is not valid UTF-8 rides as path: null + path_hex."""
+    tell = progress or (lambda _m: None)
+    root = Path(folder)
+    if not root.is_dir():
+        raise ValueError("audit-names: %s is not a directory" % root)
+    tell("Audit-names: walking %s" % root)
+    items = []
+    sym_counts = {}
+    for rel, name, _parent, siblings in _seal_name_walk(root):
+        syms = _seal_name_symbols(name, rel, siblings)
+        for s in syms:
+            sym_counts[s] = sym_counts.get(s, 0) + 1
+        entry = {} if no_paths else _seal_path_json(rel)
+        if no_paths:
+            entry["seq"] = len(items) + 1
+        entry["symbols"] = syms
+        items.append(entry)
+    receipt = {
+        "receipt_version": 1,
+        "kind": "sieve-audit-names",
+        "tool": {"name": "sieve-tray", "version": __version__},
+        "engines": {},
+        "settings": {"no_paths": bool(no_paths)},
+        "items": items,
+        "summary": {"items": len(items), "symbols": sym_counts},
+    }
+    receipt["digest"] = _gate_digest(receipt)
+    if out is not None:
+        _gate_write_atomic(Path(out) / "handoff"
+                           / "audit-names-receipt.json",
+                           _gate_norm_json(receipt).encode("utf-8"))
+        tell("Audit-names: receipt %s"
+             % (Path(out) / "handoff" / "audit-names-receipt.json"))
+    return receipt
+
+
+_SEAL_RENAME_FIELDS = ("seq", "stem", "ext", "hash8", "parent")
+
+
+def _seal_parse_pattern(pattern: str):
+    """Compile the closed rename rule (R2): {seq}, {seq:width},
+    {stem}, {ext}, {hash8}, {parent} - nothing else exists.  Returns
+    (literal_parts, field_parts) where field_parts entries are
+    (field, width_or_None); unknown or malformed fields are refused."""
+    literals, fields = [], []
+    buf = []
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "{":
+            end = pattern.find("}", i)
+            if end < 0:
+                raise ValueError("rename: malformed rule near %r"
+                                 % pattern[i:])
+            token = pattern[i + 1:end]
+            if token in _SEAL_RENAME_FIELDS:
+                fields.append((token, None))
+            elif token.startswith("seq:") and \
+                    token[4:].isdigit() and int(token[4:]) > 0:
+                fields.append(("seq", int(token[4:])))
+            else:
+                raise ValueError("rename: unknown rule field {%s}"
+                                 % token)
+            literals.append("".join(buf))
+            buf = []
+            i = end + 1
+        else:
+            buf.append(c)
+            i += 1
+    literals.append("".join(buf))
+    return literals, fields
+
+
+def _seal_plan_collisions(new_rels, dir_rels=()) -> int:
+    """The plan-stage collision count over the DESTINATION name list
+    (a pure function - the CI #90 fix round, 2026-11-15): two files
+    onto one destination (exact, casefold, or NFC fold), a None
+    destination (a non-UTF-8 source name cannot take a rule), or a
+    destination onto an existing directory path.  run_rename walks the
+    disk only to build the dir_rels argument; the counting itself
+    takes name lists, so the pairs a Windows/macOS disk cannot hold
+    (X.txt/x.txt on a case-folding volume, the NFC/NFD pair) are
+    tested on every OS through this function."""
+    collisions = 0
+    seen = {}
+    for nr in new_rels:
+        if nr is None:
+            collisions += 1
+            continue
+        keys = (nr, nr.casefold(),
+                unicodedata.normalize("NFC", nr))
+        if any(k in seen for k in keys):
+            collisions += 1
+        else:
+            for k in keys:
+                seen[k] = True
+            if nr in dir_rels:
+                collisions += 1
+    return collisions
+
+
+def run_rename(folder, out, pattern, apply=False, no_paths=False,
+               progress: Optional[Callable[[str], None]] = None) -> dict:
+    """The `rename` command (R1-R3, R7-R8).  The default is a plan
+    only: nothing on disk changes.  --apply builds the renamed tree at
+    <out>/renamed (a copy: the source stays byte-identical).  A
+    collision is detected at the plan stage, reported as
+    rename_collision, and the apply refuses - nothing is created, no
+    automatic renaming exists.  The handoff receipt carries the rule,
+    the counts and the mapping HASH only - names never ride in the
+    handoff; the mapping table is local/rename-plan.json and
+    --no-paths turns its from-side into seq numbers."""
+    tell = progress or (lambda _m: None)
+    root = Path(folder)
+    if not root.is_dir():
+        raise ValueError("rename: %s is not a directory" % root)
+    literals, fields = _seal_parse_pattern(pattern)
+    items, _skipped = _seal_manifest_scan(root)
+    mapping = []
+    new_rels = []
+    for idx, it in enumerate(items, start=1):
+        rel = it["path"] if it["path"] is not None else None
+        if rel is None:
+            # a non-UTF-8 name cannot take a {stem}/{ext} rule: it is
+            # reported as a collision of the closed kind instead
+            mapping.append({"from": "#%d" % idx, "to": None})
+            new_rels.append(None)
+            continue
+        p = Path(rel)
+        parent_dir = p.parent.as_posix()
+        vals = {}
+        for field, width in fields:
+            if field == "seq":
+                vals.setdefault((field, width),
+                                ("%0*d" % (width, idx) if width
+                                 else str(idx)))
+            elif field == "stem":
+                vals.setdefault((field, width), p.stem)
+            elif field == "ext":
+                vals.setdefault((field, width), p.suffix)
+            elif field == "hash8":
+                vals.setdefault((field, width), it["sha256"][:8])
+            elif field == "parent":
+                vals.setdefault((field, width),
+                                p.parent.name if parent_dir != "." else "")
+        pieces = []
+        for j, (field, width) in enumerate(fields):
+            pieces.append(literals[j])
+            pieces.append(vals[(field, width)])
+        pieces.append(literals[-1])
+        new_name = "".join(pieces)
+        new_rel = (parent_dir + "/" + new_name) \
+            if parent_dir != "." else new_name
+        mapping.append({"from": rel, "to": new_rel})
+        new_rels.append(new_rel)
+
+    # --- collisions: two files onto one destination path (exact,
+    # casefold, or NFC), or a file onto an existing directory path
+    dir_rels = set()
+    for dirpath, dirs, _names in os.walk(root):
+        for d in dirs:
+            dr = (Path(dirpath) / d).relative_to(root).as_posix()
+            dir_rels.add(dr)
+    collisions = _seal_plan_collisions(new_rels, dir_rels)
+    collision_flag = ["rename_collision"] if collisions else []
+
+    mapping_blob = json.dumps(mapping, ensure_ascii=False,
+                              sort_keys=True, separators=(",", ":")) \
+        .encode("utf-8")
+    if no_paths:
+        # R7: the shareable plan speaks in seq numbers on the from-side
+        mapping = [{"from": "#%d" % (i + 1), "to": m["to"]}
+                   for i, m in enumerate(mapping)]
+    receipt = {
+        "receipt_version": 1,
+        "kind": "sieve-rename",
+        "tool": {"name": "sieve-tray", "version": __version__},
+        "engines": {},
+        "settings": {"pattern": pattern, "apply": bool(apply),
+                     "no_paths": bool(no_paths)},
+        "items": [],
+        "summary": {
+            "files": len(mapping),
+            "collisions": collisions,
+            "collision": collision_flag,
+            "mapping_sha256": "sha256:"
+            + hashlib.sha256(mapping_blob).hexdigest(),
+        },
+    }
+    receipt["digest"] = _gate_digest(receipt)
+    out = Path(out)
+    plan = {"pattern": pattern, "apply": bool(apply),
+            "mapping": mapping}
+    _gate_write_atomic(out / "local" / "rename-plan.json",
+                       _gate_norm_json(plan).encode("utf-8"))
+    if not collisions and apply:
+        dst = out / "renamed"
+        for it, (m, nr) in zip(items, zip(mapping, new_rels)):
+            if nr is None:
+                continue
+            target = dst / nr
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(it["_abs"], "rb") as src_fh, \
+                    open(target, "wb") as dst_fh:
+                for chunk in iter(lambda: src_fh.read(1 << 20), b""):
+                    dst_fh.write(chunk)
+        tell("Rename: built the renamed tree at %s" % dst)
+    _gate_write_atomic(out / "handoff" / "rename-receipt.json",
+                       _gate_norm_json(receipt).encode("utf-8"))
+    tell("Rename: receipt %s"
+         % (out / "handoff" / "rename-receipt.json"))
+    return receipt
+
+
+# ------------------------------------------------------------------------
+# Seal 2.2 / S4: pack and unpack (request 3.1 P1-P12).  pack writes a
+# deterministic zip; unpack runs every safety check BEFORE creating
+# anything.  The byte-level receipt rules follow the S1/S2 frame.
+
+_SEAL_ZIP_STAMP = (1980, 1, 1, 0, 0, 0)
+_SEAL_ZLIB_NOTE = "バイト列の一致は、同じ zlib でのみ保証されます"
+
+
+def run_pack(input_dir, output_zip, deflate=False, key_file=None,
+             verify_page=False,
+             progress: Optional[Callable[[str], None]] = None) -> dict:
+    """The `pack` command (P1-P8, P11).  The zip is deterministic:
+    entries in relative-path byte order (a directory sorts by its bare
+    path and rides with a trailing slash), the timestamp pinned to
+    1980-01-01 00:00:00, create_system 3, external attrs 0o100644 /
+    0o040755 with the DOS directory bit, the UTF-8 flag on non-ASCII
+    names, ZIP_STORED by default and --deflate on file entries only.
+    The zip lands at -o itself (it must be new, its parent must exist,
+    and it must not sit inside the input folder); the receipt lands at
+    the zip's neighbor handoff/pack-receipt.json with zip_sha256 and
+    the manifest's whole-folder checksum.  A file that cannot be read
+    does not enter the zip - it is recorded in skipped."""
+    tell = progress or (lambda _m: None)
+    root = Path(input_dir)
+    if not root.is_dir():
+        raise ValueError("pack: %s is not a directory" % root)
+    zpath = Path(output_zip)
+    if not zpath.parent.is_dir():
+        raise ValueError("pack: the parent of %s does not exist" % zpath)
+    if zpath.exists():
+        raise ValueError("pack: %s already exists (the zip must be new)"
+                         % zpath)
+    try:
+        zpath.resolve().relative_to(root.resolve())
+    except ValueError:
+        pass
+    else:
+        raise ValueError("pack: the zip must not sit inside the input "
+                         "folder (%s)" % zpath)
+    key = None
+    if key_file is not None:
+        key = Path(key_file).read_bytes()
+
+    items, skipped = _seal_manifest_scan(root)
+    # one mixed list of bare rel paths, sorted by UTF-8 bytes; in the
+    # archive a directory carries a trailing slash.  The directories
+    # come from their own walk (an empty directory still packs, a
+    # symlinked or unlistable one does not - the scan records why).
+    entries = []
+    dir_rels = []
+    for dirpath, dirnames, _names in os.walk(root, followlinks=False):
+        for d in sorted(dirnames):
+            full = Path(dirpath) / d
+            if full.is_symlink():
+                continue
+            rel = full.relative_to(root).as_posix()
+            try:
+                os.listdir(full)
+            except OSError:
+                continue
+            dir_rels.append(rel)
+            entries.append((rel, True, None))
+    for it in items:
+        entries.append((it["path"], False, it))
+    entries.sort(key=lambda t: _seal_path_sort_key(t[0]))
+
+    tell("Pack: writing %s" % zpath)
+    with zipfile.ZipFile(zpath, "w",
+                         compression=zipfile.ZIP_STORED) as zf:
+        for rel, is_dir, it in entries:
+            arcname = rel + "/" if is_dir else rel
+            zi = zipfile.ZipInfo(arcname, date_time=_SEAL_ZIP_STAMP)
+            zi.create_system = 3
+            try:
+                arcname.encode("ascii")
+            except UnicodeEncodeError:
+                zi.flag_bits |= 0x800  # the UTF-8 name flag
+            if is_dir:
+                zi.external_attr = (0o040755 << 16) | 0x10
+                zi.compress_type = zipfile.ZIP_STORED  # both flags
+                zf.writestr(zi, b"")
+            else:
+                zi.external_attr = 0o100644 << 16
+                zi.compress_type = (zipfile.ZIP_DEFLATED if deflate
+                                    else zipfile.ZIP_STORED)
+                zf.writestr(zi, it["_abs"].read_bytes())
+    zip_sha = "sha256:" + hashlib.sha256(zpath.read_bytes()).hexdigest()
+    overall = _seal_overall_sha256(root)
+    settings = {"deflate": bool(deflate), "zip": zpath.name}
+    if deflate:
+        settings["note"] = _SEAL_ZLIB_NOTE
+    receipt = {
+        "receipt_version": 1,
+        "kind": "sieve-pack",
+        "tool": {"name": "sieve-tray", "version": __version__},
+        "engines": {},
+        "settings": settings,
+        "items": [],
+        "skipped": [{k: v for k, v in s.items()} for s in skipped],
+        "summary": {
+            "files": len(items),
+            "directories": len(dir_rels),
+            "skipped": len(skipped),
+            "zip_sha256": zip_sha,
+            "overall_sha256": overall,
+        },
+    }
+    if verify_page:
+        page = _seal_write_verify_page(zpath.parent, items, overall)
+        tell("Pack: verify page %s"
+             % (zpath.parent / "handoff" / _SEAL_VERIFY_PAGE_NAME))
+        receipt["verify_page"] = {
+            "name": _SEAL_VERIFY_PAGE_NAME,
+            "sha256": "sha256:" + hashlib.sha256(page).hexdigest()}
+    if key is not None:
+        receipt["check_code"] = {
+            "key_id": _seal_check_key_id(key),
+            "value": _seal_check_code(key, overall, receipt),
+        }
+    receipt["digest"] = _gate_digest(receipt)
+    # the receipt is the zip's neighbor's handoff/, written last
+    _gate_write_atomic(zpath.parent / "handoff" / "pack-receipt.json",
+                       _gate_norm_json(receipt).encode("utf-8"))
+    tell("Pack: receipt %s"
+         % (zpath.parent / "handoff" / "pack-receipt.json"))
+    return receipt
+
+
+# ------------------------------------------------------------------------
+# Seal 2.2 / S6: verify.html (request 3.5).  A single self-contained
+# page for the receiving side: no network, no external reference, no
+# font - the file list rides embedded as application/json and the
+# SHA-256 is a pure-JS core, so the behavior is one fixed
+# implementation even where the standard crypto API exists.  The page
+# compares the picked folder against the list (same / changed /
+# missing / extra, shown on screen only) and never touches the check
+# code - one line says verify does that.  The page is written BEFORE
+# the receipt (the receipt stays the last write) and its sha256 rides
+# in the receipt's optional verify_page section; a run without
+# --verify-page writes nothing and its receipt stays byte-identical
+# to 2.1.1.
+
+_SEAL_VERIFY_PAGE_NAME = "verify.html"
+
+_SEAL_VERIFY_PAGE_TEMPLATE = """<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ファイル一覧の確認 / Check the file list</title>
+<style>
+body { font-family: sans-serif; margin: 1.5rem; color: #1a1a1a; background: #ffffff; }
+h1 { font-size: 1.25rem; }
+#seal-lead { color: #444; }
+#seal-progress { margin: 0.5rem 0; color: #555; }
+#seal-summary { font-size: 1.1rem; margin: 0.5rem 0; }
+#seal-overall { word-break: break-all; color: #555; margin: 0.5rem 0; }
+#seal-note { color: #666; margin: 0.5rem 0; }
+table { border-collapse: collapse; margin-top: 0.5rem; }
+th, td { border: 1px solid #bbb; padding: 0.2rem 0.5rem; text-align: left; }
+td.s-same { color: #16630f; }
+td.s-changed { color: #a25a00; }
+td.s-missing { color: #a1200e; }
+td.s-extra { color: #5b3a92; }
+</style>
+</head>
+<body>
+<h1 id="seal-title"></h1>
+<div id="seal-lead"></div>
+<p><input type="file" id="seal-pick" webkitdirectory multiple></p>
+<div id="seal-progress"></div>
+<div id="seal-summary"></div>
+<div id="seal-overall"></div>
+<div id="seal-note"></div>
+<div id="seal-results"></div>
+<noscript><p>このページには JavaScript が必要です。 / This page needs JavaScript.</p></noscript>
+<script id="seal-data" type="application/json">__SEAL_DATA__</script>
+<script id="seal-sha256-core">
+(function (g) {
+"use strict";
+// Pure SHA-256, bound to no page object: it runs the same in a
+// browser tab and in a plain script runner.  One use per instance
+// (hex() pads the state).
+var K = new Int32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+  0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+  0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+  0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+  0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+  0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+  0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+  0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+  0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]);
+function Sha256() {
+  this.h = new Int32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372,
+    0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+  this.w = new Int32Array(64);
+  this.buf = new Uint8Array(64);
+  this.n = 0;
+  this.len = 0;
+}
+Sha256.prototype.update = function (u8) {
+  var off = 0, i;
+  this.len += u8.length;
+  if (this.n > 0) {
+    var take = Math.min(64 - this.n, u8.length);
+    for (i = 0; i < take; i++) { this.buf[this.n + i] = u8[i]; }
+    this.n += take;
+    off = take;
+    if (this.n === 64) { this._block(this.buf, 0); this.n = 0; }
+  }
+  while (off + 64 <= u8.length) { this._block(u8, off); off += 64; }
+  for (i = off; i < u8.length; i++) { this.buf[this.n++] = u8[i]; }
+  return this;
+};
+Sha256.prototype._block = function (p, off) {
+  var w = this.w, h = this.h, i, x, y, s0, s1, a, b, c, d, e, f, g2, hh;
+  for (i = 0; i < 16; i++) {
+    w[i] = ((p[off + 4 * i] << 24) | (p[off + 4 * i + 1] << 16) |
+            (p[off + 4 * i + 2] << 8) | p[off + 4 * i + 3]) | 0;
+  }
+  for (i = 16; i < 64; i++) {
+    x = w[i - 15]; y = w[i - 2];
+    s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3);
+    s1 = ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10);
+    w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
+  }
+  a = h[0]; b = h[1]; c = h[2]; d = h[3];
+  e = h[4]; f = h[5]; g2 = h[6]; hh = h[7];
+  for (i = 0; i < 64; i++) {
+    var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^
+             ((e >>> 25) | (e << 7));
+    var ch = (e & f) ^ (~e & g2);
+    var t1 = (hh + S1 + ch + K[i] + w[i]) | 0;
+    var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^
+             ((a >>> 22) | (a << 10));
+    var mj = (a & b) ^ (a & c) ^ (b & c);
+    var t2 = (S0 + mj) | 0;
+    hh = g2; g2 = f; f = e; e = (d + t1) | 0;
+    d = c; c = b; b = a; a = (t1 + t2) | 0;
+  }
+  h[0] = (h[0] + a) | 0; h[1] = (h[1] + b) | 0;
+  h[2] = (h[2] + c) | 0; h[3] = (h[3] + d) | 0;
+  h[4] = (h[4] + e) | 0; h[5] = (h[5] + f) | 0;
+  h[6] = (h[6] + g2) | 0; h[7] = (h[7] + hh) | 0;
+};
+Sha256.prototype.hex = function () {
+  var hi = Math.floor(this.len / 536870912);
+  var lo = (this.len % 536870912) * 8;
+  var n = this.n, i, out = "";
+  this.buf[n] = 0x80;
+  n += 1;
+  if (n > 56) {
+    while (n < 64) { this.buf[n] = 0; n += 1; }
+    this._block(this.buf, 0);
+    n = 0;
+  }
+  while (n < 56) { this.buf[n] = 0; n += 1; }
+  this.buf[56] = (hi >>> 24) & 255;
+  this.buf[57] = (hi >>> 16) & 255;
+  this.buf[58] = (hi >>> 8) & 255;
+  this.buf[59] = hi & 255;
+  this.buf[60] = (lo >>> 24) & 255;
+  this.buf[61] = (lo >>> 16) & 255;
+  this.buf[62] = (lo >>> 8) & 255;
+  this.buf[63] = lo & 255;
+  this._block(this.buf, 0);
+  for (i = 0; i < 8; i++) {
+    out += ("00000000" + ((this.h[i] >>> 0).toString(16))).slice(-8);
+  }
+  return out;
+};
+g.Sha256 = Sha256;
+})(typeof globalThis !== "undefined" ? globalThis : this);
+</script>
+<script id="seal-app">
+(function (g) {
+"use strict";
+var T = {
+  ja: {
+    title: "フォルダの中身を、ファイル一覧と比べます",
+    lead: "受け取ったフォルダを選ぶと、中身を 1 つずつ調べて、ファイル一覧と比べます。何も送信しません。",
+    pick: "フォルダを選ぶ",
+    working: "しらべています…",
+    progress: "しらべたファイル: {done} / {total}",
+    same: "一致", changed: "ちがう", missing: "足りない", extra: "余分",
+    allOk: "全部、ファイル一覧と一致しました。",
+    notOk: "ファイル一覧と一致しないものがあります。",
+    overall: "フォルダ全体のチェックサム",
+    note: "照合コードの確認は、Sieve Tray の verify で行います。",
+    colFile: "ファイル", colResult: "けっか", colSize: "サイズ"
+  },
+  en: {
+    title: "Check the folder against its file list",
+    lead: "Pick the folder you received. Each file is read and compared with the file list. Nothing is sent anywhere.",
+    pick: "Choose folder",
+    working: "Working…",
+    progress: "Checked: {done} / {total}",
+    same: "Matches", changed: "Changed", missing: "Missing", extra: "Extra",
+    allOk: "Everything matches the file list.",
+    notOk: "Some files do not match the file list.",
+    overall: "Whole-folder checksum",
+    note: "Check codes are verified with Sieve Tray's verify.",
+    colFile: "File", colResult: "Result", colSize: "Size"
+  }
+};
+function lang() {
+  var l = (g.navigator && g.navigator.language) || "en";
+  return String(l).slice(0, 2).toLowerCase() === "ja" ? "ja" : "en";
+}
+function relPathOf(f) {
+  var rp = f.webkitRelativePath || f.name || "";
+  var i = rp.indexOf("/");
+  return i >= 0 ? rp.slice(i + 1) : rp;
+}
+var CHUNK = 1048576;
+function hashFile(file, onProg) {
+  return new Promise(function (resolve, reject) {
+    var h = new Sha256();
+    var off = 0;
+    function next() {
+      var end = Math.min(off + CHUNK, file.size);
+      var fr = new FileReader();
+      fr.onload = function (ev) {
+        h.update(new Uint8Array(ev.target.result));
+        off = end;
+        if (onProg) { onProg(off, file.size); }
+        if (off < file.size) { next(); } else { resolve(h.hex()); }
+      };
+      fr.onerror = function () { reject(new Error("read error")); };
+      fr.readAsArrayBuffer(file.slice(off, end));
+    }
+    next();
+  });
+}
+function computeResults(data, files, onFileDone) {
+  var byPath = new Map();
+  data.entries.forEach(function (en) { byPath.set(en.path, en); });
+  var seen = new Map();
+  var results = [];
+  var p = Promise.resolve();
+  files.forEach(function (f) {
+    p = p.then(function () {
+      var rel = relPathOf(f);
+      return hashFile(f).then(function (hex) {
+        seen.set(rel, true);
+        if (byPath.has(rel)) {
+          var en = byPath.get(rel);
+          results.push({ path: rel,
+            status: (en.sha256 === hex && en.bytes === f.size)
+                    ? "same" : "changed",
+            bytes: f.size, sha256: hex });
+        } else {
+          results.push({ path: rel, status: "extra",
+            bytes: f.size, sha256: hex });
+        }
+        if (onFileDone) { onFileDone(results.length, files.length); }
+      });
+    });
+  });
+  return p.then(function () {
+    data.entries.forEach(function (en) {
+      if (!seen.has(en.path)) {
+        results.push({ path: en.path, status: "missing",
+          bytes: en.bytes, sha256: en.sha256 });
+      }
+    });
+    var counts = { same: 0, changed: 0, missing: 0, extra: 0 };
+    results.forEach(function (r) { counts[r.status] += 1; });
+    return { counts: counts, results: results,
+             overall: data.overall_sha256 };
+  });
+}
+g.SEAL_VERIFY = { computeResults: computeResults, hashFile: hashFile,
+                  text: T, lang: lang };
+function render(wrap, res, t) {
+  var table = document.createElement("table");
+  var head = document.createElement("tr");
+  [t.colFile, t.colResult, t.colSize].forEach(function (h) {
+    var th = document.createElement("th");
+    th.textContent = h;
+    head.appendChild(th);
+  });
+  table.appendChild(head);
+  res.results.forEach(function (r) {
+    var tr = document.createElement("tr");
+    var c1 = document.createElement("td");
+    c1.textContent = r.path;
+    var c2 = document.createElement("td");
+    c2.textContent = t[r.status];
+    c2.className = "s-" + r.status;
+    var c3 = document.createElement("td");
+    c3.textContent = String(r.bytes);
+    tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3);
+    table.appendChild(tr);
+  });
+  wrap.appendChild(table);
+}
+function init() {
+  var el = document.getElementById("seal-data");
+  var pick = document.getElementById("seal-pick");
+  if (!el || !pick) { return; }
+  var data = JSON.parse(el.textContent);
+  var t = T[lang()];
+  document.title = t.title;
+  document.getElementById("seal-title").textContent = t.title;
+  document.getElementById("seal-lead").textContent = t.lead;
+  pick.setAttribute("aria-label", t.pick);
+  document.getElementById("seal-overall").textContent =
+    t.overall + ": " + data.overall_sha256;
+  document.getElementById("seal-note").textContent = t.note;
+  pick.addEventListener("change", function () {
+    var files = Array.prototype.slice.call(pick.files || []);
+    var prog = document.getElementById("seal-progress");
+    var sum = document.getElementById("seal-summary");
+    var wrap = document.getElementById("seal-results");
+    sum.textContent = "";
+    wrap.textContent = "";
+    if (files.length === 0) { return; }
+    prog.textContent = t.working;
+    computeResults(data, files, function (done, total) {
+      prog.textContent = t.progress.replace("{done}", String(done))
+                                   .replace("{total}", String(total));
+    }).then(function (res) {
+      prog.textContent = t.progress.replace("{done}", String(files.length))
+                                   .replace("{total}", String(files.length));
+      var clean = res.counts.same === data.entries.length &&
+                  res.counts.changed === 0 &&
+                  res.counts.missing === 0 && res.counts.extra === 0;
+      sum.textContent = clean ? t.allOk : t.notOk;
+      render(wrap, res, t);
+    });
+  });
+}
+if (typeof document !== "undefined" && document.addEventListener) {
+  document.addEventListener("DOMContentLoaded", init);
+}
+})(typeof globalThis !== "undefined" ? globalThis : this);
+</script>
+</body>
+</html>
+"""
+
+
+def _seal_verify_page_data(items, overall: str) -> dict:
+    """The embedded file list: path / bytes / sha256 per item (the same
+    list the receipt carries, in the same order) plus the whole-folder
+    checksum.  A name that is not valid UTF-8 cannot ride in the page
+    (no browser can produce it), so the page refuses one (exit 2)."""
+    entries = []
+    for it in items:
+        if it["path"] is None:
+            raise ValueError("verify-page: a name that is not valid "
+                             "UTF-8 cannot ride in the page (%s)"
+                             % it.get("path_hex"))
+        entries.append({"path": it["path"], "bytes": it["bytes"],
+                        "sha256": it["sha256"]})
+    return {"entries": entries, "overall_sha256": overall}
+
+
+def _seal_verify_page_bytes(data: dict) -> bytes:
+    """Render the page: the JSON goes into a script block of type
+    application/json with <, > and & escaped so a file name cannot
+    close the block (each escape stays a valid JSON escape)."""
+    blob = json.dumps(data, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"))
+    blob = (blob.replace("<", "\\u003c").replace(">", "\\u003e")
+            .replace("&", "\\u0026"))
+    html = _SEAL_VERIFY_PAGE_TEMPLATE.replace("__SEAL_DATA__", blob)
+    return html.encode("utf-8")
+
+
+def _seal_write_verify_page(base_dir: Path, items, overall: str) -> bytes:
+    """Render and write handoff/verify.html (request 3.5).  The page is
+    written BEFORE the receipt - the receipt stays the last write.
+    Returns the page bytes."""
+    page = _seal_verify_page_bytes(_seal_verify_page_data(items, overall))
+    _gate_write_atomic(base_dir / "handoff" / _SEAL_VERIFY_PAGE_NAME,
+                       page)
+    return page
+
+
+# ------------------------------------------------------------------------
+# Seal 2.2 / S7: draw (request 3.6).  A verifiable draw over a roster:
+# key(x) = SHA-256( UTF-8(seed) || NUL || x ), the items sorted by key
+# bytes then item bytes, dealt round-robin into k groups (k = --groups,
+# or ceil(items / --size)).  The grouping with the names lands in
+# local/draw-result.json (written BEFORE the receipt); the receipt
+# lands in handoff/ LAST and carries the roster hash, the seed, the
+# parameters and the result hash only - never the names.  The claim
+# stays limited: this seed with this roster gives this result - the
+# procedure and the two known values live in docs/draw-procedure.md
+# and SL-T14 reads them back.
+
+def _seal_roster_lines(roster: Path):
+    """The roster: one item per line.  A CRLF terminator is accepted
+    (the CR is a terminator, not item data); the normalized roster is
+    the lines joined with LF plus one trailing LF.  Returns
+    (items, roster_bytes).  An empty roster, a blank line and a roster
+    that is not valid UTF-8 are refused (exit 2)."""
+    raw = roster.read_bytes()
+    lines = raw.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()  # the one trailing LF terminator
+    items = []
+    for ln in lines:
+        if ln.endswith(b"\r"):
+            ln = ln[:-1]
+        if ln == b"":
+            raise ValueError("draw: the roster has an empty line")
+        try:
+            ln.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError("draw: the roster is not valid UTF-8")
+        items.append(ln)
+    if not items:
+        raise ValueError("draw: the roster is empty")
+    return items, b"\n".join(items) + b"\n"
+
+
+def _seal_draw_keys(seed: str, items):
+    """key(x) = SHA-256( UTF-8(seed) || NUL || x ) for every item; the
+    seed is the public string (docs/draw-procedure.md section 2)."""
+    sb = seed.encode("utf-8")
+    return [hashlib.sha256(sb + b"\x00" + x).digest() for x in items]
+
+
+def _seal_draw_order(items, keys):
+    """The deal order: key bytes ascending, ties by item bytes
+    ascending (docs/draw-procedure.md section 2)."""
+    return sorted(range(len(items)),
+                  key=lambda i: (keys[i], items[i]))
+
+
+def run_draw(roster_file, seed, output_dir, groups=None, size=None,
+             progress: Optional[Callable[[str], None]] = None) -> dict:
+    """The `draw` command (request 3.6, SL-T14).  A verifiable draw:
+    the items are ordered by SHA-256(seed || NUL || x) with ties by
+    item bytes and dealt round-robin into k groups (k = --groups, or
+    ceil(items / --size)).  The grouping (with names) lands at
+    local/draw-result.json, written BEFORE the receipt; the receipt is
+    written LAST into handoff/ and carries the roster hash (the lines
+    joined with LF plus one trailing LF), the seed, the parameters and
+    the result hash (the written local file's bytes) - never the
+    names.  Exactly one of --groups and --size is required."""
+    tell = progress or (lambda _m: None)
+    if (groups is None) == (size is None):
+        raise ValueError("draw: exactly one of --groups and --size "
+                         "is required")
+    if groups is not None and groups < 1:
+        raise ValueError("draw: --groups must be 1 or more")
+    if size is not None and size < 1:
+        raise ValueError("draw: --size must be 1 or more")
+    rp = Path(roster_file)
+    if not rp.is_file():
+        raise ValueError("draw: %s is not a file" % rp)
+    out = Path(output_dir)
+    items, roster_bytes = _seal_roster_lines(rp)
+    n = len(items)
+    k = groups if groups is not None else -(-n // size)
+    order = _seal_draw_order(items, _seal_draw_keys(seed, items))
+    names = [x.decode("utf-8") for x in items]
+    groups_list = [[] for _ in range(k)]
+    for pos, i in enumerate(order):
+        groups_list[pos % k].append(names[i])
+    result = {"groups": groups_list,
+              "ordered": [names[i] for i in order]}
+    local_bytes = _gate_norm_json(result).encode("utf-8")
+    # the result (with the names) is local/ and lands BEFORE the
+    # receipt - the receipt stays the last write
+    _gate_write_atomic(out / "local" / "draw-result.json", local_bytes)
+    tell("Draw: result %s" % (out / "local" / "draw-result.json"))
+    receipt = {
+        "receipt_version": 1,
+        "kind": "sieve-draw",
+        "tool": {"name": "sieve-tray", "version": __version__},
+        "engines": {},
+        "settings": {"seed": seed, "groups": k, "size": size},
+        "items": [],
+        "skipped": [],
+        "summary": {
+            "roster_sha256": "sha256:" +
+                hashlib.sha256(roster_bytes).hexdigest(),
+            "result_sha256": "sha256:" +
+                hashlib.sha256(local_bytes).hexdigest(),
+            "items": n,
+            "groups": k,
+        },
+    }
+    receipt["digest"] = _gate_digest(receipt)
+    _gate_write_atomic(out / "handoff" / "draw-receipt.json",
+                       _gate_norm_json(receipt).encode("utf-8"))
+    tell("Draw: receipt %s" % (out / "handoff" / "draw-receipt.json"))
+    return receipt
+
+
+_SEAL_UNPACK_SYMBOLS = ("absolute_path", "parent_ref", "drive_letter",
+                        "collision")
+
+
+def _seal_unpack_checks(infos):
+    """Every safety check (P9) runs before anything is created: an
+    absolute path, a .. component (a backslash counts as a separator),
+    a drive letter, or a collision (an exact duplicate, a casefold
+    duplicate, or a file entry nested inside another file entry).
+    Returns (refused, checked) where refused is a list of
+    {path, symbol} in path byte order."""
+    refused = []
+    seen_exact = set()
+    seen_fold = set()
+    file_names = []
+    for info in infos:
+        name = info.filename
+        sym = None
+        checked = name.replace("\\", "/")
+        if checked.startswith("/"):
+            sym = "absolute_path"
+        else:
+            parts = checked.split("/")
+            if parts and parts[0].endswith(":") and \
+                    len(parts[0]) == 2 and parts[0][0].isalpha():
+                sym = "drive_letter"
+            elif ".." in parts:
+                sym = "parent_ref"
+        if sym is None:
+            is_dir = checked.endswith("/")
+            base = checked.rstrip("/")
+            if base in seen_exact or base.casefold() in seen_fold:
+                sym = "collision"
+            else:
+                if not is_dir:
+                    for fn in file_names:
+                        if base.startswith(fn + "/"):
+                            sym = "collision"
+                            break
+                seen_exact.add(base)
+                seen_fold.add(base.casefold())
+                if not is_dir:
+                    file_names.append(base)
+        if sym is not None:
+            refused.append(_seal_path_json(name, {"symbol": sym}))
+    refused.sort(key=lambda e: _seal_path_sort_key(
+        e["path"] if e["path"] is not None else e["path_hex"]))
+    return refused
+
+
+def run_unpack(zip_path, output_dir,
+               progress: Optional[Callable[[str], None]] = None) -> dict:
+    """The `unpack` command (P9/P10/P12).  Every entry is checked
+    before anything is created; a refusal extracts nothing and still
+    writes the receipt (exit 1 at the CLI).  Our own zips and a
+    foreign zip that passes the same checks are treated alike.  The
+    receipt carries extracted / zip_sha256 / zip_name in settings, the
+    refused entries with the closed 4 symbols, the symbol counts, and
+    - on success - the extracted tree's whole-folder checksum computed
+    BEFORE the receipt is written; an archive-side handoff/ merges and
+    our receipt stays its last word."""
+    tell = progress or (lambda _m: None)
+    zpath = Path(zip_path)
+    if not zpath.is_file():
+        raise ValueError("unpack: %s is not a file" % zpath)
+    out = Path(output_dir)
+    zip_sha = "sha256:" + hashlib.sha256(zpath.read_bytes()).hexdigest()
+    with zipfile.ZipFile(zpath) as zf:
+        infos = list(zf.infolist())
+        refused = _seal_unpack_checks(infos)
+        counts = {s: 0 for s in _SEAL_UNPACK_SYMBOLS}
+        for e in refused:
+            counts[e["symbol"]] += 1
+        receipt = {
+            "receipt_version": 1,
+            "kind": "sieve-unpack",
+            "tool": {"name": "sieve-tray", "version": __version__},
+            "engines": {},
+            "settings": {
+                "extracted": 0,
+                "zip_sha256": zip_sha,
+                "zip_name": zpath.name,
+            },
+            "items": [],
+            "skipped": [],
+            "refused": refused,
+            "summary": {s: counts[s] for s in _SEAL_UNPACK_SYMBOLS},
+        }
+        if refused:
+            # refuse with zero extraction; the receipt is still written
+            receipt["digest"] = _gate_digest(receipt)
+            _gate_write_atomic(out / "handoff" / "unpack-receipt.json",
+                               _gate_norm_json(receipt).encode("utf-8"))
+            tell("Unpack: refused %d entr%s, nothing extracted"
+                 % (len(refused), "y" if len(refused) == 1 else "ies"))
+            return receipt
+        extracted = 0
+        for info in infos:
+            checked = info.filename.replace("\\", "/")
+            target = out / checked
+            if checked.endswith("/"):
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(zf.read(info))
+            extracted += 1
+    receipt["settings"]["extracted"] = extracted
+    # the extracted tree's checksum comes BEFORE the receipt: an
+    # archive-side handoff/ merges and our receipt is the last word
+    receipt["summary"]["overall_sha256"] = _seal_overall_sha256(out)
+    receipt["digest"] = _gate_digest(receipt)
+    _gate_write_atomic(out / "handoff" / "unpack-receipt.json",
+                       _gate_norm_json(receipt).encode("utf-8"))
+    tell("Unpack: %d files into %s" % (extracted, out))
+    return receipt
+
+
 def _gate_charset_check(data: bytes):
     """The series policy (request §3.2, measured against Crowd 0.9.0):
     UTF-8 BOM -> strict UTF-8 -> strict CP932; UTF-16/32 BOMs are
@@ -2169,7 +3652,7 @@ def run_gate(input_dir: Path, output_dir: Path, *,
              redact_config=None, no_redact: bool = False,
              crowd_config=None, include_paths: bool = True,
              include_input_hashes: bool = True,
-             storage_path=None) -> dict:
+             storage_path=None, key_file=None) -> dict:
     """The M1 Gate (request §3.1): one pass over a folder, producing
     handoff/ + local/ + the normalized receipt.  Returns the receipt
     dict (with its digest).
@@ -2308,6 +3791,18 @@ def run_gate(input_dir: Path, output_dir: Path, *,
             "status": status_counts,
         },
     }
+    if key_file is not None:
+        # C5/C1: a keyed gate binds the input folder's whole checksum
+        # (the S1 hash tree) and carries the optional check_code
+        # section; an unkeyed run keeps the 2.1.1 shape byte for byte
+        key = Path(key_file).read_bytes()
+        receipt["summary"]["overall_sha256"] = \
+            _seal_overall_sha256(Path(input_dir))
+        receipt["check_code"] = {
+            "key_id": _seal_check_key_id(key),
+            "value": _seal_check_code(
+                key, receipt["summary"]["overall_sha256"], receipt),
+        }
     receipt["digest"] = _gate_digest(receipt)
 
     # --- the receipt is written last (request §3.1)
@@ -2366,6 +3861,22 @@ def _gate_item_document(engine, src: Path, data: bytes, suffix: str,
     Redact (label) -> handoff.  HTML rides the extras lane with a
     charset pre-check done here first; a rule-originated css_hidden
     segment fails the item closed (measured)."""
+    # --- PDF short-circuit (Seal 2.2 ruling (2) of 2026-11-14) --------
+    # Gate treats a PDF as unobserved with the reason engine_unavailable
+    # regardless of whether pypdf is installed.  pypdf's visible-text
+    # extraction does not interpret the rendering mode "3 Tr", so
+    # observing a PDF starts a leak (measured: the invisible text rode
+    # into handoff/*.pdf.visible.txt).  Until the engine understands
+    # render modes, the safe side is to not observe and record why -
+    # closed vocabulary only, with a detail.  This is also the standing
+    # behaviour for frozen apps that bundle pypdf transitively.
+    if suffix == ".pdf":
+        item["status"] = "unobserved"
+        item["unobserved_reason"] = "engine_unavailable"
+        item["unobserved_detail"] = "pdf_visible_extraction_disabled"
+        item["lens"] = {"mask": "0000-000"}
+        _gate_finish_item(item, "not_produced", "engine_unavailable")
+        return
     # --- observation
     try:
         if suffix in (".html", ".htm"):
@@ -3133,7 +4644,7 @@ def run_cohort(input_dir: Path, output_dir: Path, *,
                include_paths: bool = True,
                include_input_hashes: bool = True,
                storage_path=None, lang: str = "en",
-               progress=None) -> dict:
+               progress=None, key_file=None) -> dict:
     """The M2 Cohort (request §3.1): compare the submissions of a
     folder side by side and write handoff/ (the receipt only) +
     local/ (the report).  Returns the receipt dict (with its digest).
@@ -3420,6 +4931,18 @@ def run_cohort(input_dir: Path, output_dir: Path, *,
                 "pair references an unknown item: %s" % (exc,))
         receipt["pairs"] = sorted(
             receipt["pairs"], key=lambda p: (p["a"], p["b"]))
+    if key_file is not None:
+        # C5: a keyed cohort binds the input folder's whole checksum
+        # and carries the optional check_code section (receipt_version
+        # stays 1); an unkeyed run keeps the 2.1.1 shape
+        key = Path(key_file).read_bytes()
+        receipt["summary"]["overall_sha256"] = \
+            _seal_overall_sha256(Path(input_dir))
+        receipt["check_code"] = {
+            "key_id": _seal_check_key_id(key),
+            "value": _seal_check_code(
+                key, receipt["summary"]["overall_sha256"], receipt),
+        }
     receipt["digest"] = _gate_digest(receipt)
     pairs = receipt["pairs"]
     blob = _gate_norm_json(receipt)
@@ -3697,7 +5220,8 @@ def _cohort_summary_consistent(obj: dict) -> bool:
 
 
 def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
-                scope=None, redact_config=None, base_paths=None) -> dict:
+                scope=None, redact_config=None, base_paths=None,
+                key_file=None) -> dict:
     """Re-check a run (request §3.4).  scope is always reported:
     outputs_only / inputs_and_outputs / replay.  overall is
     match / differs / not_verifiable; the CLI maps it to exit codes
@@ -3739,6 +5263,68 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
     if obj.get("digest") != _gate_digest(obj):
         result["overall"] = "not_verifiable"
         result["not_verifiable_reason"] = "receipt_digest_mismatch"
+        return result
+    # the check code key (C14): the file-list checks run with or
+    # without it; the code itself is confirmed only with it
+    key = None
+    if key_file is not None:
+        try:
+            key = Path(key_file).read_bytes()
+        except OSError:
+            result["overall"] = "not_verifiable"
+            result["not_verifiable_reason"] = "settings_unavailable"
+            return result
+    if obj.get("kind") in ("sieve-manifest", "sieve-manifest-diff",
+                           "sieve-pack"):
+        # the Seal list receipts (C9): the list check runs without a
+        # key; the code verdict rides on top (C10/C11)
+        result["scope"] = scope or ("root" if input_dir is not None
+                                    else "receipt_only")
+        items = []
+        root = Path(input_dir) if input_dir is not None else None
+        if root is not None:
+            if not root.is_dir():
+                result["overall"] = "not_verifiable"
+                result["not_verifiable_reason"] = "settings_unavailable"
+                return result
+            if obj["kind"] == "sieve-manifest":
+                want = {it["path"]: it for it in obj.get("items", [])}
+                present = {}
+                for r, _d, names in os.walk(root, followlinks=False):
+                    for n in names:
+                        rel = (Path(r) / n).relative_to(root).as_posix()
+                        present[rel] = True
+                for rel, it in want.items():
+                    p = root / rel
+                    if not p.is_file() or p.is_symlink():
+                        items.append({"path": rel,
+                                      "reason": "input_missing"})
+                        continue
+                    got = hashlib.sha256(p.read_bytes()).hexdigest()
+                    if got != it.get("sha256"):
+                        items.append({"path": rel,
+                                      "reason": "input_changed"})
+                for rel in present:
+                    if rel not in want:
+                        items.append({"path": rel,
+                                      "reason": "item_added"})
+            # the whole-folder checksum binds the directories too
+            got_overall = _seal_overall_sha256(root)
+            if got_overall != (obj.get("summary") or {}).get(
+                    "overall_sha256"):
+                items.append({"path": ".", "reason": "input_changed"})
+            items.sort(key=lambda e: e["path"])
+        verdict = _seal_check_code_verdict(obj, key)
+        if verdict and verdict[0] == "differs_item":
+            items.append(verdict[1])
+        result["items"] = items
+        if items:
+            result["overall"] = "differs"
+        elif verdict:
+            result["overall"] = "not_verifiable"
+            result["not_verifiable_reason"] = verdict[1]
+        else:
+            result["overall"] = "match"
         return result
     if scope is None:
         if output_dir is not None and input_dir is not None:
@@ -3866,17 +5452,22 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
             result["not_verifiable_reason"] = "settings_unavailable"
             return result
         csettings = obj.get("settings") or {}
-        with tempfile.TemporaryDirectory() as td:
-            receipt2 = run_cohort(
-                Path(input_dir), Path(td) / "out",
-                base_paths=bases or None,
-                exclude_quotes=bool(csettings.get("exclude_quotes")),
-                exclude_bibliography=bool(
-                    csettings.get("exclude_bibliography")),
-                include_paths=bool(csettings.get("include_paths", True)),
-                include_input_hashes=bool(
-                    csettings.get("include_input_hashes", True)))
-        if receipt2["digest"] != obj.get("digest"):
+        if obj.get("check_code") is not None and key is None:
+            receipt2 = None  # the replay cannot reproduce a keyed run
+        else:
+            with tempfile.TemporaryDirectory() as td:
+                receipt2 = run_cohort(
+                    Path(input_dir), Path(td) / "out",
+                    base_paths=bases or None,
+                    exclude_quotes=bool(csettings.get("exclude_quotes")),
+                    exclude_bibliography=bool(
+                        csettings.get("exclude_bibliography")),
+                    include_paths=bool(
+                        csettings.get("include_paths", True)),
+                    include_input_hashes=bool(
+                        csettings.get("include_input_hashes", True)),
+                    key_file=key_file)
+        if receipt2 is not None and receipt2["digest"] != obj.get("digest"):
             for it2 in receipt2["items"]:
                 ident = _gate_verify_item_ident(it2)
                 ident["reason"] = "replay_differs"
@@ -3908,7 +5499,9 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
                 red.get("config_sha256") is None,
                 include_paths=settings.get("include_paths", True),
                 include_input_hashes=settings.get(
-                    "include_input_hashes", True))
+                    "include_input_hashes", True),
+                key_file=(key_file if obj.get("check_code") is not None
+                          else None))
         if receipt2["digest"] != obj.get("digest"):
             for it2 in receipt2["items"]:
                 ident = _gate_verify_item_ident(it2)
@@ -3926,15 +5519,29 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
             reasons.append(entry)
 
     # deduplicate: an item keeps at most one reason, replay_differs and
-    # engine_version_differs included (the comparison never stops)
+    # engine_version_differs included (the comparison never stops).
+    # The check code verdict is taken BEFORE this loop - its local
+    # `key` tuple would shadow the key bytes (C9/C10/C11: the verdict
+    # rides on top of the folder checks and decides the overall only
+    # when the folder itself matched).
+    cc_verdict = _seal_check_code_verdict(obj, key)
     dedup = {}
     for entry in reasons:
         key = (entry.get("path"), entry.get("index"))
         if key not in dedup:
             dedup[key] = entry
     result["items"] = list(dedup.values())
-    result["overall"] = "differs" if result["items"] else "match"
-    result["not_verifiable_reason"] = None
+    if cc_verdict and cc_verdict[0] == "differs_item":
+        result["items"].append(cc_verdict[1])
+    if result["items"]:
+        result["overall"] = "differs"
+        result["not_verifiable_reason"] = None
+    elif cc_verdict:
+        result["overall"] = "not_verifiable"
+        result["not_verifiable_reason"] = cc_verdict[1]
+    else:
+        result["overall"] = "match"
+        result["not_verifiable_reason"] = None
     return result
 
 
@@ -4112,6 +5719,179 @@ def cohort_self_check(progress: ProgressCallback = _silent) -> dict:
             "differences": diffs}
 
 
+# SL-T20 (Seal 2.2, S11): the frozen distribution app runs the
+# manifest/pack/draw self-checks headlessly (release.yml post-processing,
+# the same 0/1/2 exit contract as gate/cohort).  The expectations are
+# the PUBLISHED known values - docs/manifest-format.md section 4 KV-2
+# and docs/draw-procedure.md section 4 KV-D1/KV-D2 (SL-T01/SL-T14 read
+# them back from the docs) - plus the deterministic pack receipt; never
+# a receipt digest (the digest covers tool.version, so it moves with a
+# release).  The inputs are built in a temp folder at run time, so no
+# sample pack has to travel with the frozen app for the three Seal
+# checks.
+_SEAL_KV2_OVERALL = (
+    "06965d1ff8239b8e9efad9c88d05e8624d92ac3dd252d047617c82c0de724a92")
+_SEAL_KV2_ONE_SHA256 = (
+    "2c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806")
+_SEAL_KV2_BETA_SHA256 = (
+    "f2c82decdd7181cf98945929a62598db7e6b477e11f6e0eb0ae97020eff151ad")
+_SEAL_KVD1_ROSTER_SHA256 = (
+    "54e7fd617a3c08ae396cadd191b9e16db655b8c9e0832d35902f7d351b8cd191")
+_SEAL_KVD1_RESULT_SHA256 = (
+    "dae02d918072cb8f225273064beaf5fd284781ebb9ca96d79b3e86520b783413")
+_SEAL_KVD2_ROSTER_SHA256 = (
+    "772e62f2c1ae2609e508d7168a41ad1398189960ebee4991b9443f15fd4fda22")
+_SEAL_KVD2_RESULT_SHA256 = (
+    "49ee187e2cc397886382a4d22c5bfce70a50ace4f4ff5201fbcfc79f014b4ac5")
+
+
+def _seal_self_check_kv2(root: Path) -> None:
+    """The KV-2 fixture (docs/manifest-format.md section 4): beta.txt =
+    b"beta\\n", a/one.txt = b"one\\n", a/empty = an empty directory."""
+    (root / "a" / "empty").mkdir(parents=True)
+    (root / "a" / "one.txt").write_bytes(b"one\n")
+    (root / "beta.txt").write_bytes(b"beta\n")
+
+
+def _seal_self_check_fail(diffs, field, expected, actual):
+    if expected != actual:
+        diffs.append({"field": field, "expected": expected,
+                      "actual": actual})
+
+
+def manifest_self_check(progress: ProgressCallback = _silent) -> dict:
+    """The self-check (SL-T20): list the KV-2 fixture twice with
+    `manifest` and compare the published known values - the
+    whole-folder checksum (KV-2, whose rows include the empty
+    directory), the two file checksums, the byte-ordered paths and the
+    run-to-run determinism.  Returns the gate/cohort shape
+    {"expected": n, "matching": n, "differences": [...]}."""
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "kv2"
+            _seal_self_check_kv2(root)
+            r1 = run_manifest(root, Path(td) / "out1", progress=progress)
+            r2 = run_manifest(root, Path(td) / "out2", progress=progress)
+            by_path = {it["path"]: it for it in r1["items"]}
+    except OSError as e:
+        # the self-check could not run (the 2026-11-10 ruling)
+        return {"error": "self_check_input_unavailable", "detail": str(e)}
+    diffs = []
+    _seal_self_check_fail(diffs, "summary.overall_sha256",
+                          _SEAL_KV2_OVERALL,
+                          r1["summary"]["overall_sha256"])
+    _seal_self_check_fail(diffs, "items",
+                          ["a/one.txt", "beta.txt"],
+                          [it["path"] for it in r1["items"]])
+    _seal_self_check_fail(diffs, "a/one.txt sha256",
+                          _SEAL_KV2_ONE_SHA256,
+                          by_path["a/one.txt"]["sha256"])
+    _seal_self_check_fail(diffs, "beta.txt sha256",
+                          _SEAL_KV2_BETA_SHA256,
+                          by_path["beta.txt"]["sha256"])
+    _seal_self_check_fail(diffs, "determinism (receipt digest)",
+                          r1["digest"], r2["digest"])
+    return {"expected": 5, "matching": 5 - len(diffs),
+            "differences": diffs}
+
+
+def pack_self_check(progress: ProgressCallback = _silent) -> dict:
+    """The self-check (SL-T20): pack the KV-2 fixture twice, compare
+    the deterministic zip bytes, the receipt's zip checksum (the
+    sha256sum-only check), the manifest-identical whole-folder
+    checksum (KV-2) and the entry order, then unpack the zip and
+    re-measure the extracted tree."""
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "kv2"
+            _seal_self_check_kv2(root)
+            (Path(td) / "p1").mkdir()
+            (Path(td) / "p2").mkdir()
+            z1 = Path(td) / "p1" / "SieveTray-selfcheck.zip"
+            z2 = Path(td) / "p2" / "SieveTray-selfcheck.zip"
+            r1 = run_pack(root, z1, progress=progress)
+            r2 = run_pack(root, z2, progress=progress)
+            b1, b2 = z1.read_bytes(), z2.read_bytes()
+            with zipfile.ZipFile(str(z1)) as zf:
+                names = zf.namelist()
+            up = Path(td) / "up"
+            ru = run_unpack(z1, up, progress=progress)
+    except OSError as e:
+        # the self-check could not run (the 2026-11-10 ruling)
+        return {"error": "self_check_input_unavailable", "detail": str(e)}
+    diffs = []
+    _seal_self_check_fail(diffs, "zip determinism",
+                          hashlib.sha256(b1).hexdigest(),
+                          hashlib.sha256(b2).hexdigest())
+    _seal_self_check_fail(diffs, "summary.zip_sha256",
+                          "sha256:" + hashlib.sha256(b1).hexdigest(),
+                          r1["summary"]["zip_sha256"])
+    _seal_self_check_fail(diffs, "summary.overall_sha256",
+                          _SEAL_KV2_OVERALL,
+                          r1["summary"]["overall_sha256"])
+    _seal_self_check_fail(diffs, "zip entries",
+                          ["a/", "a/empty/", "a/one.txt", "beta.txt"],
+                          names)
+    _seal_self_check_fail(diffs, "roundtrip overall_sha256",
+                          _SEAL_KV2_OVERALL,
+                          ru["summary"]["overall_sha256"])
+    return {"expected": 5, "matching": 5 - len(diffs),
+            "differences": diffs}
+
+
+def draw_self_check(progress: ProgressCallback = _silent) -> dict:
+    """The self-check (SL-T20): run `draw` over the two published
+    examples (docs/draw-procedure.md section 4) and compare the roster
+    hashes, the result hashes and the dealt groups; the receipts stay
+    name-free (items/skipped empty) - the names ride only the local
+    result file, read back here in memory."""
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            rp1 = Path(td) / "roster-d1.txt"
+            rp1.write_bytes(b"alice\nbob\ncarol\n")
+            rc1 = run_draw(rp1, "2026-08-demo", Path(td) / "o1",
+                           groups=2, progress=progress)
+            res1 = json.loads((Path(td) / "o1" / "local"
+                               / "draw-result.json").read_text(
+                                   encoding="utf-8"))
+            rp2 = Path(td) / "roster-d2.txt"
+            rp2.write_bytes(b"alice\nbob\ncarol\ndave\nerin\n")
+            rc2 = run_draw(rp2, "2026-winter-demo", Path(td) / "o2",
+                           size=2, progress=progress)
+            res2 = json.loads((Path(td) / "o2" / "local"
+                               / "draw-result.json").read_text(
+                                   encoding="utf-8"))
+    except OSError as e:
+        # the self-check could not run (the 2026-11-10 ruling)
+        return {"error": "self_check_input_unavailable", "detail": str(e)}
+
+    def _sha(rc, field):
+        return rc["summary"][field].split(":", 1)[1]
+
+    diffs = []
+    _seal_self_check_fail(diffs, "KV-D1 roster_sha256",
+                          _SEAL_KVD1_ROSTER_SHA256,
+                          _sha(rc1, "roster_sha256"))
+    _seal_self_check_fail(diffs, "KV-D1 result_sha256",
+                          _SEAL_KVD1_RESULT_SHA256,
+                          _sha(rc1, "result_sha256"))
+    _seal_self_check_fail(diffs, "KV-D1 groups",
+                          [["alice", "bob"], ["carol"]], res1["groups"])
+    _seal_self_check_fail(diffs, "KV-D2 roster_sha256",
+                          _SEAL_KVD2_ROSTER_SHA256,
+                          _sha(rc2, "roster_sha256"))
+    _seal_self_check_fail(diffs, "KV-D2 result_sha256",
+                          _SEAL_KVD2_RESULT_SHA256,
+                          _sha(rc2, "result_sha256"))
+    _seal_self_check_fail(diffs, "KV-D2 groups",
+                          [["erin", "bob"], ["dave", "carol"], ["alice"]],
+                          res2["groups"])
+    _seal_self_check_fail(diffs, "receipts stay name-free",
+                          ([], []), (rc1["items"], rc1["skipped"]))
+    return {"expected": 7, "matching": 7 - len(diffs),
+            "differences": diffs}
+
+
 def _gate_main(argv: List[str]) -> int:
     """The `gate` / `verify` shapes (request §3.6).  Only entered when
     sys.argv[1] is exactly one of those words, so the legacy
@@ -4129,6 +5909,8 @@ def _gate_main(argv: List[str]) -> int:
     g.add_argument("--no-paths", action="store_true")
     g.add_argument("--no-input-hashes", action="store_true")
     g.add_argument("--self-check", action="store_true")
+    g.add_argument("--key-file", type=Path, default=None,
+                   metavar="PATH")
     v = sub.add_parser("verify", help="verify a Gate/Cohort receipt")
     v.add_argument("receipt", type=Path)
     v.add_argument("input_dir", nargs="?", type=Path, default=None)
@@ -4138,6 +5920,12 @@ def _gate_main(argv: List[str]) -> int:
     # §3.7: the Cohort base files for the settings check and the replay
     v.add_argument("--base", action="append", default=None,
                    metavar="PATH")
+    # Seal 2.2 (S5): the verify extension (C14) - the key file for the
+    # check code and --root as the named folder form
+    v.add_argument("--key-file", type=Path, default=None,
+                   metavar="PATH")
+    v.add_argument("--root", type=Path, default=None,
+                   help="the folder to check the list against")
     # v2.1.0 (M2 Cohort): the cohort subcommand joins gate and verify;
     # the legacy shape and the M1 shapes stay byte-identical.
     c = sub.add_parser("cohort", help="compare the submissions of a "
@@ -4154,8 +5942,202 @@ def _gate_main(argv: List[str]) -> int:
     c.add_argument("--self-check", action="store_true")
     c.add_argument("--lang", default="en", choices=("en", "ja"),
                    help="the report language (default: en)")
+    c.add_argument("--key-file", type=Path, default=None,
+                   metavar="PATH")
+    # Seal 2.2 (S2): the manifest subcommand joins gate/verify/cohort;
+    # the output placement rules are the gate ones (an -o folder with a
+    # handoff/ inside), except a manifest keeps no local/ tree.
+    m = sub.add_parser("manifest", help="list a folder (Seal 2.2)")
+    m.add_argument("input_dir", type=Path, nargs="?", default=None)
+    m.add_argument("-o", "--output", type=Path, default=None)
+    m.add_argument("--against", type=Path, default=None)
+    m.add_argument("--key-file", type=Path, default=None,
+                   metavar="PATH")
+    m.add_argument("--verify-page", action="store_true",
+                   help="also write handoff/verify.html (Seal 2.2)")
+    # SL-T20: the frozen app runs the Seal self-checks headlessly
+    m.add_argument("--self-check", action="store_true")
+    # Seal 2.2 (S3): rename plans (default) or applies (--apply) a
+    # closed rule; audit-names reports path + symbol only.
+    r = sub.add_parser("rename", help="plan (or apply) a rename rule "
+                                      "(Seal 2.2)")
+    r.add_argument("input_dir", type=Path, nargs="?", default=None)
+    r.add_argument("--pattern", required=True, metavar="RULE")
+    r.add_argument("--apply", action="store_true")
+    r.add_argument("-o", "--output", type=Path, default=None)
+    r.add_argument("--no-paths", action="store_true")
+    an = sub.add_parser("audit-names",
+                        help="report the names that would not travel "
+                             "safely (Seal 2.2)")
+    an.add_argument("input_dir", type=Path, nargs="?", default=None)
+    an.add_argument("-o", "--output", type=Path, default=None)
+    an.add_argument("--no-paths", action="store_true")
+    # Seal 2.2 (S4): pack writes the deterministic zip at -o itself;
+    # unpack checks every entry before creating anything.
+    pk = sub.add_parser("pack", help="pack a folder into a "
+                                     "deterministic zip (Seal 2.2)")
+    pk.add_argument("input_dir", type=Path, nargs="?", default=None)
+    pk.add_argument("-o", "--output", type=Path, default=None)
+    pk.add_argument("--deflate", action="store_true")
+    pk.add_argument("--key-file", type=Path, default=None,
+                    metavar="PATH")
+    pk.add_argument("--verify-page", action="store_true",
+                    help="also write handoff/verify.html (Seal 2.2)")
+    # SL-T20: the frozen app runs the Seal self-checks headlessly
+    pk.add_argument("--self-check", action="store_true")
+    up = sub.add_parser("unpack", help="unpack a checked zip (Seal 2.2)")
+    up.add_argument("zip_file", type=Path, nargs="?", default=None)
+    up.add_argument("-o", "--output", type=Path, default=None)
+    # Seal 2.2 (S7): a verifiable draw over a roster - the names stay
+    # in local/, the receipt carries hashes and parameters only.
+    d = sub.add_parser("draw", help="a verifiable draw over a roster "
+                                    "(Seal 2.2)")
+    d.add_argument("roster", type=Path, nargs="?", default=None)
+    # the seed and the groups/size pair are validated in the dispatch
+    # branch (the closed refusals stay exit 2), so `--self-check` can
+    # run without them (SL-T20)
+    d.add_argument("--seed", default=None, metavar="TEXT")
+    dg = d.add_mutually_exclusive_group(required=False)
+    dg.add_argument("--groups", type=int, metavar="N")
+    dg.add_argument("--size", type=int, metavar="N")
+    d.add_argument("-o", "--output", type=Path, default=None)
+    # SL-T20: the frozen app runs the Seal self-checks headlessly
+    d.add_argument("--self-check", action="store_true")
     args = parser.parse_args(argv)
 
+    if args.cmd == "manifest":
+        if args.self_check:
+            # SL-T20: the same exit contract as gate/cohort (the
+            # 2026-11-10 ruling): 0 = the expected values matched,
+            # 1 = a difference, 2 = the self-check could not run
+            result = manifest_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
+        if args.input_dir is None or args.output is None:
+            parser.error("manifest needs an input folder and -o/--output")
+        if not args.input_dir.is_dir():
+            parser.error("manifest: %s is not a directory" % args.input_dir)
+        if args.against is not None and not args.against.is_dir():
+            parser.error("manifest: %s is not a directory" % args.against)
+        try:
+            receipt = run_manifest(
+                args.input_dir, args.output, against=args.against,
+                key_file=args.key_file, verify_page=args.verify_page,
+                progress=print)
+        except ValueError as e:
+            parser.error(str(e))  # exit 2 (a diff with --verify-page,
+            # a name that is not UTF-8)
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Handoff: %s" % (args.output / "handoff"))
+        if args.against is None:
+            return 0
+        # a diff with no change is a clean exit; a changed / removed /
+        # added / moved entry (same does not count) is 1 (the verify
+        # family semantics)
+        s = receipt["summary"]
+        dirty = s["changed"] + s["removed"] + s["added"] + s["moved"]
+        return 0 if dirty == 0 else 1
+    if args.cmd == "rename":
+        if args.input_dir is None or args.output is None:
+            parser.error("rename needs an input folder and -o/--output")
+        if not args.input_dir.is_dir():
+            parser.error("rename: %s is not a directory" % args.input_dir)
+        try:
+            receipt = run_rename(
+                args.input_dir, args.output, args.pattern,
+                apply=args.apply, no_paths=args.no_paths,
+                progress=print)
+        except ValueError as e:
+            parser.error(str(e))  # exit 2: the rule itself is invalid
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Plan: %s" % (args.output / "local" / "rename-plan.json"))
+        if receipt["summary"]["collision"]:
+            return 1  # rename_collision: the apply refused
+        return 0
+    if args.cmd == "audit-names":
+        if args.input_dir is None:
+            parser.error("audit-names needs an input folder")
+        if not args.input_dir.is_dir():
+            parser.error("audit-names: %s is not a directory"
+                         % args.input_dir)
+        receipt = run_audit_names(
+            args.input_dir, out=args.output, no_paths=args.no_paths,
+            progress=print)
+        if args.output is None:
+            print(_gate_norm_json(receipt), end="")
+        else:
+            print("Receipt digest: %s" % receipt["digest"])
+            print("Handoff: %s" % (args.output / "handoff"))
+        return 0
+    if args.cmd == "pack":
+        if args.self_check:
+            # SL-T20: the same exit contract as gate/cohort (the
+            # 2026-11-10 ruling): 0 = the expected values matched,
+            # 1 = a difference, 2 = the self-check could not run
+            result = pack_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
+        if args.input_dir is None or args.output is None:
+            parser.error("pack needs an input folder and -o/--output")
+        if not args.input_dir.is_dir():
+            parser.error("pack: %s is not a directory" % args.input_dir)
+        try:
+            receipt = run_pack(
+                args.input_dir, args.output, deflate=args.deflate,
+                key_file=args.key_file, verify_page=args.verify_page,
+                progress=print)
+        except ValueError as e:
+            parser.error(str(e))  # exit 2: the placement is unsafe
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Zip: %s" % args.output)
+        print("Handoff: %s" % (args.output.parent / "handoff"))
+        return 0
+    if args.cmd == "draw":
+        if args.self_check:
+            # SL-T20: the same exit contract as gate/cohort (the
+            # 2026-11-10 ruling): 0 = the expected values matched,
+            # 1 = a difference, 2 = the self-check could not run
+            result = draw_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
+        if args.roster is None or args.output is None:
+            parser.error("draw needs a roster and -o/--output")
+        if args.seed is None:
+            parser.error("draw needs --seed")
+        if (args.groups is None) == (args.size is None):
+            parser.error("draw: exactly one of --groups and --size "
+                         "is required")
+        if not args.roster.is_file():
+            parser.error("draw: %s is not a file" % args.roster)
+        try:
+            receipt = run_draw(args.roster, args.seed, args.output,
+                               groups=args.groups, size=args.size,
+                               progress=print)
+        except ValueError as e:
+            parser.error(str(e))  # exit 2 (a malformed roster or
+            # parameter)
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Result: %s" % (args.output / "local"
+                              / "draw-result.json"))
+        return 0
+    if args.cmd == "unpack":
+        if args.zip_file is None or args.output is None:
+            parser.error("unpack needs a zip file and -o/--output")
+        try:
+            receipt = run_unpack(args.zip_file, args.output,
+                                 progress=print)
+        except ValueError as e:
+            parser.error(str(e))
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Handoff: %s" % (args.output / "handoff"))
+        # a refusal is exit 1 (nothing was extracted); success is 0
+        return 1 if receipt["refused"] else 0
     if args.cmd == "cohort":
         if args.self_check:
             # the exit codes (the 2026-11-10 ruling): 0 = the expected
@@ -4177,7 +6159,7 @@ def _gate_main(argv: List[str]) -> int:
             exclude_bibliography=args.exclude_bibliography,
             include_paths=not args.no_paths,
             include_input_hashes=not args.no_input_hashes,
-            lang=args.lang)
+            lang=args.lang, key_file=args.key_file)
         print("Receipt digest: %s" % receipt["digest"])
         print("Handoff: %s" % (args.output / "handoff"))
         print("Report:  %s" % (args.output / "local"
@@ -4205,15 +6187,19 @@ def _gate_main(argv: List[str]) -> int:
             redact_config=args.redact_config, no_redact=args.no_redact,
             crowd_config=args.crowd_config,
             include_paths=not args.no_paths,
-            include_input_hashes=not args.no_input_hashes)
+            include_input_hashes=not args.no_input_hashes,
+            key_file=args.key_file)
         print("Receipt digest: %s" % receipt["digest"])
         print("Handoff: %s" % (args.output / "handoff"))
         print("Report:  %s" % (args.output / "local" / "gate-report.html"))
         return 0
     result = verify_gate(
-        args.receipt, input_dir=args.input_dir, output_dir=args.output,
+        args.receipt,
+        input_dir=(args.input_dir if args.input_dir is not None
+                   else args.root),
+        output_dir=args.output,
         scope=args.scope, redact_config=args.redact_config,
-        base_paths=args.base)
+        base_paths=args.base, key_file=args.key_file)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return {"match": 0, "differs": 1,
             "not_verifiable": 2}[result["overall"]]
@@ -4231,7 +6217,9 @@ def main():
     # `<input folder> -o report.html` shape keeps working unchanged
     # (a folder literally named `gate` is passed as `./gate`).
     if len(sys.argv) > 1 and sys.argv[1] in ("gate", "verify",
-                                             "cohort"):
+                                             "cohort", "manifest",
+                                             "rename", "audit-names",
+                                             "pack", "unpack", "draw"):
         sys.exit(_gate_main(sys.argv[1:]))
     parser = argparse.ArgumentParser(prog="sieve-tray")
     parser.add_argument("input_dir", type=Path,

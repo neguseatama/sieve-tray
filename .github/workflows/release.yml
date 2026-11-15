@@ -72,14 +72,18 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           # v2.1.0 (request §3.10, the 2026-11-11 ruling): the built
-          # artifact runs both self-checks headlessly - the frozen GUI
-          # entry dispatches `gate|cohort --self-check` to the CLI
+          # artifact runs the five self-checks headlessly (gate /
+          # cohort / manifest / pack / draw - SL-T20 added the three
+          # Seal shapes) - the frozen GUI
+          # entry dispatches `<cmd> --self-check` to the CLI
           # before QApplication, so no window opens.  Any exit code
           # but 0 (1 = a difference, 2 = the self-check could not run)
           # fails the release (the 2026-11-10 exit-code contract).
           # Start-Process -Wait holds the step until the
           # GUI-subsystem exe exits, and the redirect keeps the JSON
-          # in the CI log.
+          # in the CI log.  The three Seal self-checks build their
+          # known inputs (KV-2 / KV-D1 / KV-D2) in a temp folder at
+          # run time, so no extra --add-data is needed.
           $env:PYTHONIOENCODING = "utf-8"
           $p = Start-Process -FilePath "dist\SieveTray.exe" `
             -ArgumentList "gate", "--self-check" -Wait -PassThru `
@@ -101,18 +105,56 @@ jobs:
             Write-Host "::error::cohort --self-check exited $($p.ExitCode)"
             exit $p.ExitCode
           }
+          $p = Start-Process -FilePath "dist\SieveTray.exe" `
+            -ArgumentList "manifest", "--self-check" -Wait -PassThru `
+            -RedirectStandardOutput manifest-selfcheck.log `
+            -RedirectStandardError manifest-selfcheck.err.log
+          Get-Content manifest-selfcheck.log
+          Get-Content manifest-selfcheck.err.log
+          if ($p.ExitCode -ne 0) {
+            Write-Host "::error::manifest --self-check exited $($p.ExitCode)"
+            exit $p.ExitCode
+          }
+          $p = Start-Process -FilePath "dist\SieveTray.exe" `
+            -ArgumentList "pack", "--self-check" -Wait -PassThru `
+            -RedirectStandardOutput pack-selfcheck.log `
+            -RedirectStandardError pack-selfcheck.err.log
+          Get-Content pack-selfcheck.log
+          Get-Content pack-selfcheck.err.log
+          if ($p.ExitCode -ne 0) {
+            Write-Host "::error::pack --self-check exited $($p.ExitCode)"
+            exit $p.ExitCode
+          }
+          $p = Start-Process -FilePath "dist\SieveTray.exe" `
+            -ArgumentList "draw", "--self-check" -Wait -PassThru `
+            -RedirectStandardOutput draw-selfcheck.log `
+            -RedirectStandardError draw-selfcheck.err.log
+          Get-Content draw-selfcheck.log
+          Get-Content draw-selfcheck.err.log
+          if ($p.ExitCode -ne 0) {
+            Write-Host "::error::draw --self-check exited $($p.ExitCode)"
+            exit $p.ExitCode
+          }
 
       - name: Self-check the frozen artifact (macOS)
         if: runner.os == 'macOS'
         run: |
           # v2.1.0 (request §3.10, the 2026-11-11 ruling): the built
-          # artifact runs both self-checks headlessly - the inner
-          # binary dispatches `gate|cohort --self-check` to the CLI
+          # artifact runs the five self-checks headlessly (gate /
+          # cohort / manifest / pack / draw - SL-T20 added the three
+          # Seal shapes) - the inner
+          # binary dispatches `<cmd> --self-check` to the CLI
           # before QApplication, so no window opens.  The step shell
           # (bash -e) fails the release on exit 1 (a difference) or 2
-          # (the self-check could not run).
+          # (the self-check could not run).  The three Seal
+          # self-checks build their known inputs (KV-2 / KV-D1 /
+          # KV-D2) in a temp folder at run time, so no extra
+          # --add-data is needed.
           ./dist/SieveTray.app/Contents/MacOS/SieveTray gate --self-check
           ./dist/SieveTray.app/Contents/MacOS/SieveTray cohort --self-check
+          ./dist/SieveTray.app/Contents/MacOS/SieveTray manifest --self-check
+          ./dist/SieveTray.app/Contents/MacOS/SieveTray pack --self-check
+          ./dist/SieveTray.app/Contents/MacOS/SieveTray draw --self-check
 
       - name: Package artifact (Windows)
         if: runner.os == 'Windows'

@@ -2,8 +2,9 @@
 
 Guards the docs/screenshots directory against stale references: the set
 of png references in README.md and README.ja.md must equal the expected
-four-screenshot set, and the files present under docs/screenshots must
-contain no unreferenced (stale) images.
+eight-screenshot set (the 2.2.0 screens re-shot offscreen, one set per
+README language - Seal 2.2, request §3.8-6), and the files present
+under docs/screenshots must contain no unreferenced (stale) images.
 """
 import re
 from pathlib import Path
@@ -11,12 +12,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SHOTS = "docs/screenshots/"
 
-EXPECTED = {
-    SHOTS + "main-window-ja.png",
-    SHOTS + "anonymize-tab-ja.png",
-    SHOTS + "about-dialog-ja.png",
-    SHOTS + "settings-dialog-ja.png",
-}
+EXPECTED = {SHOTS + f"{key}-{lang}.png"
+            for key in ("main-window", "anonymize-tab", "manifest-page",
+                        "draw-page")
+            for lang in ("ja", "en")}
 
 
 class TestReadmeScreenshots:
