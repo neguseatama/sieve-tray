@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.2.1] - 2026-11-16
+
+### Changed
+- **PDF observation is back**: the 2.2.0 safety measure that treated
+  every PDF as unobserved is lifted.  2.2.0 shipped it because the
+  visible-text extraction of the day let the never-painted text leak
+  into handoff/ (one sentence of history, measured in the 2.2
+  start-up report); Sieve Lens 0.22.1 now excludes the characters a
+  PDF does not paint (render mode 3, for example) from its visible
+  text, so Gate observes PDFs again and reports the hidden bodies on
+  the item.  A PDF without pypdf keeps the closed engine_unavailable
+  reason (no detail), and the closed vocabulary is unchanged.
+
+### Fixed
+- Invisible text no longer appears as visible text: the leak is fixed
+  at the source in Sieve Lens 0.22.1 and the Gate PDF lane rides that
+  fix - the invisible marker stays out of the whole handoff/ tree
+  (measured by the PD tests, raw bytes, ascii and utf-16).
+- `gate --self-check` carries one more item: a hand-built PDF (one
+  visible line + one render-mode-3 line) must come back observed with
+  the hidden body reported and the marker nowhere in handoff/ -
+  the item proves pypdf actually works inside the frozen apps on
+  every release OS (the expected count is 13 + 1 = 14).
+
 ## [2.2.0] - 2026-11-14
 
 ### Added
