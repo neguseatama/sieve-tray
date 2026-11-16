@@ -367,7 +367,9 @@ def test_t20_dependency_floors():
     # v2.2.0 (Seal, request §3.8-4): the lens dependency carries the
     # html-css-full extra (tinycss2 + cssselect2) - the floor itself is
     # unchanged at the published 0.22.0.
-    assert "sieve-lens[html-css-full]>=0.22.0" in pyproject
+    # v2.2.1 (the reopen request 3.1): the pdf extra joins and the
+    # floor moves to the published 0.22.1.
+    assert "sieve-lens[pdf,html-css-full]>=0.22.1" in pyproject
 
 
 # ---------------------------------------------------------------------------
@@ -411,10 +413,10 @@ def test_t21_readme_no_limits_section_added():
 # ---------------------------------------------------------------------------
 
 def test_t22_version_consistency():
-    assert sieve_tray.__version__ == "2.2.0"
+    assert sieve_tray.__version__ == "2.2.1"
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'dynamic = ["version"]' in pyproject or \
-        'version = "2.2.0"' in pyproject
+        'version = "2.2.1"' in pyproject
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert changelog.lstrip("# \n").startswith("[2.2.0]") or \
-        "## [2.2.0]" in changelog
+    assert changelog.lstrip("# \n").startswith("[2.2.1]") or \
+        "## [2.2.1]" in changelog

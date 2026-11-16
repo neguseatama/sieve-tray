@@ -573,7 +573,9 @@ def test_t14_dependency_floors_are_published_versions():
     # v2.1.0 (M2, request §3.13): refreshed to the published engines.
     # v2.2.0 (Seal, §3.8-4): the lens dependency rides the
     # html-css-full extra; the floor stays the published 0.22.0.
-    assert '"sieve-lens[html-css-full]>=0.22.0"' in text
+    # v2.2.1 (the reopen request 3.1): the pdf extra joins and the
+    # floor moves to the published 0.22.1.
+    assert '"sieve-lens[pdf,html-css-full]>=0.22.1"' in text
     assert '"sieve-scope>=1.5.0"' in text
     assert '"sieve-referee>=1.6.0"' in text
 
@@ -654,12 +656,12 @@ def test_t15_golden_mold_v130_unchanged():
 
 
 # ---------------------------------------------------------------------------
-# TR4-T16: version pin (refreshed at 2.2.0 - the release round; the
+# TR4-T16: version pin (refreshed at 2.2.1 - the release round; the
 # 2.1.0 section stays in the CHANGELOG)
 # ---------------------------------------------------------------------------
 
 def test_t16_version_pins():
-    assert sieve_tray.__version__ == "2.2.0"
+    assert sieve_tray.__version__ == "2.2.1"
     # pyproject keeps the single-source wiring (dynamic version read
     # from sieve_tray.__version__)
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")

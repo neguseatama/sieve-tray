@@ -1088,22 +1088,24 @@ class TR3_T18_DependencyFloorsStayPublished(unittest.TestCase):
         # engines (scope 1.5.0 / referee 1.6.0 on PyPI at the raise).
         # v2.2.0 (Seal, §3.8-4): the lens dependency carries the
         # html-css-full extra - the floor is still the published 0.22.0.
+        # v2.2.1 (the reopen request 3.1): the pdf extra joins and the
+        # floor moves to the published 0.22.1.
         self.assertEqual(
             proj["dependencies"],
-            ["sieve-lens[html-css-full]>=0.22.0", "sieve-scope>=1.5.0",
+            ["sieve-lens[pdf,html-css-full]>=0.22.1", "sieve-scope>=1.5.0",
              "sieve-referee>=1.6.0"])
         gui = proj["optional-dependencies"]["gui"]
         self.assertIn("Pillow>=10.0", gui)
 
 
 class TR3_T19_Version140(unittest.TestCase):
-    """TR3-T19: __version__ and pyproject agree on 2.2.0 and the
-    CHANGELOG carries a [2.2.0] section (pin refreshed for the 2.2.0
+    """TR3-T19: __version__ and pyproject agree on 2.2.1 and the
+    CHANGELOG carries a [2.2.1] section (pin refreshed for the 2.2.1
     release; the floors are the published scope 1.5.0 /
     referee 1.6.0)."""
 
     def test_version_is_140(self):
-        self.assertEqual(sieve_tray.__version__, "2.2.0")
+        self.assertEqual(sieve_tray.__version__, "2.2.1")
 
     def test_changelog_has_140(self):
         text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")

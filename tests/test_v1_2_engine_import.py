@@ -644,13 +644,15 @@ class TR2_T11_DependencyFloors(unittest.TestCase):
     update - the scope/referee floors are the published 1.5.0 / 1.6.0,
     measured installing the PyPI wheels in a fresh venv)."""
 
-    def test_lens_floor_is_0220(self):
+    def test_lens_floor_is_0221(self):
         # v2.0.0 (M1 Gate): raised to the published 0.22.0 (Gate
         # consumes visible_text; UTF-8 results stay byte-identical).
         # v2.2.0 (Seal, §3.8-4): the dependency rides the html-css-full
         # extra - the floor itself is unchanged.
+        # v2.2.1 (the reopen request 3.1): the pdf extra joins and the
+        # floor moves to the published 0.22.1.
         deps = _load_pyproject()["project"]["dependencies"]
-        self.assertIn("sieve-lens[html-css-full]>=0.22.0", deps)
+        self.assertIn("sieve-lens[pdf,html-css-full]>=0.22.1", deps)
 
     def test_other_floors_match_measurement(self):
         deps = _load_pyproject()["project"]["dependencies"]
@@ -663,10 +665,10 @@ class TR2_T11_DependencyFloors(unittest.TestCase):
 
 class TR2_T12_Version140(unittest.TestCase):
     """TR2-T12: version across __version__, pyproject and the
-    CHANGELOG (pin refreshed for the 2.2.0 release)."""
+    CHANGELOG (pin refreshed for the 2.2.1 release)."""
 
     def test_version_is_2_0_0(self):
-        self.assertEqual(sieve_tray.__version__, "2.2.0")
+        self.assertEqual(sieve_tray.__version__, "2.2.1")
 
     def test_pyproject_reads_version_from_module(self):
         text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")

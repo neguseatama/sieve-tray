@@ -1,6 +1,6 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v2.2.0
+# Sieve Tray v2.2.1
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
@@ -73,6 +73,8 @@ Pick a folder, and Gate gets it ready to hand to an AI or to other people.
 - Extracts only the text that is visible in each document
 - Replaces personal information such as names and email addresses with `[REDACTED]1`, `[REDACTED]2`, …
 - Checks for prompts aimed at an AI hidden in invisible text (text in the same color as the background, for example)
+
+For PDFs, Gate confirms the characters that are never painted on screen or in print (render mode 3, for example). When a text-recognition layer rides invisibly on top, as in a scanned PDF, that layer also counts as invisible, and the visible text comes out empty.
 
 Output is split into two folders:
 
@@ -326,7 +328,7 @@ python3 sieve_tray_gui.py
 
 Requires Python 3.10–3.13 (PySide6 does not yet support 3.14).
 
-Installing also brings in the CSS analysis (tinycss2, cssselect2) that checks invisible text in HTML, as add-on packages of Sieve Lens.
+Installing also brings in the readers that check invisible text in HTML and PDF (the CSS analysis of tinycss2 and cssselect2, and the PDF reader pypdf), as add-on packages of Sieve Lens.
 
 Core only, no GUI (for CLI usage or scripting):
 

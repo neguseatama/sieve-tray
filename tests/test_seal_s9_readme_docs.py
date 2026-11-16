@@ -188,12 +188,12 @@ def test_t18_forbidden_screen_words_readme_docs_gui():
 # ---------------------------------------------------------------------------
 # SL-T19: the dependency decision is pinned.
 
-def test_t19_dependency_carries_the_lens_html_css_full_extra():
+def test_t19_dependency_carries_the_lens_pdf_and_html_css_full_extra():
     pyproject = _read("pyproject.toml")
     dep_line = [ln for ln in pyproject.splitlines()
                 if ln.strip().startswith("dependencies = [")]
     assert dep_line, "no dependencies list in pyproject.toml"
-    assert "sieve-lens[html-css-full]>=0.22.0" in dep_line[0], dep_line[0]
+    assert "sieve-lens[pdf,html-css-full]>=0.22.1" in dep_line[0], dep_line[0]
     # the decision is stated in the install note of both READMEs
     assert "## 📦 インストール" in _read("README.ja.md")
     assert "## 📦 Installation" in _read("README.md")
