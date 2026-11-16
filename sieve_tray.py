@@ -3861,22 +3861,19 @@ def _gate_item_document(engine, src: Path, data: bytes, suffix: str,
     Redact (label) -> handoff.  HTML rides the extras lane with a
     charset pre-check done here first; a rule-originated css_hidden
     segment fails the item closed (measured)."""
-    # --- PDF short-circuit (Seal 2.2 ruling (2) of 2026-11-14) --------
-    # Gate treats a PDF as unobserved with the reason engine_unavailable
-    # regardless of whether pypdf is installed.  pypdf's visible-text
-    # extraction does not interpret the rendering mode "3 Tr", so
-    # observing a PDF starts a leak (measured: the invisible text rode
-    # into handoff/*.pdf.visible.txt).  Until the engine understands
-    # render modes, the safe side is to not observe and record why -
-    # closed vocabulary only, with a detail.  This is also the standing
-    # behaviour for frozen apps that bundle pypdf transitively.
-    if suffix == ".pdf":
-        item["status"] = "unobserved"
-        item["unobserved_reason"] = "engine_unavailable"
-        item["unobserved_detail"] = "pdf_visible_extraction_disabled"
-        item["lens"] = {"mask": "0000-000"}
-        _gate_finish_item(item, "not_produced", "engine_unavailable")
-        return
+    # --- v2.2.1 (the reopen request §3.2): the 2.2.0 PDF short-circuit
+    # is lifted.  It existed because pypdf's visible-text extraction
+    # did not interpret the rendering mode "3 Tr" and the invisible
+    # text leaked into handoff/*.pdf.visible.txt (measured, the 2.2
+    # start-up report section 2-2).  Lens 0.22.1 builds the visible
+    # text and the hidden report from one shared classification, so a
+    # body the page does not paint can never re-enter the visible
+    # side.  A PDF now rides the normal document lane below: observed,
+    # hidden bodies reported (render mode 3 -> the closed css_hidden
+    # kind), invisible text nowhere in handoff/.  Without pypdf the
+    # observation degrades to the closed engine_unavailable reason
+    # (no detail) exactly like any other missing extension.  The
+    # closed vocabulary is unchanged - no new reason, no new detail.
     # --- observation
     try:
         if suffix in (".html", ".htm"):
@@ -5545,11 +5542,59 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
     return result
 
 
+def _gate_self_check_pdf_build(path: Path, visible_line: str,
+                               hidden_line: str) -> None:
+    """Build the self-check's hand-made PDF at run time (the reopen
+    request §3.5): one visible line (render mode 0) + one invisible
+    line (render mode 3).  Pure bytes - no generator dependency, and
+    the two markers are chosen so neither is a substring of the
+    other."""
+    stream = (
+        b"BT /F1 12 Tf 72 720 Td (" + visible_line.encode("utf-8")
+        + b") Tj ET\n"
+        b"BT /F1 12 Tf 72 700 Td 3 Tr (" + hidden_line.encode("utf-8")
+        + b") Tj ET\n")
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length " + str(len(stream)).encode() + b">\nstream\n"
+        + stream + b"endstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_at = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n".encode()
+    out += b"0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_at}\n%%EOF\n").encode()
+    path.write_bytes(bytes(out))
+
+
 def gate_self_check(progress: ProgressCallback = _silent) -> dict:
     """The self-check (request §3.5): run the sample pack through Gate
     in a temp folder and compare the expected observations (never a
     digest).  Returns {"expected": n, "matching": n, "differences":
-    [...]}."""
+    [...]}.
+
+    v2.2.1 (the reopen request §3.5): one probe joins the pack - a
+    hand-built PDF (one visible line + one render-mode-3 invisible
+    line) is built into the run at self-check time and must come back
+    observed/flagged with the hidden body reported (count 1, Order
+    observed), while the invisible marker appears nowhere in the
+    whole handoff/ tree and the visible line reaches the handoff
+    file.  This is the item that proves pypdf actually works in the
+    running (possibly frozen) environment on every release OS; a
+    missing or broken pypdf shows up as an ordinary difference (exit
+    1), not as "cannot run" (2).  The expected count is the manifest
+    items + 1 (the PDF probe)."""
     manifest_path = REPO_ROOT / "samples" / "gate" / "MANIFEST.json"
     if not manifest_path.is_file():
         # The sample pack is a repository resource (the audit's reference
@@ -5560,6 +5605,9 @@ def gate_self_check(progress: ProgressCallback = _silent) -> dict:
                 "detail": str(REPO_ROOT / "samples" / "gate")}
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     import shutil as _shutil
+    pdf_name = "selfcheck-pdf.pdf"
+    pdf_visible = "GATE SELF-CHECK PDF VISIBLE LINE"
+    pdf_hidden = "GATE SELF-CHECK PDF HIDDEN MARKER r8q4z"
     with tempfile.TemporaryDirectory() as td:
         inp = Path(td) / "in"
         inp.mkdir()
@@ -5567,36 +5615,78 @@ def gate_self_check(progress: ProgressCallback = _silent) -> dict:
         for entry in manifest["items"]:
             _shutil.copyfile(REPO_ROOT / "samples" / "gate" / entry["file"],
                              inp / entry["file"])
+        _gate_self_check_pdf_build(inp / pdf_name, pdf_visible, pdf_hidden)
         receipt = run_gate(inp, out, progress=progress)
-    by_name = {it["path"]: it for it in receipt["items"]}
-    fields = ("kind", "status", "hidden_count", "order_observed",
-              "order_axes", "redact_spans", "treatment",
-              "not_produced_reason")
-    diffs = []
-    for entry in manifest["items"]:
-        it = by_name.get(entry["file"])
+        by_name = {it["path"]: it for it in receipt["items"]}
+        fields = ("kind", "status", "hidden_count", "order_observed",
+                  "order_axes", "redact_spans", "treatment",
+                  "not_produced_reason")
+        diffs = []
+        for entry in manifest["items"]:
+            it = by_name.get(entry["file"])
+            if it is None:
+                diffs.append({"file": entry["file"], "field": "presence",
+                              "expected": True, "actual": None})
+                continue
+            expect = entry["expect"]
+            actual = {
+                "kind": it["kind"],
+                "status": it["status"],
+                "hidden_count": it["hidden_segments"]["count"],
+                "order_observed": it["hidden_segments"]["order_observed"],
+                "order_axes": it["hidden_segments"]["order_axes"],
+                "redact_spans": it["redact"]["spans"],
+                "treatment": it["treatment"],
+                "not_produced_reason": it["not_produced_reason"],
+            }
+            for field in fields:
+                if actual[field] != expect.get(field):
+                    diffs.append({"file": entry["file"], "field": field,
+                                  "expected": expect.get(field),
+                                  "actual": actual[field]})
+        # --- the PDF probe (v2.2.1, the reopen request §3.5)
+        pdf_fields = ("kind", "status", "hidden_count", "order_observed",
+                      "redact_spans", "treatment")
+        pdf_expect = {"kind": "document", "status": "flagged",
+                      "hidden_count": 1, "order_observed": 1,
+                      "redact_spans": 0, "treatment": "produced"}
+        it = by_name.get(pdf_name)
         if it is None:
-            diffs.append({"file": entry["file"], "field": "presence",
+            diffs.append({"file": pdf_name, "field": "presence",
                           "expected": True, "actual": None})
-            continue
-        expect = entry["expect"]
-        actual = {
-            "kind": it["kind"],
-            "status": it["status"],
-            "hidden_count": it["hidden_segments"]["count"],
-            "order_observed": it["hidden_segments"]["order_observed"],
-            "order_axes": it["hidden_segments"]["order_axes"],
-            "redact_spans": it["redact"]["spans"],
-            "treatment": it["treatment"],
-            "not_produced_reason": it["not_produced_reason"],
-        }
-        for field in fields:
-            if actual[field] != expect.get(field):
-                diffs.append({"file": entry["file"], "field": field,
-                              "expected": expect.get(field),
-                              "actual": actual[field]})
-    return {"expected": len(manifest["items"]),
-            "matching": len(manifest["items"]) - len(diffs),
+        else:
+            pdf_actual = {
+                "kind": it["kind"],
+                "status": it["status"],
+                "hidden_count": it["hidden_segments"]["count"],
+                "order_observed": it["hidden_segments"]["order_observed"],
+                "redact_spans": it["redact"]["spans"],
+                "treatment": it["treatment"],
+            }
+            for field in pdf_fields:
+                if pdf_actual[field] != pdf_expect[field]:
+                    diffs.append({"file": pdf_name, "field": field,
+                                  "expected": pdf_expect[field],
+                                  "actual": pdf_actual[field]})
+        # the invisible marker: nowhere in the whole handoff/ tree
+        for p in (out / "handoff").rglob("*"):
+            if not p.is_file():
+                continue
+            blob = p.read_bytes()
+            if (pdf_hidden.encode("utf-8") in blob
+                    or pdf_hidden.encode("utf-16-le") in blob):
+                diffs.append({"file": pdf_name, "field": "handoff leak",
+                              "expected": None, "actual": str(p.name)})
+        # the visible line reaches the handoff file
+        if it is not None and it.get("output"):
+            vf = out / it["output"]["path"]
+            if not vf.is_file() or \
+                    pdf_visible.encode("utf-8") not in vf.read_bytes():
+                diffs.append({"file": pdf_name, "field": "visible line",
+                              "expected": True, "actual": False})
+    total = len(manifest["items"]) + 1
+    return {"expected": total,
+            "matching": total - len(diffs),
             "differences": diffs}
 
 

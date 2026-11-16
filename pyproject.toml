@@ -35,7 +35,13 @@ requires-python = ">=3.10"
 # the Gate PDF lane is short-circuited by design
 # (pdf_visible_extraction_disabled) with or without pypdf.  The extra
 # floors (tinycss2>=1.1, cssselect2>=0.7) are published on PyPI.
-dependencies = ["sieve-lens[html-css-full]>=0.22.0", "sieve-scope>=1.5.0", "sieve-referee>=1.6.0"]
+# v2.2.1 (the reopen request §3.1): sieve-lens gains the pdf extra and
+# the floor moves to the published 0.22.1 - 0.22.1 excludes the text a
+# PDF does not paint (render mode 3) from its visible text, which is
+# what lets the Gate PDF lane reopen (the 2.2.0 short-circuit is
+# gone).  pypdf rides through the extra (lens declares pypdf>=4.0) and
+# is not declared separately on this side.
+dependencies = ["sieve-lens[pdf,html-css-full]>=0.22.1", "sieve-scope>=1.5.0", "sieve-referee>=1.6.0"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
