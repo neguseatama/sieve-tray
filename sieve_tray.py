@@ -6093,6 +6093,23 @@ def _gate_main(argv: List[str]) -> int:
     d.add_argument("-o", "--output", type=Path, default=None)
     # SL-T20: the frozen app runs the Seal self-checks headlessly
     d.add_argument("--self-check", action="store_true")
+    # Canon 2.3 (§3.2): the text / JSON / CSV normalization.  No
+    # auto-detection conversion - the codec is named or refused with
+    # encoding_unknown and the strictly-readable candidates.
+    n = sub.add_parser("normalize", help="normalize text, JSON and CSV "
+                                         "(Canon 2.3)")
+    n.add_argument("input", type=Path, nargs="?", default=None)
+    n.add_argument("-o", "--output", type=Path, default=None)
+    n.add_argument("--from-encoding", default=None, metavar="NAME")
+    n.add_argument("--newline", default="lf", choices=("lf", "crlf"))
+    n.add_argument("--nfc", action="store_true")
+    n.add_argument("--check", action="store_true",
+                   help="observe only - no copies, the receipt only")
+    n.add_argument("--text-only", action="store_true",
+                   help="skip the JSON / CSV rules (§3.3 / §3.4)")
+    n.add_argument("--style", default="pretty", choices=("pretty", "jcs"),
+                   help="the JSON style (§3.3; default: pretty)")
+    n.add_argument("--self-check", action="store_true")
     args = parser.parse_args(argv)
 
     if args.cmd == "manifest":
@@ -6216,6 +6233,35 @@ def _gate_main(argv: List[str]) -> int:
         print("Result: %s" % (args.output / "local"
                               / "draw-result.json"))
         return 0
+    if args.cmd == "normalize":
+        if args.self_check:
+            # the same exit contract as gate/cohort/Seal (0/1/2)
+            from sieve_canon import normalize_self_check
+            result = normalize_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
+        if args.input is None or args.output is None:
+            parser.error("normalize needs an input and -o/--output")
+        from sieve_canon import run_normalize
+        try:
+            receipt = run_normalize(
+                args.input, args.output,
+                from_encoding=args.from_encoding,
+                newline=args.newline, nfc=args.nfc, check=args.check,
+                text_only=args.text_only, style=args.style,
+                progress=print)
+        except ValueError as e:
+            parser.error(str(e))  # exit 2 (a bad flag value)
+        # the refusals speak with the closed words, one line per file
+        for it in receipt["items"]:
+            if it["status"] == "refused":
+                print("Refused: %s (%s)" % (it["path"], it["reason"]))
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Handoff: %s" % (args.output / "handoff"))
+        s = receipt["summary"]
+        return 1 if s["refused"] else 0
     if args.cmd == "unpack":
         if args.zip_file is None or args.output is None:
             parser.error("unpack needs a zip file and -o/--output")
@@ -6309,7 +6355,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] in ("gate", "verify",
                                              "cohort", "manifest",
                                              "rename", "audit-names",
-                                             "pack", "unpack", "draw"):
+                                             "pack", "unpack", "draw",
+                                             "normalize", "clean",
+                                             "table-diff"):
         sys.exit(_gate_main(sys.argv[1:]))
     parser = argparse.ArgumentParser(prog="sieve-tray")
     parser.add_argument("input_dir", type=Path,

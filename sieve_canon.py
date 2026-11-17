@@ -1,0 +1,412 @@
+"""Canon 2.3.0 (request 2026-11-15): the metadata clean, the text and
+JSON / CSV normalization, and the table diff.
+
+Everything in this module rides the existing receipt frame of
+sieve_tray (the shared `_gate_*` helpers are imported lazily to keep
+the import acyclic) and the deterministic-zip rules of Seal.  No new
+external dependency: JPEG / PNG / Office byte structures are handled
+with the standard library only (request §2-3: `clean` does not depend
+on Pillow and does not import it).
+
+Vocabulary rules (request §3.6-3 and the shared header of sieve_tray):
+the verify words stay closed; the new words this module uses are the
+ones the request mandates - the 8 observation categories, the 3
+in-content kinds, the 5 mojibake signs, the 5 table states,
+`encoding_unknown`, `json_duplicate_key`, `json_invalid_number`,
+`json_number_unsafe`, `csv_ragged_rows` - plus the existing closed
+reasons (`parse_failed`, `unreadable`, `not_applicable`, ...).
+"""
+import codecs
+import hashlib
+import io
+import json
+import re
+import unicodedata
+import zipfile
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# the closed vocabularies (request §3.1-10, §3.1-11, §3.2-2, §3.5-3)
+
+CN_META_CATEGORIES = (
+    "author", "time", "software", "location", "device",
+    "title_subject", "thumbnail", "custom")
+
+CN_IN_CONTENT = ("comment", "tracked_change", "hidden_part")
+
+CN_MOJIBAKE_SIGNS = (
+    "replacement_char", "c1_controls", "nul_bytes",
+    "utf8_invalid", "mixed_newlines")
+
+CN_TABLE_STATES = ("same", "changed", "removed", "added", "duplicate_key")
+
+# §3.2-3: the fixed candidate order for the strictly-readable codecs.
+# No codec that decodes everything (latin-1) - the list only reports
+# codecs that can read the bytes strictly.
+CN_CANDIDATE_ORDER = (
+    "utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be",
+    "cp932", "euc-jp")
+
+# §3.2: the text extensions a folder walk offers to normalize.  A
+# single named file is always processed (the user named it); the
+# folder walk filters by this closed set and reports the rest with the
+# existing not_applicable word.
+CN_TEXT_EXTS = frozenset(
+    {".txt", ".md", ".csv", ".json", ".log", ".xml", ".yaml", ".yml"})
+
+CN_CLEAN_EXTS = {".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png",
+                 ".docx": "office", ".xlsx": "office", ".pptx": "office"}
+
+# §3.1-8: the Office output zip rides the pack rules; the constants
+# are pinned against sieve_tray._SEAL_ZIP_* by tests/test_canon_common.py.
+_CN_ZIP_STAMP = (1980, 1, 1, 0, 0, 0)
+_CN_ZIP_FILE_ATTR = 0o100644 << 16
+_CN_ZIP_DIR_ATTR = (0o040755 << 16) | 0x10
+
+CN_RECEIPT_VERSION = 1
+
+# the BOM table, longest first (the UTF-32 BOMs start with the UTF-16
+# LE/BE BOM bytes, so the 4-byte kinds must win)
+_CN_BOMS = (
+    (codecs.BOM_UTF8, "utf-8"),
+    (codecs.BOM_UTF32_LE, "utf-32-le"),
+    (codecs.BOM_UTF32_BE, "utf-32-be"),
+    (codecs.BOM_UTF16_LE, "utf-16-le"),
+    (codecs.BOM_UTF16_BE, "utf-16-be"),
+)
+
+
+# ---------------------------------------------------------------------------
+# the deterministic zip (the pack rules; request §3.1-8)
+
+def _cn_write_deterministic_zip(path: Path, members) -> None:
+    """Write a deterministic zip: entries sorted by the UTF-8 bytes of
+    the archive name, the fixed 1980 stamp, create_system 3, the fixed
+    external attributes, ZIP_STORED.  `members` is a list of
+    (arcname, data) tuples."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as zf:
+        for arcname, data in sorted(
+                members, key=lambda m: str(m[0]).encode("utf-8")):
+            name = str(arcname)
+            zi = zipfile.ZipInfo(name, date_time=_CN_ZIP_STAMP)
+            zi.create_system = 3
+            if name.endswith("/"):
+                zi.external_attr = _CN_ZIP_DIR_ATTR
+            else:
+                zi.external_attr = _CN_ZIP_FILE_ATTR
+            zi.compress_type = zipfile.ZIP_STORED
+            zf.writestr(zi, data)
+
+
+# ---------------------------------------------------------------------------
+# the text observation (request §3.2-1, §3.2-2)
+
+def _cn_detect_bom(data: bytes):
+    for bom, kind in _CN_BOMS:
+        if data.startswith(bom):
+            return kind, data[len(bom):]
+    return None, data
+
+
+def _cn_newline_counts(text: str) -> dict:
+    crlf = text.count("\r\n")
+    cr = text.count("\r") - crlf
+    lf = text.count("\n") - crlf
+    kinds = sum(1 for n in (lf, crlf, cr) if n > 0)
+    return {"lf": lf, "crlf": crlf, "cr": cr,
+            "mixed": 1 if kinds > 1 else 0}
+
+
+def _cn_strict_decode(data: bytes, codec: str):
+    try:
+        return data.decode(codec)
+    except (UnicodeDecodeError, LookupError, ValueError):
+        return None
+
+
+def _cn_strict_candidates(data: bytes):
+    """The strictly-readable candidates in the fixed order (§3.2-3)."""
+    out = []
+    for codec in CN_CANDIDATE_ORDER:
+        if codec == "utf-8":
+            continue          # the UTF-8 case is the known first branch
+        if _cn_strict_decode(data, codec) is not None:
+            out.append(codec)
+    return out
+
+
+def _cn_observe_text(data: bytes) -> dict:
+    """The always-on observation of one text file (§3.2-1).  The
+    UTF-8 validity question applies only when the file claims to be
+    UTF-8 (no BOM or a UTF-8 BOM); with a UTF-16/32 BOM the answer is
+    null and the utf8_invalid sign stays 0 (the context is not broken
+    UTF-8).  Newlines and NUL are counted in the decoded text when a
+    strict decode exists, else on the raw bytes."""
+    bom, body = _cn_detect_bom(data)
+    utf8_valid = None
+    if bom is None:
+        utf8_valid = _cn_strict_decode(data, "utf-8") is not None
+    elif bom == "utf-8":
+        utf8_valid = True
+    # the decode context for the decoded-level signs: BOM codec, then
+    # strict UTF-8, then the first strictly-readable candidate
+    text = None
+    resolved = None
+    if bom is not None:
+        text = _cn_strict_decode(body, bom)
+        resolved = bom if text is not None else None
+    if text is None and bom is None and utf8_valid:
+        text = body.decode("utf-8")
+        resolved = "utf-8"
+    if text is None and bom is None:
+        for codec in CN_CANDIDATE_ORDER:
+            if codec == "utf-8":
+                continue
+            text = _cn_strict_decode(data, codec)
+            if text is not None:
+                resolved = codec
+                break
+    if text is not None:
+        nl = _cn_newline_counts(text)
+        nul = text.count("\x00")
+        repl = text.count("\ufffd")
+        c1 = sum(1 for ch in text if 0x80 <= ord(ch) <= 0x9f)
+    else:
+        nl = _cn_newline_counts_bytes(data)
+        nul = data.count(b"\x00")
+        repl = 0
+        c1 = 0
+    utf8_invalid = 1 if (bom is None and utf8_valid is False) else 0
+    return {
+        "bom": bom,
+        "encoding_resolved": resolved,
+        "utf8_valid": utf8_valid,
+        "newlines": {"lf": nl["lf"], "crlf": nl["crlf"], "cr": nl["cr"]},
+        "nul_bytes": nul,
+        "signs": {
+            "replacement_char": repl,
+            "c1_controls": c1,
+            "nul_bytes": nul,
+            "utf8_invalid": utf8_invalid,
+            "mixed_newlines": nl["mixed"],
+        },
+    }
+
+
+def _cn_newline_counts_bytes(data: bytes) -> dict:
+    crlf = data.count(b"\r\n")
+    cr = data.count(b"\r") - crlf
+    lf = data.count(b"\n") - crlf
+    kinds = sum(1 for n in (lf, crlf, cr) if n > 0)
+    return {"lf": lf, "crlf": crlf, "cr": cr,
+            "mixed": 1 if kinds > 1 else 0}
+
+
+def _cn_convert_text(text: str, newline: str = "lf",
+                     nfc: bool = False) -> str:
+    """§3.2-5: UTF-8 / LF (or CRLF) / exactly one trailing newline.
+    A non-empty text that does not end with the newline unit gets one;
+    existing blank lines stay (they are content, and the file already
+    ends with the newline)."""
+    if nfc:
+        text = unicodedata.normalize("NFC", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    unit = "\r\n" if newline == "crlf" else "\n"
+    if newline == "crlf":
+        text = text.replace("\n", "\r\n")
+    if text and not text.endswith(unit):
+        text += unit
+    return text
+
+
+# ---------------------------------------------------------------------------
+# stage 3/4 hooks: the JSON and CSV rules ride the normalize output
+# (request §3.2-8).  The bodies land with their stages; until then the
+# text rules cover every extension (recorded in the stage log).
+
+def _cn_json_normalize_text(text: str, style: str = "pretty") -> str:
+    raise NotImplementedError("stage 3")
+
+
+def _cn_csv_normalize_text(text: str, delimiter: str = ",",
+                           newline: str = "lf",
+                           sort_by=()) -> str:
+    raise NotImplementedError("stage 4")
+
+
+# ---------------------------------------------------------------------------
+# stage 11: the self-checks ride the gate/cohort/Seal contract (0/1/2).
+# The known small inputs are assembled at run time and compared against
+# the published known values.
+
+def normalize_self_check(progress=None) -> dict:
+    raise NotImplementedError("stage 11")
+
+
+def clean_self_check(progress=None) -> dict:
+    raise NotImplementedError("stage 11")
+
+
+def table_diff_self_check(progress=None) -> dict:
+    raise NotImplementedError("stage 11")
+
+
+# ---------------------------------------------------------------------------
+# the normalize run (request §3.2)
+
+def _cn_sha(data: bytes) -> str:
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def run_normalize(input_path, output_dir, *, from_encoding=None,
+                  newline="lf", nfc=False, check=False, text_only=False,
+                  style="pretty", progress=None) -> dict:
+    """The `normalize` command (§3.2).  Observes every text file,
+    converts it to UTF-8 / LF (or CRLF) / one trailing newline, and
+    writes the copies under handoff/ with the original relative names.
+    A file with no BOM and invalid UTF-8 is refused with
+    encoding_unknown (and the strictly-readable candidates) unless
+    --from-encoding names the codec; a byte sequence the named codec
+    cannot read is refused with the existing parse_failed word - no
+    replacement, no output copy.  --check writes the receipt only."""
+    from sieve_tray import __version__, _gate_digest, _gate_norm_json, \
+        _gate_write_atomic
+    tell = progress or (lambda _m: None)
+    src = Path(input_path)
+    out = Path(output_dir)
+    if not src.exists():
+        raise ValueError("normalize: %s does not exist" % src)
+    if newline not in ("lf", "crlf"):
+        raise ValueError("normalize: --newline must be lf or crlf")
+
+    items = []
+    if src.is_dir():
+        from sieve_tray import _seal_manifest_scan
+        scanned, _skipped = _seal_manifest_scan(src)
+        for it in scanned:
+            rel = it.get("path")
+            suffix = Path(rel).suffix.lower() if rel else ""
+            if suffix not in CN_TEXT_EXTS:
+                items.append({"path": rel, "status": "not_applicable",
+                              "reason": None,
+                              "input_sha256": it["sha256"],
+                              "output_sha256": None})
+                continue
+            data = Path(it["_abs"]).read_bytes()
+            item, out_bytes = _cn_normalize_one(rel, data, from_encoding,
+                                                newline, nfc, check,
+                                                text_only, style)
+            if item["status"] == "produced":
+                copy = out / "handoff" / rel
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                copy.write_bytes(out_bytes)
+                tell("Normalize: %s -> %s" % (rel, copy))
+            items.append(item)
+    else:
+        rel = src.name
+        data = src.read_bytes()
+        item, out_bytes = _cn_normalize_one(rel, data, from_encoding,
+                                            newline, nfc, check,
+                                            text_only, style)
+        if item["status"] == "produced":
+            copy = out / "handoff" / rel
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            copy.write_bytes(out_bytes)
+            tell("Normalize: %s -> %s" % (rel, copy))
+        items.append(item)
+
+    produced = sum(1 for it in items if it["status"] == "produced")
+    refused = sum(1 for it in items if it["status"] == "refused")
+    observed = sum(1 for it in items if it["status"] == "observed")
+    not_app = sum(1 for it in items if it["status"] == "not_applicable")
+    receipt = {
+        "receipt_version": CN_RECEIPT_VERSION,
+        "kind": "sieve-normalize",
+        "tool": {"name": "sieve-tray", "version": __version__},
+        "engines": {},
+        "settings": {
+            "input": str(src),
+            "from_encoding": from_encoding,
+            "newline": newline,
+            "nfc": bool(nfc),
+            "check": bool(check),
+            "text_only": bool(text_only),
+            "style": style,
+        },
+        "items": items,
+        "summary": {
+            "files": len(items),
+            "produced": produced,
+            "refused": refused,
+            "observed": observed,
+            "not_applicable": not_app,
+        },
+    }
+    receipt["digest"] = _gate_digest(receipt)
+    _gate_write_atomic(out / "handoff" / "normalize-receipt.json",
+                       _gate_norm_json(receipt).encode("utf-8"))
+    tell("Normalize: receipt %s"
+         % (out / "handoff" / "normalize-receipt.json"))
+    return receipt
+
+
+def _cn_normalize_one(rel, data, from_encoding, newline, nfc, check,
+                      text_only, style):
+    """Normalize one file: returns (item, out_bytes_or_None)."""
+    obs = _cn_observe_text(data)
+    item = {
+        "path": rel,
+        "status": None,
+        "reason": None,
+        "candidates": None,
+        "input_sha256": _cn_sha(data),
+        "output_sha256": None,
+        "observation": obs,
+    }
+    # the decode resolution (§3.2-3): BOM codec, strict UTF-8, then
+    # the named codec - never a guess
+    bom = obs["bom"]
+    body = _cn_detect_bom(data)[1]
+    text = None
+    if bom is not None:
+        text = _cn_strict_decode(body, bom)
+        if text is None:
+            item["status"] = "refused"
+            item["reason"] = "parse_failed"
+            return item, None
+    elif obs["utf8_valid"]:
+        text = data.decode("utf-8")
+    elif from_encoding:
+        text = _cn_strict_decode(data, from_encoding)
+        if text is None:
+            item["status"] = "refused"
+            item["reason"] = "parse_failed"
+            return item, None
+    else:
+        item["status"] = "refused"
+        item["reason"] = "encoding_unknown"
+        item["candidates"] = _cn_strict_candidates(data)
+        return item, None
+
+    suffix = Path(rel).suffix.lower()
+    if not text_only and suffix == ".json":
+        try:
+            text = _cn_json_normalize_text(text, style=style)
+        except NotImplementedError:
+            pass          # stage 3: the text rules cover it for now
+    if not text_only and suffix == ".csv":
+        try:
+            text = _cn_csv_normalize_text(text, newline=newline)
+        except NotImplementedError:
+            pass          # stage 4
+    converted = _cn_convert_text(text, newline=newline, nfc=nfc)
+    out_bytes = converted.encode("utf-8")
+    if check:
+        item["status"] = "observed"
+        return item, None
+    item["status"] = "produced"
+    item["output_sha256"] = _cn_sha(out_bytes)
+    item["output_bytes"] = len(out_bytes)
+    return item, out_bytes
