@@ -221,19 +221,159 @@ def _cn_convert_text(text: str, newline: str = "lf",
     return text
 
 
-# ---------------------------------------------------------------------------
-# stage 3/4 hooks: the JSON and CSV rules ride the normalize output
-# (request §3.2-8).  The bodies land with their stages; until then the
-# text rules cover every extension (recorded in the stage log).
-
-def _cn_json_normalize_text(text: str, style: str = "pretty") -> str:
-    raise NotImplementedError("stage 3")
-
-
 def _cn_csv_normalize_text(text: str, delimiter: str = ",",
                            newline: str = "lf",
                            sort_by=()) -> str:
     raise NotImplementedError("stage 4")
+
+
+# ---------------------------------------------------------------------------
+# the JSON normalization (request §3.3) - the pretty style and the JCS
+# style (RFC 8785, pinned against the Appendix B vectors in §2-5)
+
+class CNJsonError(ValueError):
+    """The JSON refusals (§3.3): `reason` is one of the mandated words
+    (json_duplicate_key / json_invalid_number / json_number_unsafe)
+    or the existing parse_failed word (a lone surrogate, an
+    unserializable value)."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
+def _cn_json_pairs(pairs):
+    seen = set()
+    for k, _v in pairs:
+        if k in seen:
+            raise CNJsonError("json_duplicate_key")
+        seen.add(k)
+    return dict(pairs)
+
+
+def _cn_parse_constant(_name):
+    raise CNJsonError("json_invalid_number")
+
+
+def _cn_json_loads(text: str):
+    return json.loads(text, object_pairs_hook=_cn_json_pairs,
+                      parse_constant=_cn_parse_constant,
+                      parse_int=int, parse_float=float)
+
+
+def _cn_json_pretty(text: str) -> str:
+    """§3.3-2: indent 2, the keys in the Unicode codepoint order,
+    ensure_ascii false, one trailing newline, the array order
+    untouched, the numbers keep their value (big integers stay
+    exact)."""
+    obj = _cn_json_loads(text)
+    return json.dumps(obj, ensure_ascii=False, indent=2,
+                      sort_keys=True) + "\n"
+
+
+def _cn_es_number(v) -> str:
+    """The ECMAScript Number::toString(10) form (RFC 8785 §3.2.2.3),
+    pinned against the Appendix B vectors by CN-T14.  The shortest
+    roundtrip digits come from repr(); the ES presentation rules are
+    applied on top (the fixed/exponential switch at 10^-6 / 10^21)."""
+    if isinstance(v, int):
+        if abs(v) > 2 ** 53:
+            raise CNJsonError("json_number_unsafe")
+        return str(v)
+    if v != v or v in (float("inf"), float("-inf")):
+        raise CNJsonError("json_invalid_number")
+    if v == 0:
+        return "0"          # also minus zero (Appendix B row 8000..)
+    sign = "-" if v < 0 else ""
+    s = repr(abs(v))        # the shortest roundtrip digits
+    if "e" in s:
+        mant, _sep, exp_s = s.partition("e")
+        exp = int(exp_s)
+    else:
+        mant, exp = s, 0
+    if "." in mant:
+        ip, fp = mant.split(".")
+    else:
+        ip, fp = mant, ""
+    if fp == "0":           # repr's integral marker, not a digit
+        fp = ""
+    ip2 = ip.lstrip("0")
+    if ip2:
+        digits = ip2 + fp
+        n = len(ip2) + exp
+    else:
+        f2 = fp.lstrip("0")
+        digits = f2
+        n = exp - (len(fp) - len(f2))
+    k = len(digits)
+    if k <= n <= 21:
+        body = digits + "0" * (n - k)
+    elif 0 < n <= 21:
+        body = digits[:n] + "." + digits[n:]
+    elif -6 < n <= 0:
+        body = "0." + "0" * (-n) + digits
+    else:
+        ee = n - 1
+        body = (digits[0] + ("." + digits[1:] if k > 1 else "")
+                + "e" + ("+" if ee >= 0 else "-") + str(abs(ee)))
+    return sign + body
+
+
+_CN_JCS_SHORT = {'"': '\\"', "\\": "\\\\", "\b": "\\b",
+                 "\f": "\\f", "\n": "\\n", "\r": "\\r",
+                 "\t": "\\t"}
+
+
+def _cn_jcs_str(s: str) -> str:
+    """The minimal string escaping (RFC §3.2.2.2): the JSON specials
+    and the lowercase \\uhhhh for the ASCII control range only."""
+    out = ['"']
+    for ch in s:
+        esc = _CN_JCS_SHORT.get(ch)
+        if esc is not None:
+            out.append(esc)
+        elif ord(ch) < 0x20:
+            out.append("\\u%04x" % ord(ch))
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def _cn_jcs_serialize(obj) -> str:
+    if obj is None:
+        return "null"
+    if obj is True:
+        return "true"
+    if obj is False:
+        return "false"
+    if isinstance(obj, str):
+        try:
+            obj.encode("utf-8")
+        except UnicodeEncodeError:
+            raise CNJsonError("parse_failed")   # lone surrogates end it
+        return _cn_jcs_str(obj)
+    if isinstance(obj, (int, float)):
+        return _cn_es_number(obj)
+    if isinstance(obj, list):
+        return "[" + ",".join(_cn_jcs_serialize(x) for x in obj) + "]"
+    if isinstance(obj, dict):
+        keys = sorted(obj.keys(),
+                      key=lambda s: s.encode("utf-16-be",
+                                             "surrogatepass"))
+        return "{" + ",".join(_cn_jcs_str(k) + ":" +
+                              _cn_jcs_serialize(obj[k])
+                              for k in keys) + "}"
+    raise CNJsonError("parse_failed")
+
+
+def _cn_json_jcs(text: str) -> str:
+    """§3.3-3: the RFC 8785 canonical form.  The canonical form has no
+    trailing newline - the bytes are the form itself (the text-level
+    trailing-newline rule does not ride the jcs style; recorded in the
+    stage log)."""
+    obj = _cn_json_loads(text)
+    return _cn_jcs_serialize(obj)
 
 
 # ---------------------------------------------------------------------------
@@ -391,18 +531,25 @@ def _cn_normalize_one(rel, data, from_encoding, newline, nfc, check,
         return item, None
 
     suffix = Path(rel).suffix.lower()
+    out_bytes = None
     if not text_only and suffix == ".json":
         try:
-            text = _cn_json_normalize_text(text, style=style)
-        except NotImplementedError:
-            pass          # stage 3: the text rules cover it for now
-    if not text_only and suffix == ".csv":
+            if style == "jcs":
+                out_bytes = _cn_json_jcs(text).encode("utf-8")
+            else:
+                text = _cn_json_pretty(text)
+        except CNJsonError as e:
+            item["status"] = "refused"
+            item["reason"] = e.reason
+            return item, None
+    elif not text_only and suffix == ".csv":
         try:
             text = _cn_csv_normalize_text(text, newline=newline)
         except NotImplementedError:
             pass          # stage 4
-    converted = _cn_convert_text(text, newline=newline, nfc=nfc)
-    out_bytes = converted.encode("utf-8")
+    if out_bytes is None:
+        converted = _cn_convert_text(text, newline=newline, nfc=nfc)
+        out_bytes = converted.encode("utf-8")
     if check:
         item["status"] = "observed"
         return item, None
