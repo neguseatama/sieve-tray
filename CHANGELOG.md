@@ -1,5 +1,44 @@
 # Changelog
 
+## [2.3.0] - 2026-11-17
+
+### Added
+- **Metadata clean (`clean`)**: the metadata of JPEG, PNG and Office
+  files (docx / xlsx / pptx) is removed into `handoff/` copies - the
+  entropy body, the frame and table definitions, the ICC profile, the
+  Adobe marker and the `docProps`-outside parts stay byte-identical
+  (`content_checksum_match`); an Orientation other than 1 keeps the
+  orientation-only minimal EXIF (`orientation_kept`); the same
+  observation runs again on every output (all zeros) and the removed
+  values appear only in the `local/` report.  PDF stays out of scope
+  (`not_applicable`, the reason rides the receipt) until a version
+  that can write PDFs.
+- **Text, JSON and CSV normalization (`normalize`)**: UTF-8 without a
+  BOM, LF (or CRLF) line endings, one trailing newline.  The character
+  code is never guessed: a file without a BOM and without valid UTF-8
+  is refused with `encoding_unknown` and the strictly readable
+  candidates, and is converted only when `--from-encoding` names the
+  codec.  `--nfc`, `--newline crlf`, `--check` (observe only).
+- **JSON**: the pretty style (indent 2, codepoint-sorted keys, big
+  integers exact) and the JCS style of RFC 8785 (UTF-16 key order,
+  ECMAScript numbers - pinned against the real Appendix B vectors -
+  and `json_number_unsafe` beyond 2^53).
+- **CSV**: minimal quoting, untouched cell values, ragged rows counted
+  (`csv_ragged_rows`, never fixed), the stable byte-order `--sort-by`.
+- **Table comparison (`table-diff`)**: two CSVs keyed by the named
+  columns into the closed 5 states (same / changed / removed / added /
+  duplicate_key); the receipt carries counts and normalized checksums
+  only - the values, the key values and the column names stay in the
+  `local/` report.  A missing key column refuses with exit code 2.
+- **Verify covers the three new receipts** with the existing closed
+  vocabulary (no new reason) and the same exit codes 0 / 1 / 2.
+- **GUI**: three new pages (Clean Metadata / Normalize / Compare
+  Tables) join at the end of the sidebar (15 items; the last one
+  enters the viewport on selection); `--self-check` rides
+  `clean`, `normalize` and `table-diff`, the frozen entry dispatches
+  them before QApplication, and release.yml runs the three checks on
+  every release OS.
+
 ## [2.2.1] - 2026-11-16
 
 ### Changed

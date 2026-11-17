@@ -23,6 +23,7 @@ import html
 import io
 import json
 import re
+import tempfile
 import unicodedata
 import zipfile
 from pathlib import Path
@@ -432,16 +433,131 @@ def _cn_json_jcs(text: str) -> str:
 # The known small inputs are assembled at run time and compared against
 # the published known values.
 
+# the published known values (docs/clean-metadata.md KV-C1,
+# docs/normalize-format.md KV-C2, docs/table-diff.md KV-C3 - the
+# read-back test pins the docs and these constants together)
+_CN_KV_C1_CLEAN_SHA256 = (
+    "sha256:f7e30406a52f23d7828345a5768997d15cfe4904ae560b1b092ccf0bd27be117")
+_CN_KV_C2_OUTPUT_SHA256 = (
+    "sha256:8470d56547eea6236d7c81a644ce74670ca0bbda998e13c629ef6bb3f0d60b69")
+_CN_KV_C3_A_SHA256 = (
+    "sha256:3f23e65da769b361ebb9ee59026463fcc1b119b5d787b53599f4f92d4b5fc1e5")
+_CN_KV_C3_B_SHA256 = (
+    "sha256:0ff0dc06ae3c3a145949f0349b566e34c2be2004f8f88eca0d0aefa6a96e5cb6")
+
+
+def _cn_self_check_fail(diffs, field, expected, actual):
+    if expected != actual:
+        diffs.append({"field": field, "expected": expected,
+                      "actual": actual})
+
+
 def normalize_self_check(progress=None) -> dict:
-    raise NotImplementedError("stage 11")
+    """The self-check (§3.8-4): normalize the KV-C2 input (CRLF) and
+    compare the published known values - the output bytes, the output
+    checksum, the observation, and the run-to-run determinism.  Same
+    contract as gate / cohort / Seal: {"expected", "matching",
+    "differences"} or {"error"}."""
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            src = d / "ex.txt"
+            src.write_bytes(b"ABC\r\n")
+            r1 = run_normalize(src, d / "out1", progress=progress)
+            r2 = run_normalize(src, d / "out2", progress=progress)
+            copy1 = (d / "out1" / "handoff" / "ex.txt").read_bytes()
+    except OSError as e:
+        return {"error": "self_check_input_unavailable", "detail": str(e)}
+    diffs = []
+    _cn_self_check_fail(diffs, "output bytes", "4142430a",
+                        copy1.hex())
+    _cn_self_check_fail(diffs, "output sha256", _CN_KV_C2_OUTPUT_SHA256,
+                        r1["items"][0]["output_sha256"])
+    _cn_self_check_fail(diffs, "observed crlf", 1,
+                        r1["items"][0]["observation"]["newlines"]["crlf"])
+    _cn_self_check_fail(diffs, "run 2 output sha256",
+                        r1["items"][0]["output_sha256"],
+                        r2["items"][0]["output_sha256"])
+    return {"expected": 4, "matching": 4 - len(diffs),
+            "differences": diffs}
 
 
 def clean_self_check(progress=None) -> dict:
-    raise NotImplementedError("stage 11")
+    """The self-check (§3.8-4): clean the KV-C1 PNG (the metadata
+    tEXt) and compare the published known values - the cleaned bytes'
+    checksum, the before/after categories, the content checksum match,
+    and the run-to-run determinism."""
+    import zlib as _zlib
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+
+            def chunk(t, p):
+                return (len(p).to_bytes(4, "big") + t + p
+                        + _zlib.crc32(t + p).to_bytes(4, "big"))
+            png = (b"\x89PNG\r\n\x1a\n"
+                   + chunk(b"IHDR", _struct.pack(">IIBBBBB", 1, 1, 8, 2,
+                                                 0, 0, 0))
+                   + chunk(b"gAMA", _struct.pack(">I", 45455))
+                   + chunk(b"tEXt", b"Author\x00Sakura")
+                   + chunk(b"IDAT", b"\x00\x01\x02\x03")
+                   + chunk(b"IEND", b""))
+            src = d / "kv-c1.png"
+            src.write_bytes(png)
+            r1 = run_clean(src, d / "out1", progress=progress)
+            r2 = run_clean(src, d / "out2", progress=progress)
+    except OSError as e:
+        return {"error": "self_check_input_unavailable", "detail": str(e)}
+    diffs = []
+    it = r1["items"][0]
+    _cn_self_check_fail(diffs, "cleaned sha256", _CN_KV_C1_CLEAN_SHA256,
+                        it["output_sha256"])
+    _cn_self_check_fail(diffs, "author before", 1,
+                        it["categories_before"]["author"])
+    _cn_self_check_fail(diffs, "categories after",
+                        _cn_zero_categories(), it["categories_after"])
+    _cn_self_check_fail(diffs, "content_checksum_match", True,
+                        it["content_checksum_match"])
+    _cn_self_check_fail(diffs, "run 2 cleaned sha256",
+                        it["output_sha256"],
+                        r2["items"][0]["output_sha256"])
+    return {"expected": 5, "matching": 5 - len(diffs),
+            "differences": diffs}
 
 
 def table_diff_self_check(progress=None) -> dict:
-    raise NotImplementedError("stage 11")
+    """The self-check (§3.8-4): diff the KV-C3 tables and compare the
+    published known values - the five state counts and the normalized
+    checksums."""
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            a = d / "a.csv"
+            b = d / "b.csv"
+            a.write_text("id,v\n1,x\n2,y\n", encoding="utf-8",
+                         newline="")
+            b.write_text("id,v\n1,y\n3,z\n", encoding="utf-8",
+                         newline="")
+            r1 = run_table_diff(a, b, ("id",), d / "out1",
+                                progress=progress)
+            r2 = run_table_diff(a, b, ("id",), d / "out2",
+                                progress=progress)
+    except OSError as e:
+        return {"error": "self_check_input_unavailable", "detail": str(e)}
+    diffs = []
+    s1 = r1["summary"]
+    _cn_self_check_fail(diffs, "states", (0, 1, 1, 1, 0),
+                        (s1["rows_same"], s1["rows_changed"],
+                         s1["rows_removed"], s1["rows_added"],
+                         s1["duplicate_keys"]))
+    _cn_self_check_fail(diffs, "a normalized sha256", _CN_KV_C3_A_SHA256,
+                        s1["a_normalized_sha256"])
+    _cn_self_check_fail(diffs, "b normalized sha256", _CN_KV_C3_B_SHA256,
+                        s1["b_normalized_sha256"])
+    _cn_self_check_fail(diffs, "run 2 a sha256", s1["a_normalized_sha256"],
+                        r2["summary"]["a_normalized_sha256"])
+    return {"expected": 4, "matching": 4 - len(diffs),
+            "differences": diffs}
 
 
 # ---------------------------------------------------------------------------

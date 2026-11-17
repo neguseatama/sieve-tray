@@ -1,6 +1,6 @@
 [English](README.md) | **日本語**
 
-# Sieve Tray v2.2.1
+# Sieve Tray v2.3.0
 
 **汎用観測ツール — Sieveシリーズのデスクトップフロントエンド**
 
@@ -151,6 +151,54 @@ python3 sieve_tray.py draw <名簿> --seed <文字列> --groups 3 -o <出力先>
 ```
 
 手順と検算の方法の詳細は、[docs/draw-procedure.md](docs/draw-procedure.md) にあります。
+
+---
+
+## 🧼 メタデータの除去
+
+JPEG・PNG・Office ファイルのメタデータを取り除いてから渡せます。画像や文書の中身は変わりません。
+
+1. 対象のフォルダ（またはファイル）と出力先を選ぶ
+2. メタデータを取り除いたコピーが `handoff/`、処理記録も `handoff/` に入る
+3. 取り除いた値は `local/` の報告にだけ出る（処理記録には件数だけ）
+
+```
+python3 sieve_tray.py clean <入力フォルダ> -o <出力先>
+```
+
+形式ごとに取り除くものと残すもの: [docs/clean-metadata.md](docs/clean-metadata.md)。
+
+---
+
+## 🧽 テキストと JSON / CSV の整理
+
+テキスト・JSON・CSV を、文字コード UTF-8・改行のそろったファイルに整えます。文字コードは推測しません。
+
+1. 入力と出力先を選ぶ
+2. UTF-8 でないファイルは、文字コードの指定（`--from-encoding cp932`）がなければ候補の一覧とともに拒否される
+3. `--check` を付けると観測だけを行い、コピーは作らない
+
+```
+python3 sieve_tray.py normalize <入力> -o <出力先> [--from-encoding cp932]
+```
+
+規則と JSON / CSV の書き方: [docs/normalize-format.md](docs/normalize-format.md)。
+
+---
+
+## 📊 表の比較
+
+2 つの CSV を、キー列で突き合わせて比べ、同じ・変更・削除・追加・キー重複を見つけます。
+
+1. 表 A・表 B・キー列（`--key id` または `--key id,region`）を指定する
+2. `handoff/` の処理記録には件数だけが入り、行の詳細は `local/` の報告に出る
+3. キー列が片方にでもなければ終了符号 2 で拒否される
+
+```
+python3 sieve_tray.py table-diff <A.csv> <B.csv> --key id -o <出力先>
+```
+
+状態と処理記録: [docs/table-diff.md](docs/table-diff.md)。
 
 ---
 
@@ -392,6 +440,14 @@ Gatekeeperの確認が出ます — **システム設定 → プライバシー�
 | ファイル一覧と照合コード | 抽選・班分け |
 |---|---|
 | ![ファイル一覧と照合コード](docs/screenshots/manifest-page-ja.png) | ![抽選・班分け](docs/screenshots/draw-page-ja.png) |
+
+| メタデータの除去 | テキストと JSON / CSV の整理 |
+|---|---|
+| ![メタデータの除去](docs/screenshots/clean-page-ja.png) | ![テキストと JSON / CSV の整理](docs/screenshots/normalize-page-ja.png) |
+
+| 表の比較 | |
+|---|---|
+| ![表の比較](docs/screenshots/table-diff-page-ja.png) | |
 
 ---
 

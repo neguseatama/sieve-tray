@@ -1,6 +1,6 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v2.2.1
+# Sieve Tray v2.3.0
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
@@ -154,6 +154,54 @@ python3 sieve_tray.py draw <roster> --seed <string> --groups 3 -o <output-folder
 ```
 
 The procedure and how to re-check it by hand: [docs/draw-procedure.md](docs/draw-procedure.md).
+
+---
+
+## 🧼 Clean Metadata
+
+Strip the metadata from JPEG, PNG and Office files before sharing them; the pictures and the documents themselves stay unchanged.
+
+1. Pick the folder (or a single file) and the output folder
+2. The cleaned copies land in `handoff/`, next to the record
+3. The report in `local/` shows the removed values (the record carries only counts)
+
+```
+python3 sieve_tray.py clean <input-folder> -o <output-folder>
+```
+
+What is removed and what stays, per format: [docs/clean-metadata.md](docs/clean-metadata.md).
+
+---
+
+## 🧽 Normalize
+
+Turn text, JSON and CSV files into UTF-8 with even line endings; JSON keys are sorted and CSV cells keep their values. The character code is never guessed.
+
+1. Pick the input and the output folder
+2. A file that is not UTF-8 needs its code named (`--from-encoding cp932`); without the name it is refused, with the strictly readable candidates
+3. `--check` writes the record only (no copies)
+
+```
+python3 sieve_tray.py normalize <input> -o <output-folder> [--from-encoding cp932]
+```
+
+The rules and the JSON / CSV styles: [docs/normalize-format.md](docs/normalize-format.md).
+
+---
+
+## 📊 Compare Tables
+
+Compare two CSV tables by the key columns and see what was added, changed, removed, or duplicated.
+
+1. Pick table A, table B, and the key columns (`--key id` or `--key id,region`)
+2. The record in `handoff/` carries the counts only; the row detail goes to the report in `local/`
+3. A key column missing from either table refuses (exit code 2)
+
+```
+python3 sieve_tray.py table-diff <A.csv> <B.csv> --key id -o <output-folder>
+```
+
+The states and the record: [docs/table-diff.md](docs/table-diff.md).
 
 ---
 
@@ -420,6 +468,14 @@ the list.
 | File List and Check Code | Draw |
 |---|---|
 | ![File List and Check Code](docs/screenshots/manifest-page-en.png) | ![Draw](docs/screenshots/draw-page-en.png) |
+
+| Clean Metadata | Normalize |
+|---|---|
+| ![Clean Metadata](docs/screenshots/clean-page-en.png) | ![Normalize](docs/screenshots/normalize-page-en.png) |
+
+| Compare Tables | |
+|---|---|
+| ![Compare Tables](docs/screenshots/table-diff-page-en.png) | |
 
 ---
 

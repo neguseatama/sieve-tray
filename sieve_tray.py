@@ -52,7 +52,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "2.2.1"
+__version__ = "2.3.0"
 
 
 CODE_EXTS = {".py"}
@@ -6139,7 +6139,9 @@ def _gate_main(argv: List[str]) -> int:
                              "(Canon 2.3)")
     td.add_argument("csv_a", type=Path, nargs="?", default=None)
     td.add_argument("csv_b", type=Path, nargs="?", default=None)
-    td.add_argument("--key", required=True, metavar="COLS")
+    # the key is validated in the dispatch branch, so --self-check
+    # can run without it (the draw precedent)
+    td.add_argument("--key", default=None, metavar="COLS")
     td.add_argument("-o", "--output", type=Path, default=None)
     td.add_argument("--from-encoding-a", default=None, metavar="NAME")
     td.add_argument("--from-encoding-b", default=None, metavar="NAME")
@@ -6332,6 +6334,8 @@ def _gate_main(argv: List[str]) -> int:
             if "error" in result:
                 return 2
             return 0 if result["matching"] == result["expected"] else 1
+        if args.key is None:
+            parser.error("table-diff needs --key")
         if args.csv_a is None or args.csv_b is None or args.output is None:
             parser.error("table-diff needs two CSV files and "
                          "-o/--output")

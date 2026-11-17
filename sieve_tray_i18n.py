@@ -878,7 +878,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "table_diff_b_tooltip": "2 つ目の表。",
         "table_diff_key_label": "キー列",
         "table_diff_key_placeholder": "id（複数は id,region）",
-        "table_diff_key_tooltip": "行を identification する列名をカンマ"
+        "table_diff_key_tooltip": "行を識別する列名をカンマ"
                                   "区切りで指定します。",
         "table_diff_output_label": "出力先フォルダ",
         "table_diff_output_tooltip": "処理記録は handoff/ に、行の詳細"
