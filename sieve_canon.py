@@ -1670,6 +1670,7 @@ def run_clean(input_path, output_dir, *, no_paths=False,
         # index form with --no-paths)
         copy_name = rel if include_paths else \
             "%04d%s" % (index, path.suffix.lower())
+        item["output_name"] = copy_name
         copy = out / "handoff" / copy_name
         copy.parent.mkdir(parents=True, exist_ok=True)
         copy.write_bytes(out_bytes)
@@ -1728,3 +1729,124 @@ def _cn_write_zip_stream(buf, members):
                 zi.external_attr = _CN_ZIP_FILE_ATTR
             zi.compress_type = zipfile.ZIP_STORED
             zf.writestr(zi, data)
+
+# ---------------------------------------------------------------------------
+# the verify extension (request §3.6) - the existing vocabulary only
+
+def _cn_verify_receipt(obj, root, scope, output_dir, result) -> dict:
+    """Verify a clean / normalize / table-diff receipt with the closed
+    words only: output_missing / output_changed / input_missing /
+    input_changed on the differs side, settings_unavailable when the
+    recorded positions are gone.  No new word joins the two closed
+    verify sets (CN-T18)."""
+    kind = obj.get("kind")
+    root_path = Path(root) if root is not None else None
+    if kind == "sieve-clean":
+        result["scope"] = scope or "outputs_only"
+        if root_path is None or not root_path.is_dir():
+            result["overall"] = "not_verifiable"
+            result["not_verifiable_reason"] = "settings_unavailable"
+            return result
+        items = []
+        for it in obj.get("items", []):
+            if it.get("status") != "cleaned":
+                continue
+            name = it.get("output_name")
+            p = root_path / name
+            if not p.is_file():
+                items.append({"path": name, "reason": "output_missing"})
+                continue
+            blob = p.read_bytes()
+            if _cn_sha(blob) != it.get("output_sha256"):
+                items.append({"path": name, "reason": "output_changed"})
+                continue
+            fmt = it.get("format")
+            try:
+                if fmt == "png":
+                    counts, _v = _cn_png_observe(blob)
+                elif fmt == "jpeg":
+                    counts, _v = _cn_jpeg_observe(blob)
+                else:
+                    counts, _v, _ic = _cn_office_observe(
+                        _cn_office_members(blob))
+            except (ValueError, zipfile.BadZipFile):
+                items.append({"path": name, "reason": "output_changed"})
+                continue
+            if any(counts[c] for c in CN_META_CATEGORIES):
+                # §3.6-1: the re-observation found metadata - the
+                # existing output_changed word carries it
+                items.append({"path": name, "reason": "output_changed"})
+        result["items"] = sorted(items, key=lambda e: e["path"])
+        result["overall"] = "differs" if items else "match"
+        return result
+    if kind == "sieve-normalize":
+        settings = obj.get("settings", {})
+        src = (Path(settings["input"])
+               if settings.get("input") else None)
+        result["scope"] = scope or ("inputs_and_outputs"
+                                    if root_path is not None
+                                    else "receipt_only")
+        if root_path is None and src is None:
+            result["overall"] = "match"
+            return result
+        items = []
+        handoff = root_path / "handoff" if root_path else None
+        for it in obj.get("items", []):
+            if it.get("status") not in ("produced", "observed"):
+                continue
+            rel = it.get("path")
+            if src is not None:
+                in_path = src if src.is_file() else src / rel
+                if not in_path.is_file():
+                    items.append({"path": rel,
+                                  "reason": "input_missing"})
+                elif _cn_sha(in_path.read_bytes()) != \
+                        it.get("input_sha256"):
+                    items.append({"path": rel,
+                                  "reason": "input_changed"})
+            if handoff is not None and it.get("status") == "produced":
+                out_p = handoff / rel
+                if not out_p.is_file():
+                    items.append({"path": rel,
+                                  "reason": "output_missing"})
+                elif _cn_sha(out_p.read_bytes()) != \
+                        it.get("output_sha256"):
+                    items.append({"path": rel,
+                                  "reason": "output_changed"})
+        result["items"] = sorted(items, key=lambda e: e["path"])
+        result["overall"] = "differs" if items else "match"
+        return result
+    if kind == "sieve-table-diff":
+        result["scope"] = scope or "inputs_and_outputs"
+        settings = obj.get("settings", {})
+        a = Path(settings["a"]) if settings.get("a") else None
+        b = Path(settings["b"]) if settings.get("b") else None
+        if a is None or b is None or not a.is_file() \
+                or not b.is_file():
+            result["overall"] = "not_verifiable"
+            result["not_verifiable_reason"] = "settings_unavailable"
+            return result
+        items = []
+        summary = obj.get("summary", {})
+        for side, path, enc, want in (
+                (settings.get("a"), a, settings.get("from_encoding_a"),
+                 summary.get("a_normalized_sha256")),
+                (settings.get("b"), b, settings.get("from_encoding_b"),
+                 summary.get("b_normalized_sha256"))):
+            try:
+                _rows, got = _cn_read_csv_side(
+                    path, enc, settings.get("delimiter", ","))
+            except (CNTableRefusal, ValueError, zipfile.BadZipFile):
+                items.append({"path": Path(path).name,
+                              "reason": "input_changed"})
+                continue
+            if got != want:
+                items.append({"path": Path(path).name,
+                              "reason": "input_changed"})
+        result["items"] = sorted(items, key=lambda e: e["path"])
+        result["overall"] = "differs" if items else "match"
+        return result
+    result["overall"] = "not_verifiable"
+    result["not_verifiable_reason"] = "receipt_version_unsupported"
+    return result
+

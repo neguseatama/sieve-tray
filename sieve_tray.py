@@ -5261,6 +5261,13 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
         result["overall"] = "not_verifiable"
         result["not_verifiable_reason"] = "receipt_digest_mismatch"
         return result
+    # Canon 2.3 (§3.6): the clean / normalize / table-diff receipts
+    # verify with the same shape and the same closed vocabulary
+    if obj.get("kind") in ("sieve-clean", "sieve-normalize",
+                           "sieve-table-diff"):
+        from sieve_canon import _cn_verify_receipt
+        return _cn_verify_receipt(obj, input_dir, scope, output_dir,
+                                  result)
     # the check code key (C14): the file-list checks run with or
     # without it; the code itself is confirmed only with it
     key = None
