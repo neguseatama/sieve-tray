@@ -6109,6 +6109,11 @@ def _gate_main(argv: List[str]) -> int:
                    help="skip the JSON / CSV rules (§3.3 / §3.4)")
     n.add_argument("--style", default="pretty", choices=("pretty", "jcs"),
                    help="the JSON style (§3.3; default: pretty)")
+    n.add_argument("--delimiter", default=",", metavar="CHAR",
+                   help="the CSV delimiter (§3.4; default: ,)")
+    n.add_argument("--sort-by", default=None, metavar="COLS",
+                   help="the CSV column(s) to sort by, comma-separated "
+                        "(§3.4-4; the default keeps the row order)")
     n.add_argument("--self-check", action="store_true")
     args = parser.parse_args(argv)
 
@@ -6245,12 +6250,14 @@ def _gate_main(argv: List[str]) -> int:
         if args.input is None or args.output is None:
             parser.error("normalize needs an input and -o/--output")
         from sieve_canon import run_normalize
+        sort_by = tuple(args.sort_by.split(",")) if args.sort_by else ()
         try:
             receipt = run_normalize(
                 args.input, args.output,
                 from_encoding=args.from_encoding,
                 newline=args.newline, nfc=args.nfc, check=args.check,
                 text_only=args.text_only, style=args.style,
+                delimiter=args.delimiter, sort_by=sort_by,
                 progress=print)
         except ValueError as e:
             parser.error(str(e))  # exit 2 (a bad flag value)

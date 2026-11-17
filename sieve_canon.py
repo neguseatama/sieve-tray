@@ -17,6 +17,7 @@ in-content kinds, the 5 mojibake signs, the 5 table states,
 reasons (`parse_failed`, `unreadable`, `not_applicable`, ...).
 """
 import codecs
+import csv
 import hashlib
 import io
 import json
@@ -221,10 +222,59 @@ def _cn_convert_text(text: str, newline: str = "lf",
     return text
 
 
+class CNCSVError(ValueError):
+    """The CSV refusals (§3.4): the reason carries the existing
+    parse_failed word (a quoting structure the strict reader cannot
+    take)."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
 def _cn_csv_normalize_text(text: str, delimiter: str = ",",
                            newline: str = "lf",
-                           sort_by=()) -> str:
-    raise NotImplementedError("stage 4")
+                           sort_by=()):
+    """§3.4: returns (normalized_text, info).  The quoting is minimal
+    (only a delimiter, a quote or a newline forces it), the quotes
+    inside are doubled, the cell values are untouched, a blank line
+    stays a blank line, and the ragged rows are counted - never fixed
+    (§3.4-3).  `sort_by` names columns of the header; the rows sort
+    by the UTF-8 bytes of the named values, stable, missing cells as
+    empty (§3.4-4)."""
+    if len(delimiter) != 1:
+        raise ValueError("csv: --delimiter must be one character")
+    try:
+        rows = list(csv.reader(io.StringIO(text, newline=""),
+                               delimiter=delimiter, strict=True))
+    except csv.Error as e:
+        raise CNCSVError("parse_failed") from e
+    info = {"ragged_rows": 0, "columns": len(rows[0]) if rows else 0}
+    header_len = info["columns"]
+    # the header (row 0) rides first, untouched and unsorted (§3.4-2)
+    header = rows[0] if rows else None
+    body = []
+    for row in rows[1:]:
+        if row == []:
+            body.append([])
+            continue
+        if len(row) != header_len:
+            info["ragged_rows"] += 1
+        body.append(row)
+    if sort_by:
+        idx = [header.index(name) for name in sort_by]
+
+        def key(row):
+            return tuple((row[i].encode("utf-8")
+                          if i < len(row) else b"") for i in idx)
+        body = sorted(body, key=key)     # the stable sort
+    out_rows = ([header] if header is not None else []) + body
+    term = "\r\n" if newline == "crlf" else "\n"
+    buf = io.StringIO(newline="")
+    w = csv.writer(buf, delimiter=delimiter, lineterminator=term,
+                   quoting=csv.QUOTE_MINIMAL, doublequote=True)
+    w.writerows(out_rows)
+    return buf.getvalue(), info
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +452,8 @@ def _cn_sha(data: bytes) -> str:
 
 def run_normalize(input_path, output_dir, *, from_encoding=None,
                   newline="lf", nfc=False, check=False, text_only=False,
-                  style="pretty", progress=None) -> dict:
+                  style="pretty", delimiter=",", sort_by=(),
+                  progress=None) -> dict:
     """The `normalize` command (§3.2).  Observes every text file,
     converts it to UTF-8 / LF (or CRLF) / one trailing newline, and
     writes the copies under handoff/ with the original relative names.
@@ -420,6 +471,8 @@ def run_normalize(input_path, output_dir, *, from_encoding=None,
         raise ValueError("normalize: %s does not exist" % src)
     if newline not in ("lf", "crlf"):
         raise ValueError("normalize: --newline must be lf or crlf")
+    if len(delimiter) != 1:
+        raise ValueError("normalize: --delimiter must be one character")
 
     items = []
     if src.is_dir():
@@ -435,9 +488,9 @@ def run_normalize(input_path, output_dir, *, from_encoding=None,
                               "output_sha256": None})
                 continue
             data = Path(it["_abs"]).read_bytes()
-            item, out_bytes = _cn_normalize_one(rel, data, from_encoding,
-                                                newline, nfc, check,
-                                                text_only, style)
+            item, out_bytes = _cn_normalize_one(
+                rel, data, from_encoding, newline, nfc, check,
+                text_only, style, delimiter=delimiter, sort_by=sort_by)
             if item["status"] == "produced":
                 copy = out / "handoff" / rel
                 copy.parent.mkdir(parents=True, exist_ok=True)
@@ -447,9 +500,9 @@ def run_normalize(input_path, output_dir, *, from_encoding=None,
     else:
         rel = src.name
         data = src.read_bytes()
-        item, out_bytes = _cn_normalize_one(rel, data, from_encoding,
-                                            newline, nfc, check,
-                                            text_only, style)
+        item, out_bytes = _cn_normalize_one(
+            rel, data, from_encoding, newline, nfc, check,
+            text_only, style, delimiter=delimiter, sort_by=sort_by)
         if item["status"] == "produced":
             copy = out / "handoff" / rel
             copy.parent.mkdir(parents=True, exist_ok=True)
@@ -474,6 +527,8 @@ def run_normalize(input_path, output_dir, *, from_encoding=None,
             "check": bool(check),
             "text_only": bool(text_only),
             "style": style,
+            "delimiter": delimiter,
+            "sort_by": list(sort_by),
         },
         "items": items,
         "summary": {
@@ -493,7 +548,7 @@ def run_normalize(input_path, output_dir, *, from_encoding=None,
 
 
 def _cn_normalize_one(rel, data, from_encoding, newline, nfc, check,
-                      text_only, style):
+                      text_only, style, delimiter=",", sort_by=()):
     """Normalize one file: returns (item, out_bytes_or_None)."""
     obs = _cn_observe_text(data)
     item = {
@@ -544,9 +599,14 @@ def _cn_normalize_one(rel, data, from_encoding, newline, nfc, check,
             return item, None
     elif not text_only and suffix == ".csv":
         try:
-            text = _cn_csv_normalize_text(text, newline=newline)
-        except NotImplementedError:
-            pass          # stage 4
+            text, csv_info = _cn_csv_normalize_text(
+                text, delimiter=delimiter, newline=newline,
+                sort_by=sort_by)
+        except CNCSVError as e:
+            item["status"] = "refused"
+            item["reason"] = e.reason
+            return item, None
+        item["csv"] = csv_info
     if out_bytes is None:
         converted = _cn_convert_text(text, newline=newline, nfc=nfc)
         out_bytes = converted.encode("utf-8")
