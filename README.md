@@ -92,7 +92,8 @@ python3 sieve_tray.py verify <output-folder>/handoff/gate-receipt.json
 
 Cohort compares every submission in a folder against every other and finds pairs that look alike.
 
-- Documents — compares the text
+- Text files (.txt, .md) — compare the text
+- Word and PDF files (.docx, .pdf) — check for hidden text (not compared with each other)
 - Python — finds the same structure even when variable names were changed
 - Other programming languages — compared with a common method (a small file contained whole inside a larger one is found too)
 
