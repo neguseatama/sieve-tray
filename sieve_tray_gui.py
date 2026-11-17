@@ -1372,6 +1372,405 @@ class CohortPage(QScrollArea):
                 "actual={actual!r}".format(**d))
 
 
+class CleanPage(QScrollArea):
+    """The Canon 2.3 metadata clean page (request §3.7): pick the
+    folder (or file), pick the output folder, run the clean.  The
+    originals are never written; the report alone carries the removed
+    values.  The texts describe the actual behavior."""
+
+    def __init__(self, lang: str, parent=None):
+        super().__init__(parent)
+        self.lang = lang
+        self._ = lambda key, **kw: tr(lang, key, **kw)
+        self.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.setWidgetResizable(True)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
+
+        self.desc_label = QLabel(self._("clean_desc"))
+        self.desc_label.setWordWrap(True)
+        layout.addWidget(self.desc_label)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel(self._("clean_input_label")), 0, 0)
+        self.clean_input_edit = QLineEdit()
+        self.clean_input_edit.setReadOnly(True)
+        self.clean_input_edit.setToolTip(self._("clean_input_tooltip"))
+        clean_browse = QPushButton(self._("browse_folder"))
+        clean_browse.setToolTip(self._("clean_input_tooltip"))
+        clean_browse.clicked.connect(self.choose_input)
+        grid.addWidget(self.clean_input_edit, 0, 1)
+        grid.addWidget(clean_browse, 0, 2)
+        grid.addWidget(QLabel(self._("clean_output_label")), 1, 0)
+        self.clean_output_edit = QLineEdit()
+        self.clean_output_edit.setReadOnly(True)
+        self.clean_output_edit.setToolTip(self._("clean_output_tooltip"))
+        clean_browse_out = QPushButton(self._("browse_folder"))
+        clean_browse_out.setToolTip(self._("clean_output_tooltip"))
+        clean_browse_out.clicked.connect(self.choose_output)
+        grid.addWidget(self.clean_output_edit, 1, 1)
+        grid.addWidget(clean_browse_out, 1, 2)
+        self.clean_nopaths_check = QCheckBox(self._("clean_nopaths"))
+        self.clean_nopaths_check.setToolTip(self._("clean_nopaths_tooltip"))
+        grid.addWidget(self.clean_nopaths_check, 2, 1)
+        layout.addLayout(grid)
+
+        row = QHBoxLayout()
+        self.clean_run_button = QPushButton(self._("clean_run_button"))
+        self.clean_run_button.setToolTip(self._("clean_run_tooltip"))
+        self.clean_run_button.clicked.connect(self.run_clean)
+        self.clean_open_local_button = QPushButton(
+            self._("clean_open_local_button"))
+        self.clean_open_local_button.setToolTip(
+            self._("clean_open_local_tooltip"))
+        self.clean_open_local_button.clicked.connect(self.open_local)
+        row.addWidget(self.clean_run_button)
+        row.addWidget(self.clean_open_local_button)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self.summary_label = QLabel(self._("clean_summary_placeholder"))
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setForegroundRole(
+            QPalette.ColorRole.PlaceholderText)
+        layout.addWidget(self.summary_label)
+
+        self.clean_log = QPlainTextEdit()
+        self.clean_log.setReadOnly(True)
+        self.clean_log.setToolTip(self._("clean_log_tooltip"))
+        layout.addWidget(self.clean_log, stretch=1)
+        self._out = None
+        self.setWidget(content)
+
+    def choose_input(self):
+        d = QFileDialog.getExistingDirectory(
+            self, self._("clean_input_label"))
+        if d:
+            self.clean_input_edit.setText(d)
+
+    def choose_output(self):
+        d = QFileDialog.getExistingDirectory(
+            self, self._("clean_output_label"))
+        if d:
+            self.clean_output_edit.setText(d)
+
+    def run_clean(self):
+        from sieve_canon import run_clean
+        inp = self.clean_input_edit.text()
+        out = self.clean_output_edit.text()
+        if not inp or not out:
+            return
+        try:
+            receipt = run_clean(
+                Path(inp), Path(out),
+                no_paths=self.clean_nopaths_check.isChecked(),
+                progress=lambda m: self.clean_log.appendPlainText(m))
+            s = receipt.get("summary") or {}
+            self.summary_label.setText(self._(
+                "clean_done", cleaned=s.get("cleaned", 0),
+                refused=s.get("refused", 0),
+                not_applicable=s.get("not_applicable", 0)))
+            self.summary_label.setForegroundRole(QPalette.ColorRole.Text)
+            self._out = Path(out)
+        except Exception as e:  # noqa: BLE001 - the page never crashes
+            self.clean_log.appendPlainText(f"{type(e).__name__}: {e}")
+
+    def open_local(self):
+        if self._out is None:
+            return
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl.fromLocalFile(
+            str(self._out / "local")))
+
+
+class NormalizePage(QScrollArea):
+    """The Canon 2.3 normalization page (request §3.7): pick the input
+    and the output, optionally name the character code, and turn the
+    files into UTF-8 with even line endings.  The code is never
+    guessed - the refused files speak with the record's closed words."""
+
+    def __init__(self, lang: str, parent=None):
+        super().__init__(parent)
+        self.lang = lang
+        self._ = lambda key, **kw: tr(lang, key, **kw)
+        self.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.setWidgetResizable(True)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
+
+        self.desc_label = QLabel(self._("normalize_desc"))
+        self.desc_label.setWordWrap(True)
+        layout.addWidget(self.desc_label)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel(self._("normalize_input_label")), 0, 0)
+        self.normalize_input_edit = QLineEdit()
+        self.normalize_input_edit.setReadOnly(True)
+        self.normalize_input_edit.setToolTip(
+            self._("normalize_input_tooltip"))
+        norm_browse = QPushButton(self._("browse_folder"))
+        norm_browse.setToolTip(self._("normalize_input_tooltip"))
+        norm_browse.clicked.connect(self.choose_input)
+        grid.addWidget(self.normalize_input_edit, 0, 1)
+        grid.addWidget(norm_browse, 0, 2)
+        grid.addWidget(QLabel(self._("normalize_output_label")), 1, 0)
+        self.normalize_output_edit = QLineEdit()
+        self.normalize_output_edit.setReadOnly(True)
+        self.normalize_output_edit.setToolTip(
+            self._("normalize_output_tooltip"))
+        norm_browse_out = QPushButton(self._("browse_folder"))
+        norm_browse_out.setToolTip(self._("normalize_output_tooltip"))
+        norm_browse_out.clicked.connect(self.choose_output)
+        grid.addWidget(self.normalize_output_edit, 1, 1)
+        grid.addWidget(norm_browse_out, 1, 2)
+        grid.addWidget(QLabel(self._("normalize_encoding_label")), 2, 0)
+        self.normalize_encoding_edit = QLineEdit()
+        self.normalize_encoding_edit.setPlaceholderText(
+            self._("normalize_encoding_placeholder"))
+        self.normalize_encoding_edit.setToolTip(
+            self._("normalize_encoding_tooltip"))
+        grid.addWidget(self.normalize_encoding_edit, 2, 1, 1, 2)
+        grid.addWidget(QLabel(self._("normalize_newline_label")), 3, 0)
+        self.normalize_newline_combo = QComboBox()
+        self.normalize_newline_combo.addItem("LF", "lf")
+        self.normalize_newline_combo.addItem("CRLF", "crlf")
+        self.normalize_newline_combo.setToolTip(
+            self._("normalize_newline_tooltip"))
+        grid.addWidget(self.normalize_newline_combo, 3, 1, 1, 2)
+        self.normalize_nfc_check = QCheckBox(self._("normalize_nfc"))
+        self.normalize_nfc_check.setToolTip(
+            self._("normalize_nfc_tooltip"))
+        grid.addWidget(self.normalize_nfc_check, 4, 1)
+        self.normalize_check_check = QCheckBox(self._("normalize_check"))
+        self.normalize_check_check.setToolTip(
+            self._("normalize_check_tooltip"))
+        grid.addWidget(self.normalize_check_check, 5, 1)
+        layout.addLayout(grid)
+
+        row = QHBoxLayout()
+        self.normalize_run_button = QPushButton(
+            self._("normalize_run_button"))
+        self.normalize_run_button.setToolTip(
+            self._("normalize_run_tooltip"))
+        self.normalize_run_button.clicked.connect(self.run_normalize)
+        self.normalize_open_output_button = QPushButton(
+            self._("normalize_open_output_button"))
+        self.normalize_open_output_button.setToolTip(
+            self._("normalize_open_output_tooltip"))
+        self.normalize_open_output_button.clicked.connect(self.open_out)
+        row.addWidget(self.normalize_run_button)
+        row.addWidget(self.normalize_open_output_button)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self.summary_label = QLabel(
+            self._("normalize_summary_placeholder"))
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setForegroundRole(
+            QPalette.ColorRole.PlaceholderText)
+        layout.addWidget(self.summary_label)
+
+        self.normalize_log = QPlainTextEdit()
+        self.normalize_log.setReadOnly(True)
+        self.normalize_log.setToolTip(self._("normalize_log_tooltip"))
+        layout.addWidget(self.normalize_log, stretch=1)
+        self._out = None
+        self.setWidget(content)
+
+    def choose_input(self):
+        d = QFileDialog.getExistingDirectory(
+            self, self._("normalize_input_label"))
+        if d:
+            self.normalize_input_edit.setText(d)
+
+    def choose_output(self):
+        d = QFileDialog.getExistingDirectory(
+            self, self._("normalize_output_label"))
+        if d:
+            self.normalize_output_edit.setText(d)
+
+    def run_normalize(self):
+        from sieve_canon import run_normalize
+        inp = self.normalize_input_edit.text()
+        out = self.normalize_output_edit.text()
+        if not inp or not out:
+            return
+        try:
+            receipt = run_normalize(
+                Path(inp), Path(out),
+                from_encoding=(self.normalize_encoding_edit.text().strip()
+                               or None),
+                newline=self.normalize_newline_combo.currentData(),
+                nfc=self.normalize_nfc_check.isChecked(),
+                check=self.normalize_check_check.isChecked(),
+                progress=lambda m: self.normalize_log.appendPlainText(m))
+            s = receipt.get("summary") or {}
+            for it in receipt.get("items", []):
+                if it.get("status") == "refused":
+                    self.normalize_log.appendPlainText(
+                        "Refused: %s (%s)" % (it.get("path"),
+                                              it.get("reason")))
+            self.summary_label.setText(self._(
+                "normalize_done", produced=s.get("produced", 0),
+                refused=s.get("refused", 0),
+                observed=s.get("observed", 0)))
+            self.summary_label.setForegroundRole(QPalette.ColorRole.Text)
+            self._out = Path(out)
+        except Exception as e:  # noqa: BLE001 - the page never crashes
+            self.normalize_log.appendPlainText(f"{type(e).__name__}: {e}")
+
+    def open_out(self):
+        if self._out is None:
+            return
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl.fromLocalFile(
+            str(self._out / "handoff")))
+
+
+class TableDiffPage(QScrollArea):
+    """The Canon 2.3 table comparison page (request §3.7): pick the
+    two CSV files and the key columns; the row detail stays in the
+    report, the record carries the counts only."""
+
+    def __init__(self, lang: str, parent=None):
+        super().__init__(parent)
+        self.lang = lang
+        self._ = lambda key, **kw: tr(lang, key, **kw)
+        self.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.setWidgetResizable(True)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        content = QWidget(self)
+        layout = QVBoxLayout(content)
+
+        self.desc_label = QLabel(self._("table_diff_desc"))
+        self.desc_label.setWordWrap(True)
+        layout.addWidget(self.desc_label)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel(self._("table_diff_a_label")), 0, 0)
+        self.table_diff_a_edit = QLineEdit()
+        self.table_diff_a_edit.setReadOnly(True)
+        self.table_diff_a_edit.setToolTip(self._("table_diff_a_tooltip"))
+        td_a = QPushButton(self._("browse_folder"))
+        td_a.setToolTip(self._("table_diff_a_tooltip"))
+        td_a.clicked.connect(self.choose_a)
+        grid.addWidget(self.table_diff_a_edit, 0, 1)
+        grid.addWidget(td_a, 0, 2)
+        grid.addWidget(QLabel(self._("table_diff_b_label")), 1, 0)
+        self.table_diff_b_edit = QLineEdit()
+        self.table_diff_b_edit.setReadOnly(True)
+        self.table_diff_b_edit.setToolTip(self._("table_diff_b_tooltip"))
+        td_b = QPushButton(self._("browse_folder"))
+        td_b.setToolTip(self._("table_diff_b_tooltip"))
+        td_b.clicked.connect(self.choose_b)
+        grid.addWidget(self.table_diff_b_edit, 1, 1)
+        grid.addWidget(td_b, 1, 2)
+        grid.addWidget(QLabel(self._("table_diff_key_label")), 2, 0)
+        self.table_diff_key_edit = QLineEdit()
+        self.table_diff_key_edit.setPlaceholderText(
+            self._("table_diff_key_placeholder"))
+        self.table_diff_key_edit.setToolTip(
+            self._("table_diff_key_tooltip"))
+        grid.addWidget(self.table_diff_key_edit, 2, 1, 1, 2)
+        grid.addWidget(QLabel(self._("table_diff_output_label")), 3, 0)
+        self.table_diff_output_edit = QLineEdit()
+        self.table_diff_output_edit.setReadOnly(True)
+        self.table_diff_output_edit.setToolTip(
+            self._("table_diff_output_tooltip"))
+        td_out = QPushButton(self._("browse_folder"))
+        td_out.setToolTip(self._("table_diff_output_tooltip"))
+        td_out.clicked.connect(self.choose_output)
+        grid.addWidget(self.table_diff_output_edit, 3, 1)
+        grid.addWidget(td_out, 3, 2)
+        layout.addLayout(grid)
+
+        row = QHBoxLayout()
+        self.table_diff_run_button = QPushButton(
+            self._("table_diff_run_button"))
+        self.table_diff_run_button.setToolTip(
+            self._("table_diff_run_tooltip"))
+        self.table_diff_run_button.clicked.connect(self.run_diff)
+        self.table_diff_open_local_button = QPushButton(
+            self._("table_diff_open_local_button"))
+        self.table_diff_open_local_button.setToolTip(
+            self._("table_diff_open_local_tooltip"))
+        self.table_diff_open_local_button.clicked.connect(self.open_local)
+        row.addWidget(self.table_diff_run_button)
+        row.addWidget(self.table_diff_open_local_button)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self.summary_label = QLabel(
+            self._("table_diff_summary_placeholder"))
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setForegroundRole(
+            QPalette.ColorRole.PlaceholderText)
+        layout.addWidget(self.summary_label)
+
+        self.table_diff_log = QPlainTextEdit()
+        self.table_diff_log.setReadOnly(True)
+        self.table_diff_log.setToolTip(self._("table_diff_log_tooltip"))
+        layout.addWidget(self.table_diff_log, stretch=1)
+        self._out = None
+        self.setWidget(content)
+
+    def choose_a(self):
+        d, _filter = QFileDialog.getOpenFileName(
+            self, self._("table_diff_a_label"))
+        if d:
+            self.table_diff_a_edit.setText(d)
+
+    def choose_b(self):
+        d, _filter = QFileDialog.getOpenFileName(
+            self, self._("table_diff_b_label"))
+        if d:
+            self.table_diff_b_edit.setText(d)
+
+    def choose_output(self):
+        d = QFileDialog.getExistingDirectory(
+            self, self._("table_diff_output_label"))
+        if d:
+            self.table_diff_output_edit.setText(d)
+
+    def run_diff(self):
+        from sieve_canon import run_table_diff
+        a = self.table_diff_a_edit.text()
+        b = self.table_diff_b_edit.text()
+        out = self.table_diff_output_edit.text()
+        key = self.table_diff_key_edit.text().strip()
+        if not a or not b or not out or not key:
+            return
+        try:
+            receipt = run_table_diff(
+                Path(a), Path(b),
+                tuple(k.strip() for k in key.split(",") if k.strip()),
+                Path(out),
+                progress=lambda m: self.table_diff_log.appendPlainText(m))
+            s = receipt.get("summary") or {}
+            self.summary_label.setText(self._(
+                "table_diff_done", same=s.get("rows_same", 0),
+                changed=s.get("rows_changed", 0),
+                removed=s.get("rows_removed", 0),
+                added=s.get("rows_added", 0),
+                duplicate_keys=s.get("duplicate_keys", 0)))
+            self.summary_label.setForegroundRole(QPalette.ColorRole.Text)
+            self._out = Path(out)
+        except Exception as e:  # noqa: BLE001 - the page never crashes
+            self.table_diff_log.appendPlainText(f"{type(e).__name__}: {e}")
+
+    def open_local(self):
+        if self._out is None:
+            return
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl.fromLocalFile(
+            str(self._out / "local")))
+
+
 class ManifestPage(QScrollArea):
     """The v2.2.0 file-list page (request §3.7): pick an input folder
     and an output folder, optionally a key file and the browser check
@@ -2187,6 +2586,20 @@ class MainWindow(QMainWindow):
         self._add_page("rename", self.rename_page, "rename_tab")
         self.draw_page = DrawPage(self.lang)
         self._add_page("draw", self.draw_page, "draw_tab")
+
+        # Canon 2.3 (request §3.7): the three new pages join at the
+        # end of the existing order - the metadata clean, the
+        # normalization, the table comparison.  The scan operation row
+        # stays hidden on them (they are not in _scan_page_keys, the
+        # §3.7-2 rule); the product name stays out of the UI.
+        self.clean_page = CleanPage(self.lang)
+        self._add_page("clean", self.clean_page, "clean_tab")
+        self.normalize_page = NormalizePage(self.lang)
+        self._add_page("normalize", self.normalize_page,
+                       "normalize_tab")
+        self.table_diff_page = TableDiffPage(self.lang)
+        self._add_page("table_diff", self.table_diff_page,
+                       "table_diff_tab")
 
         # --- the body: the sidebar on the left, the page on the right
         body = QWidget()
@@ -3562,7 +3975,7 @@ def main():
     # The stdout/stderr guard covers the --windowed builds, where the
     # streams may be None and the self-check's prints would crash.
     if len(sys.argv) > 2 and \
-            sys.argv[1] in ("gate", "cohort", "manifest", "pack", "draw") \
+            sys.argv[1] in ("gate", "cohort", "manifest", "pack", "draw", "normalize", "clean", "table-diff") \
             and "--self-check" in sys.argv[2:]:
         if sys.stdout is None:
             sys.stdout = open(os.devnull, "w", encoding="utf-8")
