@@ -6115,6 +6115,20 @@ def _gate_main(argv: List[str]) -> int:
                    help="the CSV column(s) to sort by, comma-separated "
                         "(§3.4-4; the default keeps the row order)")
     n.add_argument("--self-check", action="store_true")
+    # Canon 2.3 (§3.5): the table comparison by the key columns.  The
+    # receipt carries the counts and the checksums only; the values,
+    # the key values and the column names stay in local/.
+    td = sub.add_parser("table-diff",
+                        help="compare two tables by key columns "
+                             "(Canon 2.3)")
+    td.add_argument("csv_a", type=Path, nargs="?", default=None)
+    td.add_argument("csv_b", type=Path, nargs="?", default=None)
+    td.add_argument("--key", required=True, metavar="COLS")
+    td.add_argument("-o", "--output", type=Path, default=None)
+    td.add_argument("--from-encoding-a", default=None, metavar="NAME")
+    td.add_argument("--from-encoding-b", default=None, metavar="NAME")
+    td.add_argument("--delimiter", default=",", metavar="CHAR")
+    td.add_argument("--self-check", action="store_true")
     args = parser.parse_args(argv)
 
     if args.cmd == "manifest":
@@ -6269,6 +6283,39 @@ def _gate_main(argv: List[str]) -> int:
         print("Handoff: %s" % (args.output / "handoff"))
         s = receipt["summary"]
         return 1 if s["refused"] else 0
+    if args.cmd == "table-diff":
+        if args.self_check:
+            # the same exit contract as gate/cohort/Seal (0/1/2)
+            from sieve_canon import table_diff_self_check
+            result = table_diff_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
+        if args.csv_a is None or args.csv_b is None or args.output is None:
+            parser.error("table-diff needs two CSV files and "
+                         "-o/--output")
+        from sieve_canon import run_table_diff, CNTableRefusal
+        key_cols = tuple(args.key.split(","))
+        try:
+            receipt = run_table_diff(
+                args.csv_a, args.csv_b, key_cols, args.output,
+                from_encoding_a=args.from_encoding_a,
+                from_encoding_b=args.from_encoding_b,
+                delimiter=args.delimiter, progress=print)
+        except CNTableRefusal as e:
+            # the closed words on stdout, exit 2 (the run refused)
+            line = "Refused: %s (%s)" % (e.side or "input", e.reason)
+            if e.candidates:
+                line += " candidates: %s" % ",".join(e.candidates)
+            print(line)
+            return 2
+        except ValueError as e:
+            parser.error(str(e))  # exit 2 (a missing key column, ...)
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Report: %s" % (args.output / "local"
+                              / "table-diff-report.html"))
+        return 0
     if args.cmd == "unpack":
         if args.zip_file is None or args.output is None:
             parser.error("unpack needs a zip file and -o/--output")

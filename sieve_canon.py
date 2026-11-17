@@ -19,6 +19,7 @@ reasons (`parse_failed`, `unreadable`, `not_applicable`, ...).
 import codecs
 import csv
 import hashlib
+import html
 import io
 import json
 import re
@@ -444,6 +445,30 @@ def table_diff_self_check(progress=None) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# the shared decode resolution (§3.2-3): the BOM codec, the strict
+# UTF-8, then the named codec - never a guess.  The normalize command
+# and the table-diff reader use the same rules.
+
+def _cn_decode_text(data: bytes, from_encoding=None):
+    """Returns (text, reason, candidates): a None text is a refusal
+    with the reason word and the strictly-readable candidates."""
+    bom, body = _cn_detect_bom(data)
+    if bom is not None:
+        text = _cn_strict_decode(body, bom)
+        if text is None:
+            return None, "parse_failed", None
+        return text, None, None
+    if _cn_strict_decode(data, "utf-8") is not None:
+        return data.decode("utf-8"), None, None
+    if from_encoding:
+        text = _cn_strict_decode(data, from_encoding)
+        if text is None:
+            return None, "parse_failed", None
+        return text, None, None
+    return None, "encoding_unknown", _cn_strict_candidates(data)
+
+
+# ---------------------------------------------------------------------------
 # the normalize run (request §3.2)
 
 def _cn_sha(data: bytes) -> str:
@@ -560,29 +585,11 @@ def _cn_normalize_one(rel, data, from_encoding, newline, nfc, check,
         "output_sha256": None,
         "observation": obs,
     }
-    # the decode resolution (§3.2-3): BOM codec, strict UTF-8, then
-    # the named codec - never a guess
-    bom = obs["bom"]
-    body = _cn_detect_bom(data)[1]
-    text = None
-    if bom is not None:
-        text = _cn_strict_decode(body, bom)
-        if text is None:
-            item["status"] = "refused"
-            item["reason"] = "parse_failed"
-            return item, None
-    elif obs["utf8_valid"]:
-        text = data.decode("utf-8")
-    elif from_encoding:
-        text = _cn_strict_decode(data, from_encoding)
-        if text is None:
-            item["status"] = "refused"
-            item["reason"] = "parse_failed"
-            return item, None
-    else:
+    text, reason, candidates = _cn_decode_text(data, from_encoding)
+    if text is None:
         item["status"] = "refused"
-        item["reason"] = "encoding_unknown"
-        item["candidates"] = _cn_strict_candidates(data)
+        item["reason"] = reason
+        item["candidates"] = candidates
         return item, None
 
     suffix = Path(rel).suffix.lower()
@@ -617,3 +624,195 @@ def _cn_normalize_one(rel, data, from_encoding, newline, nfc, check,
     item["output_sha256"] = _cn_sha(out_bytes)
     item["output_bytes"] = len(out_bytes)
     return item, out_bytes
+
+# ---------------------------------------------------------------------------
+# the table diff (request §3.5)
+
+class CNTableRefusal(ValueError):
+    """A whole-run refusal of the table diff: the side (a/b), the
+    closed reason word and the strictly-readable candidates."""
+
+    def __init__(self, reason, candidates=None, side=None):
+        self.reason = reason
+        self.candidates = candidates
+        self.side = side
+        super().__init__(reason)
+
+
+def _cn_read_csv_side(path, from_encoding, delimiter):
+    """Read one side with the §3.2 / §3.4 rules: the decode resolution,
+    then the CSV normalization (the LF form) whose bytes give the
+    normalized checksum.  Returns (rows, normalized_sha256)."""
+    data = Path(path).read_bytes()
+    text, reason, candidates = _cn_decode_text(data, from_encoding)
+    if text is None:
+        raise CNTableRefusal(reason, candidates,
+                             side=Path(path).name)
+    normalized, _info = _cn_csv_normalize_text(text, delimiter=delimiter)
+    norm_sha = _cn_sha(normalized.encode("utf-8"))
+    try:
+        rows = list(csv.reader(io.StringIO(normalized, newline=""),
+                               delimiter=delimiter, strict=True))
+    except csv.Error as e:
+        raise CNTableRefusal("parse_failed",
+                             side=Path(path).name) from e
+    return rows, norm_sha
+
+
+def run_table_diff(path_a, path_b, key_columns, output_dir, *,
+                   from_encoding_a=None, from_encoding_b=None,
+                   delimiter=",", progress=None) -> dict:
+    """The `table-diff` command (§3.5).  Two CSVs are read with the
+    shared rules, keyed by the named columns, and every key lands in
+    one of the closed 5 states.  The receipt carries the counts, the
+    column-difference counts and the normalized checksums only - the
+    values, the key values and the column names stay in local/
+    (§3.5-5).  A missing key column refuses (exit 2, §3.5-6)."""
+    from sieve_tray import __version__, _gate_digest, _gate_norm_json, \
+        _gate_write_atomic
+    tell = progress or (lambda _m: None)
+    a_path = Path(path_a)
+    b_path = Path(path_b)
+    out = Path(output_dir)
+    if not a_path.is_file():
+        raise ValueError("table-diff: %s is not a file" % a_path)
+    if not b_path.is_file():
+        raise ValueError("table-diff: %s is not a file" % b_path)
+    if len(delimiter) != 1:
+        raise ValueError("table-diff: --delimiter must be one character")
+    if not key_columns:
+        raise ValueError("table-diff: --key needs at least one column")
+    rows_a, sha_a = _cn_read_csv_side(a_path, from_encoding_a, delimiter)
+    rows_b, sha_b = _cn_read_csv_side(b_path, from_encoding_b, delimiter)
+    if not rows_a or not rows_b:
+        raise ValueError("table-diff: an input has no header row")
+    header_a, body_a = rows_a[0], rows_a[1:]
+    header_b, body_b = rows_b[0], rows_b[1:]
+    idx_a, idx_b = [], []
+    for name in key_columns:
+        if name not in header_a:
+            raise ValueError("table-diff: the key column %r is not in "
+                             "%s" % (name, a_path.name))
+        if name not in header_b:
+            raise ValueError("table-diff: the key column %r is not in "
+                             "%s" % (name, b_path.name))
+        idx_a.append(header_a.index(name))
+        idx_b.append(header_b.index(name))
+    common_idx = [(header_a.index(n), header_b.index(n))
+                  for n in header_a if n in header_b]
+    a_only = [n for n in header_a if n not in header_b]
+    b_only = [n for n in header_b if n not in header_a]
+
+    def keyof(row, idx):
+        return tuple((row[i] if i < len(row) else "") for i in idx)
+
+    def cell(row, i):
+        return row[i] if i < len(row) else ""
+
+    from collections import Counter
+    count_a = Counter(keyof(r, idx_a) for r in body_a if r)
+    count_b = Counter(keyof(r, idx_b) for r in body_b if r)
+    dup = {k for k, c in count_a.items() if c > 1}
+    dup |= {k for k, c in count_b.items() if c > 1}
+    map_a = {}
+    for r in body_a:
+        if not r:
+            continue
+        k = keyof(r, idx_a)
+        if k in dup:
+            continue
+        map_a[k] = r
+    same = changed = added = 0
+    local_rows = []
+    for r in body_b:
+        if not r:
+            continue
+        k = keyof(r, idx_b)
+        if k in dup:
+            continue
+        if k in map_a:
+            ra = map_a.pop(k)
+            diffs = [(header_a[ci], cell(ra, ci), cell(r, cb))
+                     for ci, cb in common_idx
+                     if cell(ra, ci) != cell(r, cb)]
+            if diffs:
+                changed += 1
+                local_rows.append(("changed", k, diffs))
+            else:
+                same += 1
+        else:
+            added += 1
+            local_rows.append(("added", k, []))
+    removed = len(map_a)
+    for k, r in map_a.items():
+        local_rows.append(("removed", k, []))
+    receipt = {
+        "receipt_version": CN_RECEIPT_VERSION,
+        "kind": "sieve-table-diff",
+        "tool": {"name": "sieve-tray", "version": __version__},
+        "engines": {},
+        "settings": {
+            "a": str(a_path),
+            "b": str(b_path),
+            # §3.5-5: the column names never enter handoff/ - the key
+            # columns ride as the indices, in A's column order
+            "key_columns": list(idx_a),
+            "delimiter": delimiter,
+            "from_encoding_a": from_encoding_a,
+            "from_encoding_b": from_encoding_b,
+        },
+        "items": [],
+        "summary": {
+            "rows_same": same,
+            "rows_changed": changed,
+            "rows_removed": removed,
+            "rows_added": added,
+            "duplicate_keys": len(dup),
+            "columns_common": len(common_idx),
+            "columns_a_only": len(a_only),
+            "columns_b_only": len(b_only),
+            "a_normalized_sha256": sha_a,
+            "b_normalized_sha256": sha_b,
+        },
+    }
+    # the local report: the row-level states, the changed columns with
+    # the names and both values (§3.5-5) - written before the receipt
+    # (the receipt stays LAST, the existing rule)
+    lines = ["<!doctype html><html><head><meta charset=\"utf-8\">"
+             "<title>table-diff report</title></head><body>",
+             "<h1>table-diff report</h1>",
+             "<p>A: %s</p><p>B: %s</p>"
+             % (html.escape(str(a_path)), html.escape(str(b_path))),
+             "<p>key columns: %s</p>"
+             % html.escape(", ".join(str(k) for k in key_columns))]
+    if a_only or b_only:
+        lines.append("<p>columns only in A: %s</p>"
+                     % html.escape(", ".join(a_only) or "(none)"))
+        lines.append("<p>columns only in B: %s</p>"
+                     % html.escape(", ".join(b_only) or "(none)"))
+    lines.append("<table border=\"1\"><tr><th>state</th>"
+                 "<th>key</th><th>changed column</th>"
+                 "<th>value in A</th><th>value in B</th></tr>")
+    for state, k, diffs in local_rows:
+        key_txt = html.escape(" | ".join(k))
+        if diffs:
+            for name, va, vb in diffs:
+                lines.append("<tr><td>%s</td><td>%s</td><td>%s</td>"
+                             "<td>%s</td><td>%s</td></tr>"
+                             % (state, key_txt, html.escape(name),
+                                html.escape(va), html.escape(vb)))
+        else:
+            lines.append("<tr><td>%s</td><td>%s</td><td></td>"
+                         "<td></td><td></td></tr>" % (state, key_txt))
+    lines.append("</table></body></html>")
+    local = out / "local" / "table-diff-report.html"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_text("\n".join(lines), encoding="utf-8")
+    tell("TableDiff: report %s" % local)
+    receipt["digest"] = _gate_digest(receipt)
+    _gate_write_atomic(out / "handoff" / "table-diff-receipt.json",
+                       _gate_norm_json(receipt).encode("utf-8"))
+    tell("TableDiff: receipt %s"
+         % (out / "handoff" / "table-diff-receipt.json"))
+    return receipt
+
