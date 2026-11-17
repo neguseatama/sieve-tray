@@ -6115,6 +6115,15 @@ def _gate_main(argv: List[str]) -> int:
                    help="the CSV column(s) to sort by, comma-separated "
                         "(§3.4-4; the default keeps the row order)")
     n.add_argument("--self-check", action="store_true")
+    # Canon 2.3 (§3.1): the metadata clean.  The originals are never
+    # written; the removed values stay in local/ (never handoff/).
+    cl = sub.add_parser("clean", help="strip metadata from JPEG, PNG "
+                                      "and Office files (Canon 2.3)")
+    cl.add_argument("input", type=Path, nargs="?", default=None)
+    cl.add_argument("-o", "--output", type=Path, default=None)
+    cl.add_argument("--no-paths", action="store_true",
+                    help="the receipt and the copies carry no names")
+    cl.add_argument("--self-check", action="store_true")
     # Canon 2.3 (§3.5): the table comparison by the key columns.  The
     # receipt carries the counts and the checksums only; the values,
     # the key values and the column names stay in local/.
@@ -6281,6 +6290,30 @@ def _gate_main(argv: List[str]) -> int:
                 print("Refused: %s (%s)" % (it["path"], it["reason"]))
         print("Receipt digest: %s" % receipt["digest"])
         print("Handoff: %s" % (args.output / "handoff"))
+        s = receipt["summary"]
+        return 1 if s["refused"] else 0
+    if args.cmd == "clean":
+        if args.self_check:
+            # the same exit contract as gate/cohort/Seal (0/1/2)
+            from sieve_canon import clean_self_check
+            result = clean_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
+        if args.input is None or args.output is None:
+            parser.error("clean needs an input and -o/--output")
+        from sieve_canon import run_clean
+        try:
+            receipt = run_clean(args.input, args.output,
+                                no_paths=args.no_paths,
+                                progress=print)
+        except ValueError as e:
+            parser.error(str(e))
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Handoff: %s" % (args.output / "handoff"))
+        print("Report:  %s" % (args.output / "local"
+                               / "clean-report.html"))
         s = receipt["summary"]
         return 1 if s["refused"] else 0
     if args.cmd == "table-diff":

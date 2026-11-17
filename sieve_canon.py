@@ -816,3 +816,915 @@ def run_table_diff(path_a, path_b, key_columns, output_dir, *,
          % (out / "handoff" / "table-diff-receipt.json"))
     return receipt
 
+
+
+# ---------------------------------------------------------------------------
+# the metadata clean (request §3.1) - JPEG / PNG / Office, stdlib only
+# (no PIL: the byte structures are handled directly, §2-3)
+
+import struct as _struct
+
+
+def _cn_zero_categories():
+    return {c: 0 for c in CN_META_CATEGORIES}
+
+
+# --- PNG ---------------------------------------------------------------
+
+_CN_PNG_SIG = b"\x89PNG\r\n\x1a\n"
+_CN_PNG_KEEP = frozenset({
+    "IHDR", "PLTE", "IDAT", "IEND",                    # the mandatory ones
+    "tRNS", "gAMA", "cHRM", "sRGB", "iCCP", "sBIT",    # the display ones
+    "bKGD", "pHYs"})
+
+
+def _cn_png_chunks(data: bytes):
+    """Parse the PNG chunk list; every CRC is re-checked (a mismatch
+    is a broken file -> parse_failed)."""
+    import zlib as _zlib
+    if not data.startswith(_CN_PNG_SIG):
+        raise ValueError("not a PNG")
+    pos = 8
+    chunks = []
+    while pos + 8 <= len(data):
+        length = int.from_bytes(data[pos:pos + 4], "big")
+        ctype = data[pos + 4:pos + 8]
+        end = pos + 8 + length
+        payload = data[pos + 8:end]
+        crc = data[end:end + 4]
+        if len(payload) != length or len(crc) != 4:
+            raise ValueError("PNG: truncated chunk")
+        if _zlib.crc32(data[pos + 4:end]) != int.from_bytes(crc, "big"):
+            raise ValueError("PNG: CRC mismatch")
+        chunks.append((ctype.decode("latin-1"), payload))
+        if ctype == b"IEND":
+            return chunks
+        pos = end + 4
+    raise ValueError("PNG: no IEND")
+
+
+def _cn_png_chunk_bytes(ctype: bytes, payload: bytes) -> bytes:
+    import zlib as _zlib
+    return (len(payload).to_bytes(4, "big") + ctype + payload
+            + _zlib.crc32(ctype + payload).to_bytes(4, "big"))
+
+
+_CN_PNG_KEYWORD_CATEGORIES = {
+    "author": "author",
+    "software": "software",
+    "creation time": "time",
+    "date created": "time",
+    "description": "title_subject",
+    "comment": "title_subject",
+    "title": "title_subject",
+    "subject": "title_subject",
+    "keywords": "title_subject",
+}
+
+
+def _cn_png_observe(data: bytes):
+    """The metadata observation of a PNG (§3.1-9/§3.1-10): the counts
+    per category plus the removed-value samples for the local report."""
+    counts = _cn_zero_categories()
+    values = []
+    for ctype, payload in _cn_png_chunks(data):
+        if ctype == "tEXt":
+            kw, _sep, text = payload.partition(b"\x00")
+            cat = _CN_PNG_KEYWORD_CATEGORIES.get(
+                kw.decode("latin-1").strip().lower(), "custom")
+            counts[cat] += 1
+            values.append((cat, text.decode("latin-1")))
+        elif ctype == "iTXt":
+            kw, _sep, rest = payload.partition(b"\x00")
+            cat = _CN_PNG_KEYWORD_CATEGORIES.get(
+                kw.decode("latin-1").strip().lower(), "custom")
+            counts[cat] += 1
+            values.append((cat, kw.decode("latin-1")))
+        elif ctype == "zTXt":
+            kw, _sep, _rest = payload.partition(b"\x00")
+            cat = _CN_PNG_KEYWORD_CATEGORIES.get(
+                kw.decode("latin-1").strip().lower(), "custom")
+            counts[cat] += 1
+            values.append((cat, kw.decode("latin-1")))
+        elif ctype == "tIME":
+            counts["time"] += 1
+            values.append(("time", payload.hex()))
+        elif ctype == "eXIf":
+            ec, ev = _cn_exif_categories(payload[2:] if payload[:1] in
+                                         (b"I", b"M") else payload)
+            for c in CN_META_CATEGORIES:
+                counts[c] += ec[c]
+            values.extend(ev)
+    return counts, values
+
+
+def _cn_png_clean(data: bytes):
+    """§3.1-4/§3.1-5: the text chunks, the eXIf, the tIME and every
+    ancillary chunk outside the keep list go; the mandatory and the
+    display chunks stay (the critical unknown chunks stay too - they
+    may be needed to decode).  The rebuilt chunks carry fresh CRCs."""
+    removed = []
+    kept_core = []
+    out = [_CN_PNG_SIG]
+    for ctype, payload in _cn_png_chunks(data):
+        ancillary = ctype[0].islower()
+        if ctype in _CN_PNG_KEEP:
+            chunk = _cn_png_chunk_bytes(ctype.encode("latin-1"), payload)
+            out.append(chunk)
+            if ctype in ("IHDR", "PLTE", "IDAT", "IEND"):
+                kept_core.append(chunk)
+            continue
+        if ctype in ("tEXt", "iTXt", "zTXt", "eXIf", "tIME") or ancillary:
+            removed.append((ctype, payload))
+            continue
+        # an unknown critical chunk: keep (decode safety)
+        chunk = _cn_png_chunk_bytes(ctype.encode("latin-1"), payload)
+        out.append(chunk)
+        if ctype in ("IHDR", "PLTE", "IDAT", "IEND"):
+            kept_core.append(chunk)
+    return (b"".join(out), removed,
+            _cn_sha(b"".join(kept_core)))
+
+
+# --- EXIF (shared by the JPEG APP1 and the PNG eXIf) -------------------
+
+_CN_EXIF_TAG_CATEGORIES = {
+    0x013A: "author",          # Artist
+    0x8298: "author",          # Copyright
+    0x9C9B: "author",          # XPAuthor
+    0x0132: "time",            # DateTime
+    0x9003: "time",            # DateTimeOriginal
+    0x9004: "time",            # DateTimeDigitized
+    0x0131: "software",        # Software
+    0x010F: "device",          # Make
+    0x0110: "device",          # Model
+    0xA431: "device",          # BodySerialNumber
+    0xA433: "device",          # LensMake
+    0xA434: "device",          # LensModel
+    0xA435: "device",          # LensSerialNumber
+    0x010E: "title_subject",   # ImageDescription
+    0x9C9C: "title_subject",   # XPComment
+    0x9C9D: "title_subject",   # XPKeywords
+    0x9C9E: "title_subject",   # XPSubject
+    0x9C9F: "title_subject",   # XPTitle
+}
+
+
+def _cn_tiff_entries(payload: bytes, off: int):
+    # the byteorder for int.from_bytes is "little"/"big" (struct's "<"
+    # form is not accepted there)
+    bo = "little" if payload[0:2] == b"II" else "big"
+    n = int.from_bytes(payload[off:off + 2], bo)
+    entries = []
+    for i in range(n):
+        e = off + 2 + 12 * i
+        tag = int.from_bytes(payload[e:e + 2], bo)
+        typ = int.from_bytes(payload[e + 2:e + 4], bo)
+        cnt = int.from_bytes(payload[e + 4:e + 8], bo)
+        vf = payload[e + 8:e + 12]
+        entries.append((tag, typ, cnt, vf))
+    nxt_off = off + 2 + 12 * n
+    nxt = int.from_bytes(payload[nxt_off:nxt_off + 4], bo) \
+        if nxt_off + 4 <= len(payload) else 0
+    return entries, nxt, bo
+
+
+def _cn_tiff_value(payload: bytes, bo: str, typ: int, cnt: int, vf):
+    sizes = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4,
+             10: 8, 11: 4, 12: 8}
+    total = sizes.get(typ, 1) * cnt
+    if total <= 4:
+        raw = vf[:total]
+    else:
+        off = int.from_bytes(vf, bo)
+        raw = payload[off:off + total]
+    return raw
+
+
+def _cn_exif_categories(tiff: bytes):
+    """The category counts of one EXIF TIFF blob (no Exif\\0\\0
+    prefix): IFD0 + the EXIF sub-IFD + the GPS sub-IFD + IFD1."""
+    counts = _cn_zero_categories()
+    values = []
+    orientation = None
+    try:
+        if len(tiff) < 8 or tiff[0:2] not in (b"II", b"MM"):
+            counts["custom"] += 1
+            return counts, values, orientation
+        ifd0_off = int.from_bytes(tiff[4:8],
+                                  "little" if tiff[0:2] == b"II"
+                                  else "big")
+        entries, nxt, bo = _cn_tiff_entries(tiff, ifd0_off)
+        sub_exif = sub_gps = None
+        for tag, typ, cnt, vf in entries:
+            if tag == 0x0112:
+                raw = _cn_tiff_value(tiff, bo, typ, cnt, vf)
+                if len(raw) >= 2:
+                    orientation = int.from_bytes(raw[:2], bo)
+                continue          # the orientation is display, no count
+            if tag == 0x8769:
+                sub_exif = int.from_bytes(_cn_tiff_value(
+                    tiff, bo, typ, cnt, vf), bo)
+                continue
+            if tag == 0x8825:
+                sub_gps = int.from_bytes(_cn_tiff_value(
+                    tiff, bo, typ, cnt, vf), bo)
+                continue
+            cat = _CN_EXIF_TAG_CATEGORIES.get(tag, "custom")
+            counts[cat] += 1
+            if cat == "author" and tag == 0x013A:
+                raw = _cn_tiff_value(tiff, bo, typ, cnt, vf)
+                values.append(("author", raw.decode("latin-1")))
+        if sub_exif:
+            s_entries, _n2, s_bo = _cn_tiff_entries(tiff, sub_exif)
+            for tag, typ, cnt, vf in s_entries:
+                if tag == 0x0112:
+                    raw = _cn_tiff_value(tiff, s_bo, typ, cnt, vf)
+                    if len(raw) >= 2 and orientation is None:
+                        orientation = int.from_bytes(raw[:2], s_bo)
+                    continue
+                cat = _CN_EXIF_TAG_CATEGORIES.get(tag, "custom")
+                counts[cat] += 1
+                if cat == "author" and tag == 0x013A:
+                    raw = _cn_tiff_value(tiff, s_bo, typ, cnt, vf)
+                    values.append(("author", raw.decode("latin-1")))
+        if sub_gps:
+            g_entries, _n3, g_bo = _cn_tiff_entries(tiff, sub_gps)
+            for tag, _typ, _cnt, _vf in g_entries:
+                if tag == 0x0007:
+                    counts["time"] += 1
+                else:
+                    counts["location"] += 1
+        if nxt:
+            i_entries, _n4, i_bo = _cn_tiff_entries(tiff, nxt)
+            thumb_off = thumb_len = None
+            for tag, typ, cnt, vf in i_entries:
+                if tag == 0x0201:
+                    thumb_off = int.from_bytes(
+                        _cn_tiff_value(tiff, i_bo, typ, cnt, vf), i_bo)
+                elif tag == 0x0202:
+                    thumb_len = int.from_bytes(
+                        _cn_tiff_value(tiff, i_bo, typ, cnt, vf), i_bo)
+            if thumb_off is not None:
+                counts["thumbnail"] += 1
+                if thumb_len:
+                    blob = tiff[thumb_off:thumb_off + thumb_len]
+                    values.append(("thumbnail",
+                                   blob.decode("latin-1")))
+    except (IndexError, ValueError, _struct.error):
+        counts["custom"] += 1
+    return counts, values, orientation
+
+
+def _cn_exif_orientation(app1_payload: bytes):
+    """The Orientation of one JPEG APP1 payload (Exif\\0\\0 + TIFF),
+    or None."""
+    tiff = app1_payload[6:]
+    _c, _v, orientation = _cn_exif_categories(tiff)
+    return orientation
+
+
+def _cn_minimal_exif(orientation: int) -> bytes:
+    """§3.1-3: the orientation-only minimal EXIF (the display keeps
+    its rotation; nothing else rides along)."""
+    return (b"Exif\x00\x00" + b"II" + b"\x2a\x00" + b"\x08\x00\x00\x00"
+            + b"\x01\x00" + b"\x12\x01" + b"\x03\x00" + b"\x01\x00\x00\x00"
+            + _struct.pack("<H", orientation) + b"\x00\x00"
+            + b"\x00\x00\x00\x00")
+
+
+# --- XMP (the APP1 non-EXIF form) --------------------------------------
+
+_CN_XMP_PATTERNS = (
+    ("author", re.compile(r"<(dc:creator|xmpRights:Owner|photoshop:Author)"
+                          r"[\s/>]")),
+    ("time", re.compile(r"<(xmp:CreateDate|xmp:ModifyDate|xmp:MetadataDate"
+                        r"|photoshop:DateCreated|exif:DateTimeOriginal)"
+                        r"[\s/>]")),
+    ("software", re.compile(r"<(xmp:CreatorTool|photoshop:Source)[\s/>]")),
+    ("location", re.compile(r"<(photoshop:City|photoshop:State"
+                            r"|photoshop:Country|exif:GPSLatitude)[\s/>]")),
+    ("device", re.compile(r"<(tiff:Make|tiff:Model)[\s/>]")),
+    ("title_subject",
+     re.compile(r"<(dc:title|dc:description|dc:subject"
+                r"|photoshop:Headline|photoshop:Caption)[\s/>]")),
+)
+_CN_XMP_ANY_ELEMENT = re.compile(r"<([A-Za-z0-9_-]+:)?[A-Za-z0-9_-]+[\s/>]")
+
+
+def _cn_xmp_categories(xml_text: str):
+    counts = _cn_zero_categories()
+    mapped = 0
+    for cat, pattern in _CN_XMP_PATTERNS:
+        n = len(pattern.findall(xml_text))
+        counts[cat] += n
+        mapped += n
+    counts["custom"] += max(0, len(_CN_XMP_ANY_ELEMENT.findall(xml_text))
+                            - mapped)
+    return counts
+
+
+# --- IPTC (the APP13 8BIM form) ----------------------------------------
+
+_CN_IPTC_CATEGORIES = {
+    (1, 0x32): "author",         # By-line
+    (1, 0x74): "author",         # CopyrightNotice
+    (1, 0x05): "title_subject",  # ObjectName
+    (1, 0x19): "title_subject",  # Keywords
+    (2, 0x78): "title_subject",  # Caption
+    (1, 0x37): "location",       # Location
+    (2, 0x37): "time",           # DateCreated
+}
+
+
+def _cn_iptc_categories(payload: bytes):
+    counts = _cn_zero_categories()
+    values = []
+    data = payload
+    pos = 0
+    while True:
+        pos = data.find(b"8BIM", pos)
+        if pos < 0:
+            break
+        pos += 4
+        if pos + 2 > len(data):
+            break
+        pos += 2                        # the resource id
+        nlen = data[pos]
+        pos += 1 + nlen
+        if (1 + nlen) % 2:
+            pos += 1                    # the name is padded to even
+        if pos + 4 > len(data):
+            break
+        size = int.from_bytes(data[pos:pos + 4], "big")
+        pos += 4
+        body = data[pos:pos + size]
+        pos += size + (size % 2)
+        if size == 0 or len(body) != size:
+            continue
+        q = 0
+        while q + 5 <= len(body):
+            if body[q] != 0x1C:
+                break
+            rec = body[q + 1]
+            ds = body[q + 2]
+            ln = int.from_bytes(body[q + 3:q + 5], "big")
+            val = body[q + 5:q + 5 + ln]
+            cat = _CN_IPTC_CATEGORIES.get((rec, ds), "custom")
+            counts[cat] += 1
+            values.append((cat, val.decode("latin-1")))
+            q += 5 + ln
+    return counts, values
+
+
+# --- JPEG --------------------------------------------------------------
+
+_CN_JPEG_MARKER_NAMES = {0xC4: "DHT", 0xDB: "DQT", 0xDD: "DRI", 0xDA: "SOS",
+                         0xFE: "COM", 0xC8: "JPG", 0xCC: "DAC", 0xDC: "DNL"}
+for _m in range(0xC0, 0xD0):
+    if _m not in (0xC4, 0xC8, 0xCC):
+        _CN_JPEG_MARKER_NAMES[_m] = "SOF%d" % (_m - 0xC0)
+for _i in range(16):
+    _CN_JPEG_MARKER_NAMES[0xE0 + _i] = "APP%d" % _i
+for _i in range(14):
+    _CN_JPEG_MARKER_NAMES[0xF0 + _i] = "JPG%d" % _i
+
+
+def _cn_seg(marker: int, payload: bytes) -> bytes:
+    """One JPEG segment with its marker and the 2-byte length."""
+    return (bytes([0xFF, marker])
+            + (len(payload) + 2).to_bytes(2, "big") + payload)
+
+
+def _cn_jpeg_segments(data: bytes):
+    """Parse the JPEG segment list.  Each entry is (name, payload,
+    raw); the entropy scan after SOS rides as its own SCAN entry with
+    the raw bytes (FF00 stuffings and RST markers included)."""
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        raise ValueError("not a JPEG")
+    segs = [("SOI", b"", b"\xff\xd8")]
+    pos = 2
+    n = len(data)
+    eoi_seen = False
+    while pos < n:
+        if data[pos] != 0xFF:
+            raise ValueError("JPEG: expected a marker at byte %d" % pos)
+        while pos < n and data[pos] == 0xFF:
+            pos += 1
+        if pos >= n:
+            raise ValueError("JPEG: truncated")
+        marker = data[pos]
+        pos += 1
+        if marker == 0xD9:
+            segs.append(("EOI", b"", b"\xff\xd9"))
+            eoi_seen = True
+            break
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            segs.append(("RST", b"", data[pos - 2:pos]))
+            continue
+        if pos + 2 > n:
+            raise ValueError("JPEG: truncated")
+        seg_len = int.from_bytes(data[pos:pos + 2], "big")
+        if seg_len < 2:
+            raise ValueError("JPEG: bad segment length")
+        payload = data[pos + 2:pos + seg_len]
+        if len(payload) != seg_len - 2:
+            raise ValueError("JPEG: truncated segment")
+        name = _CN_JPEG_MARKER_NAMES.get(marker, "UNK%02X" % marker)
+        segs.append((name, payload, data[pos - 2:pos + seg_len]))
+        pos += seg_len
+        if marker == 0xDA:
+            q = pos
+            while q < n:
+                if data[q] != 0xFF:
+                    q += 1
+                    continue
+                nxt = data[q + 1] if q + 1 < n else None
+                if nxt == 0x00 or (nxt is not None
+                                   and 0xD0 <= nxt <= 0xD7):
+                    q += 2
+                    continue
+                break
+            segs.append(("SCAN", b"", data[pos:q]))
+            pos = q
+    if not eoi_seen:
+        raise ValueError("JPEG: no EOI")
+    return segs
+
+
+_CN_JPEG_XMP_PREFIX = b"http://ns.adobe.com/xap/1.0/\x00"
+
+
+def _cn_jpeg_observe(data: bytes):
+    """The metadata observation of a JPEG (§3.1-9/§3.1-10)."""
+    counts = _cn_zero_categories()
+    values = []
+    for name, payload, _raw in _cn_jpeg_segments(data):
+        if name == "COM":
+            counts["custom"] += 1
+            values.append(("custom", payload.decode("latin-1")))
+        elif name == "APP1":
+            if payload.startswith(b"Exif\x00\x00"):
+                ec, ev, _o = _cn_exif_categories(payload[6:])
+                for c in CN_META_CATEGORIES:
+                    counts[c] += ec[c]
+                values.extend(ev)
+            elif payload.startswith(_CN_JPEG_XMP_PREFIX):
+                xml = payload[len(_CN_JPEG_XMP_PREFIX):].decode(
+                    "utf-8", "replace")
+                xc = _cn_xmp_categories(xml)
+                for c in CN_META_CATEGORIES:
+                    counts[c] += xc[c]
+                values.append(("custom", xml[:120]))
+            else:
+                counts["custom"] += 1
+                values.append(("custom", payload[:40].decode("latin-1")))
+        elif name == "APP13":
+            ic, iv = _cn_iptc_categories(payload)
+            for c in CN_META_CATEGORIES:
+                counts[c] += ic[c]
+            values.extend(iv)
+        elif name.startswith("APP") and name not in ("APP0", "APP2",
+                                                     "APP14"):
+            counts["custom"] += 1
+            values.append(("custom", payload[:40].decode("latin-1")))
+        elif name == "APP0" and payload.startswith(b"JFIF\x00"):
+            if len(payload) >= 14 and (payload[12] or payload[13]):
+                counts["thumbnail"] += 1
+                values.append(("thumbnail",
+                               payload[14:].decode("latin-1")))
+        elif name == "APP0":
+            counts["custom"] += 1
+            values.append(("custom", payload[:40].decode("latin-1")))
+    return counts, values
+
+
+def _cn_jpeg_clean(data: bytes):
+    """§3.1-2/§3.1-3: EXIF, XMP (APP1), IPTC (APP13), COM, the JFIF
+    thumbnail and the EXIF thumbnail go; the entropy body, the frame /
+    table definitions, the ICC (APP2) and the Adobe (APP14) stay.  An
+    Orientation other than 1 keeps the orientation-only minimal EXIF
+    (orientation_kept).  The content checksum covers the kept
+    non-metadata segments (the body and the required definitions)."""
+    segs = _cn_jpeg_segments(data)
+    out = [b"\xff\xd8"]
+    content_parts = []
+    removed = []
+    orientation_kept = False
+    for name, payload, raw in segs:
+        if name == "SOI":
+            continue
+        if name in ("EOI",):
+            out.append(b"\xff\xd9")
+            continue
+        if name in ("SCAN", "RST", "SOS"):
+            out.append(raw)
+            content_parts.append(raw)
+            continue
+        if name.startswith("SOF") or name in ("DHT", "DQT", "DRI",
+                                              "DNL", "JPG", "DAC"):
+            out.append(raw)
+            content_parts.append(raw)
+            continue
+        if name == "APP0":
+            if payload.startswith(b"JFIF\x00") and len(payload) >= 14:
+                xt, yt = payload[12], payload[13]
+                if xt or yt:
+                    removed.append(("thumbnail",
+                                    payload[14:].decode("latin-1")))
+                    payload = payload[:11] + b"\x00\x00"
+                    out.append(_cn_seg(0xE0, payload))
+                else:
+                    out.append(raw)
+            else:
+                removed.append(("custom",
+                                payload[:40].decode("latin-1")))
+            continue
+        if name == "APP1":
+            if payload.startswith(b"Exif\x00\x00"):
+                _c, _v, orientation = _cn_exif_categories(payload[6:])
+                if orientation is not None and orientation != 1:
+                    orientation_kept = True
+                    out.append(_cn_seg(0xE1, _cn_minimal_exif(orientation)))
+                else:
+                    removed.append(("custom", "(exif)"))
+                continue
+            removed.append(("custom", payload[:60].decode("latin-1")))
+            continue
+        # the remaining APPn / COM families are metadata
+        if name == "APP2" or name == "APP14":
+            out.append(raw)
+            continue
+        removed.append((name, payload[:60].decode("latin-1")))
+    return (b"".join(out), removed, _cn_sha(b"".join(content_parts)),
+            orientation_kept)
+
+
+# --- Office ------------------------------------------------------------
+
+_CN_EMPTY_CORE_XML = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/'
+    'package/2006/metadata/core-properties" '
+    'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+    'xmlns:dcterms="http://purl.org/dc/terms/" '
+    'xmlns:dcmitype="http://purl.org/dc/dcmitype/" '
+    'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>')
+
+_CN_EMPTY_APP_XML = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    '<Properties xmlns="http://schemas.openxmlformats.org/'
+    'officeDocument/2006/extended-properties" xmlns:vt="http://'
+    'schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"/>')
+
+_CN_EMPTY_CUSTOM_XML = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    '<Properties xmlns="http://schemas.openxmlformats.org/'
+    'officeDocument/2006/custom-properties" xmlns:vt="http://'
+    'schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"/>')
+
+_CN_XML_COUNTS = {
+    "docProps/core.xml": (
+        ("author", re.compile(r"<dc:creator[\s/>]")),
+        ("author", re.compile(r"<cp:lastModifiedBy[\s/>]")),
+        ("time", re.compile(r"<dcterms:created[\s/>]")),
+        ("time", re.compile(r"<dcterms:modified[\s/>]")),
+        ("title_subject", re.compile(r"<dc:title[\s/>]")),
+        ("title_subject", re.compile(r"<dc:subject[\s/>]")),
+        ("title_subject", re.compile(r"<cp:keywords[\s/>]")),
+        ("title_subject", re.compile(r"<dc:description[\s/>]")),
+    ),
+    "docProps/app.xml": (
+        ("author", re.compile(r"<Company[\s/>]")),
+        ("author", re.compile(r"<Manager[\s/>]")),
+        ("software", re.compile(r"<Application[\s/>]")),
+        ("software", re.compile(r"<AppVersion[\s/>]")),
+    ),
+}
+
+
+def _cn_office_open(data: bytes):
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    # a broken structure surfaces as ValueError (parse_failed)
+    bad = zf.testzip()
+    if bad is not None:
+        raise ValueError("Office: bad member %s" % bad)
+    return zf
+
+
+def _cn_office_members(data: bytes):
+    zf = _cn_office_open(data)
+    return [(info.filename.replace("\\", "/"), zf.read(info))
+            for info in zf.infolist()]
+
+
+def _cn_office_observe(members):
+    """The metadata observation of an Office package (§3.1-10) plus
+    the in_content counts (§3.1-11: comment / tracked_change /
+    hidden_part - counted, never removed)."""
+    counts = _cn_zero_categories()
+    values = []
+    in_content = {k: 0 for k in CN_IN_CONTENT}
+    for name, payload in members:
+        text = None
+        if name in _CN_XML_COUNTS:
+            text = payload.decode("utf-8", "replace")
+            for cat, pattern in _CN_XML_COUNTS[name]:
+                counts[cat] += len(pattern.findall(text))
+            if name == "docProps/core.xml":
+                for m in re.findall(r"<dc:creator>(.*?)</dc:creator>",
+                                    text):
+                    values.append(("author", m))
+                for m in re.findall(
+                        r"<cp:lastModifiedBy>(.*?)</cp:lastModifiedBy>",
+                        text):
+                    values.append(("author", m))
+        elif name == "docProps/custom.xml":
+            text = payload.decode("utf-8", "replace")
+            counts["custom"] += len(re.findall(r"<property[\s/>]", text))
+        elif name.startswith("docProps/thumbnail") and payload:
+            counts["thumbnail"] += 1
+            values.append(("thumbnail", name))
+        elif name == "word/comments.xml":
+            in_content["comment"] += len(
+                re.findall(rb"<w:comment[\s/>]", payload))
+        elif name.startswith("xl/comments"):
+            in_content["comment"] += len(
+                re.findall(rb"<comment[\s/>]", payload))
+        elif name == "word/document.xml":
+            in_content["tracked_change"] += len(
+                re.findall(rb"<w:ins[\s/>]", payload))
+            in_content["tracked_change"] += len(
+                re.findall(rb"<w:del[\s/>]", payload))
+        elif name == "xl/workbook.xml":
+            in_content["hidden_part"] += len(
+                re.findall(rb"<sheet[^>]*state=\"hidden\"", payload))
+        elif (name.startswith("ppt/slides/slide")
+                and name.endswith(".xml")):
+            if b'show="0"' in payload:
+                in_content["hidden_part"] += 1
+    return counts, values, in_content
+
+
+def _cn_office_clean(data: bytes):
+    """§3.1-6/§3.1-7/§3.1-8: the docProps parts are replaced with the
+    empty valid shapes (nothing is dropped - the content-type and the
+    relationships stay untouched), the thumbnail part becomes empty,
+    every other member rides byte-identically, and the output zip is
+    the deterministic pack form."""
+    members = _cn_office_members(data)
+    removed = []
+    out_members = []
+    content_members = []
+    for name, payload in members:
+        if name == "docProps/core.xml":
+            removed.append(("author", _cn_office_first(payload,
+                                                       r"<dc:creator>"
+                                                       r"(.*?)</dc:creator>")))
+            out_members.append((name, _CN_EMPTY_CORE_XML.encode("utf-8")))
+            continue
+        if name == "docProps/app.xml":
+            removed.append(("software", _cn_office_first(
+                payload, r"<Application>(.*?)</Application>")))
+            out_members.append((name, _CN_EMPTY_APP_XML.encode("utf-8")))
+            continue
+        if name == "docProps/custom.xml":
+            removed.append(("custom", "(custom properties)"))
+            out_members.append((name,
+                                _CN_EMPTY_CUSTOM_XML.encode("utf-8")))
+            continue
+        if name.startswith("docProps/thumbnail"):
+            if payload:
+                removed.append(("thumbnail", name))
+            out_members.append((name, b""))
+            continue
+        out_members.append((name, payload))
+        if not name.startswith("docProps/"):
+            content_members.append((name, payload))
+    content_members.sort(key=lambda m: m[0].encode("utf-8"))
+    digest = _cn_sha(b"".join(
+        n.encode("utf-8") + b"\x00" + p for n, p in content_members))
+    return out_members, removed, digest
+
+
+def _cn_office_first(payload: bytes, pattern: str):
+    m = re.search(pattern, payload.decode("utf-8", "replace"))
+    return m.group(1) if m else ""
+
+
+def _cn_office_content_sha(members):
+    picked = [(n, p) for n, p in members
+              if not n.startswith("docProps/")]
+    picked.sort(key=lambda m: m[0].encode("utf-8"))
+    return _cn_sha(b"".join(
+        n.encode("utf-8") + b"\x00" + p for n, p in picked))
+
+
+# --- the clean run (request §3.1) --------------------------------------
+
+def _cn_png_content_sha(data: bytes) -> str:
+    kept = []
+    for ctype, payload in _cn_png_chunks(data):
+        if ctype in ("IHDR", "PLTE", "IDAT", "IEND"):
+            kept.append(_cn_png_chunk_bytes(ctype.encode("latin-1"),
+                                            payload))
+    return _cn_sha(b"".join(kept))
+
+
+def _cn_jpeg_content_sha(data: bytes) -> str:
+    kept = []
+    for name, _payload, raw in _cn_jpeg_segments(data):
+        if name in ("SCAN", "RST", "SOS") or name.startswith("SOF") \
+                or name in ("DHT", "DQT", "DRI", "DNL", "JPG", "DAC"):
+            kept.append(raw)
+    return _cn_sha(b"".join(kept))
+
+
+def run_clean(input_path, output_dir, *, no_paths=False,
+              progress=None) -> dict:
+    """The `clean` command (§3.1).  JPEG / PNG / Office packages are
+    stripped of their metadata into handoff/ copies (the original file
+    is never written); the same observation runs again on the outputs
+    (§3.1-9).  Everything else is recorded with the existing closed
+    words and stays out of the output.  The removed values go only to
+    the local report (§3.1-14)."""
+    from sieve_tray import (__version__, _gate_digest, _gate_norm_json,
+                            _gate_write_atomic, _seal_manifest_scan)
+    tell = progress or (lambda _m: None)
+    src = Path(input_path)
+    out = Path(output_dir)
+    if not src.exists():
+        raise ValueError("clean: %s does not exist" % src)
+    include_paths = not no_paths
+    entries = []
+    if src.is_dir():
+        scanned, _skipped = _seal_manifest_scan(src)
+        for i, it in enumerate(scanned, start=1):
+            entries.append((it.get("path"), Path(it["_abs"]), i))
+    else:
+        entries.append((src.name, src, 1))
+
+    items = []
+    report_parts = []
+    cleaned = refused = not_app = orientation_count = 0
+    for rel, path, index in entries:
+        suffix = path.suffix.lower()
+        fmt = CN_CLEAN_EXTS.get(suffix)
+        if fmt is None:
+            fmt_label = "pdf" if suffix == ".pdf" else "other"
+        else:
+            fmt_label = fmt
+        item = {"path": rel if include_paths else None,
+                "status": None,
+                "reason": None,
+                "format": fmt_label,
+                "input_sha256": None,
+                "output_sha256": None,
+                "output_bytes": None,
+                "content_checksum_match": None,
+                "in_content": None,
+                "categories_before": None,
+                "categories_after": None}
+        if not include_paths:
+            item["index"] = index
+        try:
+            data = path.read_bytes()
+        except OSError:
+            item["status"] = "refused"
+            item["reason"] = "unreadable"
+            items.append(item)
+            refused += 1
+            continue
+        item["input_sha256"] = _cn_sha(data)
+        if fmt is None:
+            item["status"] = "not_applicable"
+            items.append(item)
+            not_app += 1
+            continue
+        try:
+            if fmt == "png":
+                before, removed = _cn_png_observe(data)
+                out_bytes, _r2, out_content = _cn_png_clean(data)
+                after, _av = _cn_png_observe(out_bytes)
+                in_content = {k: 0 for k in CN_IN_CONTENT}
+                orientation_kept = None
+                content_match = (_cn_png_content_sha(data) == out_content)
+            elif fmt == "jpeg":
+                before, removed = _cn_jpeg_observe(data)
+                out_bytes, _r2, out_content, o_kept = \
+                    _cn_jpeg_clean(data)
+                after, _av = _cn_jpeg_observe(out_bytes)
+                in_content = {k: 0 for k in CN_IN_CONTENT}
+                orientation_kept = bool(o_kept)
+                content_match = (_cn_jpeg_content_sha(data)
+                                 == out_content)
+            else:
+                members = _cn_office_members(data)
+                before, removed, in_content = _cn_office_observe(members)
+                out_members, _r2, out_content = \
+                    _cn_office_clean(data)
+                after, _av, in_after = _cn_office_observe(out_members)
+                # the emptied docProps count nothing; the in_content
+                # numbers are the input ones (the content is unchanged)
+                orientation_kept = None
+                content_match = (
+                    _cn_office_content_sha(members)
+                    == _cn_office_content_sha(out_members))
+                out_bytes = b"".join([])
+                import io as _io
+                buf = _io.BytesIO()
+                _cn_write_zip_stream(buf, out_members)
+                out_bytes = buf.getvalue()
+        except (ValueError, zipfile.BadZipFile):
+            item["status"] = "refused"
+            item["reason"] = "parse_failed"
+            items.append(item)
+            refused += 1
+            continue
+        item["status"] = "cleaned"
+        item["categories_before"] = before
+        item["categories_after"] = after
+        item["in_content"] = in_content
+        item["content_checksum_match"] = bool(content_match)
+        item["output_sha256"] = _cn_sha(out_bytes)
+        item["output_bytes"] = len(out_bytes)
+        if fmt == "jpeg":
+            item["orientation_kept"] = orientation_kept
+        cleaned += 1
+        if orientation_kept:
+            orientation_count += 1
+        if removed:
+            rows = ""
+            for cat, val in removed:
+                if isinstance(val, bytes):
+                    val = val.decode("latin-1", "replace")
+                rows += ("<tr><td>%s</td><td>%s</td></tr>"
+                         % (html.escape(cat),
+                            html.escape((val or "")[:200])))
+            report_parts.append(
+                "<h2>%s (%s)</h2><table border=\"1\">"
+                "<tr><th>category</th><th>removed value</th></tr>%s"
+                "</table>" % (html.escape(rel or "item %d" % index),
+                              fmt, rows))
+        # the copy goes to handoff/ under the original name (or the
+        # index form with --no-paths)
+        copy_name = rel if include_paths else \
+            "%04d%s" % (index, path.suffix.lower())
+        copy = out / "handoff" / copy_name
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.write_bytes(out_bytes)
+        tell("Clean: %s -> %s" % (rel, copy))
+        items.append(item)
+
+    receipt = {
+        "receipt_version": CN_RECEIPT_VERSION,
+        "kind": "sieve-clean",
+        "tool": {"name": "sieve-tray", "version": __version__},
+        "engines": {},
+        "settings": {
+            "input": str(src),
+            "no_paths": bool(no_paths),
+        },
+        "items": items,
+        "summary": {
+            "files": len(items),
+            "cleaned": cleaned,
+            "refused": refused,
+            "not_applicable": not_app,
+            "orientation_kept": orientation_count,
+        },
+    }
+    # the local report (the removed values live here, never in
+    # handoff/ - §3.1-14); the receipt stays LAST
+    local = out / "local" / "clean-report.html"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_text(
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        "<title>clean report</title></head><body>"
+        "<h1>clean report</h1><p>input: %s</p>%s"
+        "</body></html>" % (html.escape(str(src)),
+                            "\n".join(report_parts)),
+        encoding="utf-8")
+    tell("Clean: report %s" % local)
+    receipt["digest"] = _gate_digest(receipt)
+    _gate_write_atomic(out / "handoff" / "clean-receipt.json",
+                       _gate_norm_json(receipt).encode("utf-8"))
+    tell("Clean: receipt %s" % (out / "handoff" / "clean-receipt.json"))
+    return receipt
+
+
+def _cn_write_zip_stream(buf, members):
+    """The deterministic zip bytes (the pack rules) into an open
+    stream."""
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        for arcname, data in sorted(
+                members, key=lambda m: str(m[0]).encode("utf-8")):
+            name = str(arcname)
+            zi = zipfile.ZipInfo(name, date_time=_CN_ZIP_STAMP)
+            zi.create_system = 3
+            if name.endswith("/"):
+                zi.external_attr = _CN_ZIP_DIR_ATTR
+            else:
+                zi.external_attr = _CN_ZIP_FILE_ATTR
+            zi.compress_type = zipfile.ZIP_STORED
+            zf.writestr(zi, data)
