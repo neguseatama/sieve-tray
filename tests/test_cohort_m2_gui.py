@@ -581,7 +581,8 @@ def test_gu_t15_structure_invariants(tmp_path):
 # explicit text colour: ::item (normal), ::item:disabled and
 # ::item:selected (the explicit background + colour stay).
 #
-# The v2.2.0 (§3.7) follow-up: the sidebar grows to twelve pages (the
+# The v2.2.0 (§3.7) follow-up: the sidebar grows to twelve pages; Canon
+# 2.3 (§3.7) grows it to fifteen (
 # three new pages join after the existing order), so the row-fit
 # guarantee moves from "the scrollbar stays at zero" to "the tail row
 # the user selects auto-scrolls into the viewport and its page
@@ -593,6 +594,8 @@ def test_gu_t15_structure_invariants(tmp_path):
 # ---------------------------------------------------------------------------
 
 SEAL_PAGE_TAIL = ("manifest", "rename", "draw")
+# Canon 2.3 (§3.7): the new tail after the Seal pages
+CANON_PAGE_TAIL = ("clean", "normalize", "table_diff")
 
 
 def test_gu_t16_twelve_pages_style_and_tail_visibility(tmp_path):
@@ -611,8 +614,14 @@ def test_gu_t16_twelve_pages_style_and_tail_visibility(tmp_path):
             # the twelve pages of §3.7: the existing order, then the
             # three new pages with their i18n names (the display
             # names ride the real _add_page registration)
-            assert sb.count() == 12, (lang, sb.count())
+            assert sb.count() == 15, (lang, sb.count())
+            # the Seal tail (rows 9-11) and the Canon tail (12-14):
+            # both keep their i18n names and their order
             for offset, key in enumerate(SEAL_PAGE_TAIL):
+                item = sb.item(sb.count() - 6 + offset)
+                assert item.text() == tr(lang, key + "_tab"), \
+                    (lang, key, item.text())
+            for offset, key in enumerate(CANON_PAGE_TAIL):
                 item = sb.item(sb.count() - 3 + offset)
                 assert item.text() == tr(lang, key + "_tab"), \
                     (lang, key, item.text())

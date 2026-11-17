@@ -89,7 +89,8 @@ def test_t20_release_workflow_runs_the_three_self_checks():
 
 def test_t20_gui_dispatches_the_five_self_checks():
     gui = GUI.read_text(encoding="utf-8")
-    tuple_form = '"gate", "cohort", "manifest", "pack", "draw"'
+    tuple_form = ('"gate", "cohort", "manifest", "pack", "draw", '
+                  '"normalize", "clean", "table-diff"')
     assert tuple_form in gui
     # a self-check run never opens a window: the dispatch sits before
     # QApplication (the ch_t20 pin, now covering the five shapes)

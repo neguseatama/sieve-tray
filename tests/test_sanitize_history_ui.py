@@ -80,7 +80,7 @@ def test_sanitize_history_tab_structure(window):
     # with the §3.7 commit)
     # v0.8.0: +1 Audit, v1.0.0: +1 Crowd, v2.0.0: +1 Gate, v2.1.0: +1 Cohort,
     # v2.2.0: +1 Manifest, +1 Rename, +1 Draw
-    assert window.sidebar.count() == 12
+    assert window.sidebar.count() == 15
     label = window.sidebar.item(
         window._page_keys.index("sanitize_history")).text()
     assert label == tr("en", "sanitize_history_tab", n=0), \
