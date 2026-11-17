@@ -2,8 +2,9 @@
 
 Guards the docs/screenshots directory against stale references: the set
 of png references in README.md and README.ja.md must equal the expected
-eight-screenshot set (the 2.2.0 screens re-shot offscreen, one set per
-README language - Seal 2.2, request §3.8-6), and the files present
+fourteen-screenshot set (the 2.2.0 screens re-shot offscreen plus the
+three Canon pages, one set per README language - Seal 2.2 §3.8-6,
+Canon 2.3 §3.8-3), and the files present
 under docs/screenshots must contain no unreferenced (stale) images.
 """
 import re
@@ -14,7 +15,10 @@ SHOTS = "docs/screenshots/"
 
 EXPECTED = {SHOTS + f"{key}-{lang}.png"
             for key in ("main-window", "anonymize-tab", "manifest-page",
-                        "draw-page")
+                        "draw-page",
+                        # Canon 2.3 (§3.8-3): the three new pages join
+                        "clean-page", "normalize-page",
+                        "table-diff-page")
             for lang in ("ja", "en")}
 
 
