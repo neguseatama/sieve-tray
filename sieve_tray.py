@@ -52,7 +52,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "2.2.1"
+__version__ = "2.3.0"
 
 
 CODE_EXTS = {".py"}
@@ -5261,6 +5261,13 @@ def verify_gate(receipt_path, input_dir=None, output_dir=None, *,
         result["overall"] = "not_verifiable"
         result["not_verifiable_reason"] = "receipt_digest_mismatch"
         return result
+    # Canon 2.3 (§3.6): the clean / normalize / table-diff receipts
+    # verify with the same shape and the same closed vocabulary
+    if obj.get("kind") in ("sieve-clean", "sieve-normalize",
+                           "sieve-table-diff"):
+        from sieve_canon import _cn_verify_receipt
+        return _cn_verify_receipt(obj, input_dir, scope, output_dir,
+                                  result)
     # the check code key (C14): the file-list checks run with or
     # without it; the code itself is confirmed only with it
     key = None
@@ -6093,6 +6100,53 @@ def _gate_main(argv: List[str]) -> int:
     d.add_argument("-o", "--output", type=Path, default=None)
     # SL-T20: the frozen app runs the Seal self-checks headlessly
     d.add_argument("--self-check", action="store_true")
+    # Canon 2.3 (§3.2): the text / JSON / CSV normalization.  No
+    # auto-detection conversion - the codec is named or refused with
+    # encoding_unknown and the strictly-readable candidates.
+    n = sub.add_parser("normalize", help="normalize text, JSON and CSV "
+                                         "(Canon 2.3)")
+    n.add_argument("input", type=Path, nargs="?", default=None)
+    n.add_argument("-o", "--output", type=Path, default=None)
+    n.add_argument("--from-encoding", default=None, metavar="NAME")
+    n.add_argument("--newline", default="lf", choices=("lf", "crlf"))
+    n.add_argument("--nfc", action="store_true")
+    n.add_argument("--check", action="store_true",
+                   help="observe only - no copies, the receipt only")
+    n.add_argument("--text-only", action="store_true",
+                   help="skip the JSON / CSV rules (§3.3 / §3.4)")
+    n.add_argument("--style", default="pretty", choices=("pretty", "jcs"),
+                   help="the JSON style (§3.3; default: pretty)")
+    n.add_argument("--delimiter", default=",", metavar="CHAR",
+                   help="the CSV delimiter (§3.4; default: ,)")
+    n.add_argument("--sort-by", default=None, metavar="COLS",
+                   help="the CSV column(s) to sort by, comma-separated "
+                        "(§3.4-4; the default keeps the row order)")
+    n.add_argument("--self-check", action="store_true")
+    # Canon 2.3 (§3.1): the metadata clean.  The originals are never
+    # written; the removed values stay in local/ (never handoff/).
+    cl = sub.add_parser("clean", help="strip metadata from JPEG, PNG "
+                                      "and Office files (Canon 2.3)")
+    cl.add_argument("input", type=Path, nargs="?", default=None)
+    cl.add_argument("-o", "--output", type=Path, default=None)
+    cl.add_argument("--no-paths", action="store_true",
+                    help="the receipt and the copies carry no names")
+    cl.add_argument("--self-check", action="store_true")
+    # Canon 2.3 (§3.5): the table comparison by the key columns.  The
+    # receipt carries the counts and the checksums only; the values,
+    # the key values and the column names stay in local/.
+    td = sub.add_parser("table-diff",
+                        help="compare two tables by key columns "
+                             "(Canon 2.3)")
+    td.add_argument("csv_a", type=Path, nargs="?", default=None)
+    td.add_argument("csv_b", type=Path, nargs="?", default=None)
+    # the key is validated in the dispatch branch, so --self-check
+    # can run without it (the draw precedent)
+    td.add_argument("--key", default=None, metavar="COLS")
+    td.add_argument("-o", "--output", type=Path, default=None)
+    td.add_argument("--from-encoding-a", default=None, metavar="NAME")
+    td.add_argument("--from-encoding-b", default=None, metavar="NAME")
+    td.add_argument("--delimiter", default=",", metavar="CHAR")
+    td.add_argument("--self-check", action="store_true")
     args = parser.parse_args(argv)
 
     if args.cmd == "manifest":
@@ -6216,6 +6270,96 @@ def _gate_main(argv: List[str]) -> int:
         print("Result: %s" % (args.output / "local"
                               / "draw-result.json"))
         return 0
+    if args.cmd == "normalize":
+        if args.self_check:
+            # the same exit contract as gate/cohort/Seal (0/1/2)
+            from sieve_canon import normalize_self_check
+            result = normalize_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
+        if args.input is None or args.output is None:
+            parser.error("normalize needs an input and -o/--output")
+        from sieve_canon import run_normalize
+        sort_by = tuple(args.sort_by.split(",")) if args.sort_by else ()
+        try:
+            receipt = run_normalize(
+                args.input, args.output,
+                from_encoding=args.from_encoding,
+                newline=args.newline, nfc=args.nfc, check=args.check,
+                text_only=args.text_only, style=args.style,
+                delimiter=args.delimiter, sort_by=sort_by,
+                progress=print)
+        except ValueError as e:
+            parser.error(str(e))  # exit 2 (a bad flag value)
+        # the refusals speak with the closed words, one line per file
+        for it in receipt["items"]:
+            if it["status"] == "refused":
+                print("Refused: %s (%s)" % (it["path"], it["reason"]))
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Handoff: %s" % (args.output / "handoff"))
+        s = receipt["summary"]
+        return 1 if s["refused"] else 0
+    if args.cmd == "clean":
+        if args.self_check:
+            # the same exit contract as gate/cohort/Seal (0/1/2)
+            from sieve_canon import clean_self_check
+            result = clean_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
+        if args.input is None or args.output is None:
+            parser.error("clean needs an input and -o/--output")
+        from sieve_canon import run_clean
+        try:
+            receipt = run_clean(args.input, args.output,
+                                no_paths=args.no_paths,
+                                progress=print)
+        except ValueError as e:
+            parser.error(str(e))
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Handoff: %s" % (args.output / "handoff"))
+        print("Report:  %s" % (args.output / "local"
+                               / "clean-report.html"))
+        s = receipt["summary"]
+        return 1 if s["refused"] else 0
+    if args.cmd == "table-diff":
+        if args.self_check:
+            # the same exit contract as gate/cohort/Seal (0/1/2)
+            from sieve_canon import table_diff_self_check
+            result = table_diff_self_check(progress=print)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+            if "error" in result:
+                return 2
+            return 0 if result["matching"] == result["expected"] else 1
+        if args.key is None:
+            parser.error("table-diff needs --key")
+        if args.csv_a is None or args.csv_b is None or args.output is None:
+            parser.error("table-diff needs two CSV files and "
+                         "-o/--output")
+        from sieve_canon import run_table_diff, CNTableRefusal
+        key_cols = tuple(args.key.split(","))
+        try:
+            receipt = run_table_diff(
+                args.csv_a, args.csv_b, key_cols, args.output,
+                from_encoding_a=args.from_encoding_a,
+                from_encoding_b=args.from_encoding_b,
+                delimiter=args.delimiter, progress=print)
+        except CNTableRefusal as e:
+            # the closed words on stdout, exit 2 (the run refused)
+            line = "Refused: %s (%s)" % (e.side or "input", e.reason)
+            if e.candidates:
+                line += " candidates: %s" % ",".join(e.candidates)
+            print(line)
+            return 2
+        except ValueError as e:
+            parser.error(str(e))  # exit 2 (a missing key column, ...)
+        print("Receipt digest: %s" % receipt["digest"])
+        print("Report: %s" % (args.output / "local"
+                              / "table-diff-report.html"))
+        return 0
     if args.cmd == "unpack":
         if args.zip_file is None or args.output is None:
             parser.error("unpack needs a zip file and -o/--output")
@@ -6309,7 +6453,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] in ("gate", "verify",
                                              "cohort", "manifest",
                                              "rename", "audit-names",
-                                             "pack", "unpack", "draw"):
+                                             "pack", "unpack", "draw",
+                                             "normalize", "clean",
+                                             "table-diff"):
         sys.exit(_gate_main(sys.argv[1:]))
     parser = argparse.ArgumentParser(prog="sieve-tray")
     parser.add_argument("input_dir", type=Path,

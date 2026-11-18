@@ -72,18 +72,19 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           # v2.1.0 (request §3.10, the 2026-11-11 ruling): the built
-          # artifact runs the five self-checks headlessly (gate /
-          # cohort / manifest / pack / draw - SL-T20 added the three
-          # Seal shapes) - the frozen GUI
+          # artifact runs the eight self-checks headlessly (gate /
+          # cohort / manifest / pack / draw - SL-T20; clean /
+          # normalize / table-diff - Canon 2.3 §3.8-4) - the frozen GUI
           # entry dispatches `<cmd> --self-check` to the CLI
           # before QApplication, so no window opens.  Any exit code
           # but 0 (1 = a difference, 2 = the self-check could not run)
           # fails the release (the 2026-11-10 exit-code contract).
           # Start-Process -Wait holds the step until the
           # GUI-subsystem exe exits, and the redirect keeps the JSON
-          # in the CI log.  The three Seal self-checks build their
-          # known inputs (KV-2 / KV-D1 / KV-D2) in a temp folder at
-          # run time, so no extra --add-data is needed.
+          # in the CI log.  The self-checks build their
+          # known inputs (KV-2 / KV-D1 / KV-D2 / KV-C1 / KV-C2 /
+          # KV-C3) in a temp folder at run time, so no extra
+          # --add-data is needed.
           $env:PYTHONIOENCODING = "utf-8"
           $p = Start-Process -FilePath "dist\SieveTray.exe" `
             -ArgumentList "gate", "--self-check" -Wait -PassThru `
@@ -135,26 +136,59 @@ jobs:
             Write-Host "::error::draw --self-check exited $($p.ExitCode)"
             exit $p.ExitCode
           }
+          $p = Start-Process -FilePath "dist\SieveTray.exe" `
+            -ArgumentList "clean", "--self-check" -Wait -PassThru `
+            -RedirectStandardOutput clean-selfcheck.log `
+            -RedirectStandardError clean-selfcheck.err.log
+          Get-Content clean-selfcheck.log
+          Get-Content clean-selfcheck.err.log
+          if ($p.ExitCode -ne 0) {
+            Write-Host "::error::clean --self-check exited $($p.ExitCode)"
+            exit $p.ExitCode
+          }
+          $p = Start-Process -FilePath "dist\SieveTray.exe" `
+            -ArgumentList "normalize", "--self-check" -Wait -PassThru `
+            -RedirectStandardOutput normalize-selfcheck.log `
+            -RedirectStandardError normalize-selfcheck.err.log
+          Get-Content normalize-selfcheck.log
+          Get-Content normalize-selfcheck.err.log
+          if ($p.ExitCode -ne 0) {
+            Write-Host "::error::normalize --self-check exited $($p.ExitCode)"
+            exit $p.ExitCode
+          }
+          $p = Start-Process -FilePath "dist\SieveTray.exe" `
+            -ArgumentList "table-diff", "--self-check" -Wait -PassThru `
+            -RedirectStandardOutput tablediff-selfcheck.log `
+            -RedirectStandardError tablediff-selfcheck.err.log
+          Get-Content tablediff-selfcheck.log
+          Get-Content tablediff-selfcheck.err.log
+          if ($p.ExitCode -ne 0) {
+            Write-Host "::error::table-diff --self-check exited $($p.ExitCode)"
+            exit $p.ExitCode
+          }
 
       - name: Self-check the frozen artifact (macOS)
         if: runner.os == 'macOS'
         run: |
           # v2.1.0 (request §3.10, the 2026-11-11 ruling): the built
-          # artifact runs the five self-checks headlessly (gate /
-          # cohort / manifest / pack / draw - SL-T20 added the three
-          # Seal shapes) - the inner
+          # artifact runs the eight self-checks headlessly (gate /
+          # cohort / manifest / pack / draw - SL-T20; clean /
+          # normalize / table-diff - Canon 2.3 §3.8-4) - the inner
           # binary dispatches `<cmd> --self-check` to the CLI
           # before QApplication, so no window opens.  The step shell
           # (bash -e) fails the release on exit 1 (a difference) or 2
-          # (the self-check could not run).  The three Seal
-          # self-checks build their known inputs (KV-2 / KV-D1 /
-          # KV-D2) in a temp folder at run time, so no extra
+          # (the self-check could not run).  The self-checks build
+          # their known inputs (KV-2 / KV-D1 / KV-D2 / KV-C1 / KV-C2 /
+          # KV-C3) in a temp folder at run time, so no extra
           # --add-data is needed.
           ./dist/SieveTray.app/Contents/MacOS/SieveTray gate --self-check
           ./dist/SieveTray.app/Contents/MacOS/SieveTray cohort --self-check
           ./dist/SieveTray.app/Contents/MacOS/SieveTray manifest --self-check
           ./dist/SieveTray.app/Contents/MacOS/SieveTray pack --self-check
           ./dist/SieveTray.app/Contents/MacOS/SieveTray draw --self-check
+          ./dist/SieveTray.app/Contents/MacOS/SieveTray clean --self-check
+          ./dist/SieveTray.app/Contents/MacOS/SieveTray normalize --self-check
+          ./dist/SieveTray.app/Contents/MacOS/SieveTray table-diff --self-check
 
       - name: Package artifact (Windows)
         if: runner.os == 'Windows'

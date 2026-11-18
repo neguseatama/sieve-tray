@@ -106,7 +106,7 @@ def test_crowd_tab_is_seventh_with_core_widgets(window):
     # structure-pin change the addendum 2 §3 ruling permits, reported
     # with the §3.7 commit)
     # v2.0.0: +1 Gate, v2.1.0: +1 Cohort, v2.2.0: +1 Manifest +1 Rename +1 Draw
-    assert window.sidebar.count() == 12
+    assert window.sidebar.count() == 15
     assert window.sidebar.item(
         window._page_keys.index("crowd")).text() == tr("en", "crowd_tab")
     assert window.crowd_file_btn.isEnabled() is True

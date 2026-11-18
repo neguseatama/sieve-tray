@@ -391,6 +391,98 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "draw_run_tooltip": "Orders the roster lines by SHA-256(seed || NUL || item) and deals them round-robin into the groups. The result lands at local/draw-result.json, the record at handoff/draw-receipt.json.",
         "draw_open_local_tooltip": "The local folder is for your own review; it holds the groups with the names.",
         "draw_log_tooltip": "The run log: the result path, the receipt path and the refusal reasons.",
+
+        # Canon 2.3 (request §3.7): the metadata clean page.
+        "clean_tab": "Clean Metadata",
+        "clean_desc": "Remove the metadata from JPEG, PNG and Office "
+                      "files before sharing them. The pictures and the "
+                      "documents themselves stay unchanged.",
+        "clean_input_label": "Folder or file",
+        "clean_input_tooltip": "The folder (or the single file) to "
+                               "clean; the original is never modified.",
+        "clean_output_label": "Output folder",
+        "clean_output_tooltip": "The copies without metadata and the "
+                                "record go here.",
+        "clean_nopaths": "Hide file names",
+        "clean_nopaths_tooltip": "The record and the copies carry no "
+                                 "file names (sequence numbers "
+                                 "instead).",
+        "clean_run_button": "Clean",
+        "clean_run_tooltip": "Remove the metadata and write the "
+                             "copies.",
+        "clean_open_local_button": "Open report",
+        "clean_open_local_tooltip": "Open the detailed report (it "
+                                    "carries the removed values).",
+        "clean_summary_placeholder": "The result appears here after a "
+                                     "run.",
+        "clean_log_tooltip": "The run log.",
+        "clean_done": "Done: {cleaned} cleaned, {refused} refused, "
+                      "{not_applicable} not in scope.",
+
+        # Canon 2.3 (request §3.7): the table comparison page.
+        "table_diff_tab": "Compare Tables",
+        "table_diff_desc": "Compare two CSV tables by the key columns "
+                           "and see what was added, changed, removed "
+                           "or duplicated.",
+        "table_diff_a_label": "Table A (CSV)",
+        "table_diff_a_tooltip": "The first table.",
+        "table_diff_b_label": "Table B (CSV)",
+        "table_diff_b_tooltip": "The second table.",
+        "table_diff_key_label": "Key columns",
+        "table_diff_key_placeholder": "id  (or: id,region)",
+        "table_diff_key_tooltip": "The column names that identify a "
+                                  "row, comma-separated.",
+        "table_diff_output_label": "Output folder",
+        "table_diff_output_tooltip": "The record goes into handoff/, "
+                                     "the row detail into the report.",
+        "table_diff_run_button": "Compare",
+        "table_diff_run_tooltip": "Compare the two tables.",
+        "table_diff_open_local_button": "Open report",
+        "table_diff_open_local_tooltip": "Open the row-level report.",
+        "table_diff_summary_placeholder": "The result appears here "
+                                          "after a run.",
+        "table_diff_log_tooltip": "The run log.",
+        "table_diff_done": "Done: {same} same, {changed} changed, "
+                           "{removed} removed, {added} added, "
+                           "{duplicate_keys} duplicate keys.",
+
+        # Canon 2.3 (request §3.7): the normalization page.
+        "normalize_tab": "Normalize",
+        "normalize_desc": "Turn text, JSON and CSV files into UTF-8 "
+                          "with even line endings. The character code "
+                          "is never guessed: a file that is not UTF-8 "
+                          "is refused unless you name its code.",
+        "normalize_input_label": "Folder or file",
+        "normalize_input_tooltip": "The text files (a folder or a "
+                                   "single file) to normalize.",
+        "normalize_output_label": "Output folder",
+        "normalize_output_tooltip": "The copies and the record go "
+                                    "here.",
+        "normalize_encoding_label": "Character code",
+        "normalize_encoding_placeholder": "(empty: BOM or UTF-8 only)",
+        "normalize_encoding_tooltip": "The character code to read with "
+                                      "(for example cp932). Leave it "
+                                      "empty to read only a BOM or "
+                                      "valid UTF-8; anything else is "
+                                      "refused, never guessed.",
+        "normalize_newline_label": "Line endings",
+        "normalize_newline_tooltip": "The line endings of the copies "
+                                     "(LF, or CRLF for Windows).",
+        "normalize_nfc": "Compose characters (NFC)",
+        "normalize_nfc_tooltip": "Apply the Unicode NFC composition to "
+                                 "the copies.",
+        "normalize_check": "Observe only",
+        "normalize_check_tooltip": "Write the record only - no copies "
+                                   "are made.",
+        "normalize_run_button": "Normalize",
+        "normalize_run_tooltip": "Write the normalized copies.",
+        "normalize_open_output_button": "Open output",
+        "normalize_open_output_tooltip": "Open the output folder.",
+        "normalize_summary_placeholder": "The result appears here "
+                                         "after a run.",
+        "normalize_log_tooltip": "The run log.",
+        "normalize_done": "Done: {produced} written, {refused} "
+                          "refused, {observed} observed.",
     },
     "ja": {
         "window_title": "Sieve Tray",
@@ -750,6 +842,94 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "draw_run_tooltip": "名簿の行を SHA-256(seed || NUL || 項目) の順に並べ替え、班へ順番に配ります。結果は local/draw-result.json に、記録は handoff/draw-receipt.json に入ります。",
         "draw_open_local_tooltip": "手元用の local フォルダです。名前つきの班が入ります。",
         "draw_log_tooltip": "実行の記録です。結果の位置、記録の位置、拒否の理由が出ます。",
+
+        # Canon 2.3（依頼書 §3.7）: メタデータの除去のページ。
+        "clean_tab": "メタデータの除去",
+        "clean_desc": "JPEG・PNG・Office ファイルのメタデータを取り除い"
+                      "てから渡せます。画像や文書の中身は変わりません。",
+        "clean_input_label": "フォルダまたはファイル",
+        "clean_input_tooltip": "取り除く対象のフォルダ（またはファイ"
+                               "ル）。元のファイルは変更しません。",
+        "clean_output_label": "出力先フォルダ",
+        "clean_output_tooltip": "メタデータを取り除いたコピーと処理記録"
+                                "が入ります。",
+        "clean_nopaths": "ファイル名を載せない",
+        "clean_nopaths_tooltip": "処理記録とコピーにファイル名を載せず、"
+                                 "連番で区別します。",
+        "clean_run_button": "実行",
+        "clean_run_tooltip": "メタデータを取り除いてコピーを書き出し"
+                             "ます。",
+        "clean_open_local_button": "報告を開く",
+        "clean_open_local_tooltip": "詳しい報告を開きます（取り除いた"
+                                    "値はここにだけ出ます）。",
+        "clean_summary_placeholder": "実行すると結果がここに出ます。",
+        "clean_log_tooltip": "実行の記録です。",
+        "clean_done": "完了: {cleaned} 件を処理、{refused} 件を拒否、"
+                      "{not_applicable} 件は対象外。",
+
+        # Canon 2.3（依頼書 §3.7）: 表の比較のページ。
+        "table_diff_tab": "表の比較",
+        "table_diff_desc": "2 つの CSV を、キー列で突き合わせて比べ、"
+                           "同じ・変更・削除・追加・キー重複を見つけま"
+                           "す。",
+        "table_diff_a_label": "表 A（CSV）",
+        "table_diff_a_tooltip": "1 つ目の表。",
+        "table_diff_b_label": "表 B（CSV）",
+        "table_diff_b_tooltip": "2 つ目の表。",
+        "table_diff_key_label": "キー列",
+        "table_diff_key_placeholder": "id（複数は id,region）",
+        "table_diff_key_tooltip": "行を識別する列名をカンマ"
+                                  "区切りで指定します。",
+        "table_diff_output_label": "出力先フォルダ",
+        "table_diff_output_tooltip": "処理記録は handoff/ に、行の詳細"
+                                     "は報告に入ります。",
+        "table_diff_run_button": "比較",
+        "table_diff_run_tooltip": "2 つの表を比べます。",
+        "table_diff_open_local_button": "報告を開く",
+        "table_diff_open_local_tooltip": "行ごとの報告を開きます。",
+        "table_diff_summary_placeholder": "実行すると結果がここに出ま"
+                                          "す。",
+        "table_diff_log_tooltip": "実行の記録です。",
+        "table_diff_done": "完了: 同じ {same}、変更 {changed}、削除 "
+                           "{removed}、追加 {added}、キー重複 "
+                           "{duplicate_keys}。",
+
+        # Canon 2.3（依頼書 §3.7）: 整理のページ。
+        "normalize_tab": "テキストと JSON / CSV の整理",
+        "normalize_desc": "テキスト・JSON・CSV を、文字コード UTF-8・"
+                          "改行のそろったファイルに整えます。文字コード"
+                          "は推測しません。UTF-8 でないファイルは、指定"
+                          "がなければ拒否されます。",
+        "normalize_input_label": "フォルダまたはファイル",
+        "normalize_input_tooltip": "整理するテキストファイル（フォルダ"
+                                   "またはファイル）。",
+        "normalize_output_label": "出力先フォルダ",
+        "normalize_output_tooltip": "整えたコピーと処理記録が入りま"
+                                    "す。",
+        "normalize_encoding_label": "文字コード",
+        "normalize_encoding_placeholder": "（空欄: BOM か UTF-8 のみ）",
+        "normalize_encoding_tooltip": "読み込みに使う文字コード（例: "
+                                      "cp932）。空欄のときは BOM か "
+                                      "UTF-8 のファイルだけを読み、その"
+                                      "ほかは推測せず拒否します。",
+        "normalize_newline_label": "改行コード",
+        "normalize_newline_tooltip": "コピーの改行コード（LF、または "
+                                     "Windows 向けの CRLF）。",
+        "normalize_nfc": "文字を合成する（NFC）",
+        "normalize_nfc_tooltip": "コピーに Unicode の NFC を適用しま"
+                                 "す。",
+        "normalize_check": "観測のみ",
+        "normalize_check_tooltip": "処理記録だけを書き、コピーは作りま"
+                                   "せん。",
+        "normalize_run_button": "実行",
+        "normalize_run_tooltip": "整えたコピーを書き出します。",
+        "normalize_open_output_button": "出力を開く",
+        "normalize_open_output_tooltip": "出力先フォルダを開きます。",
+        "normalize_summary_placeholder": "実行すると結果がここに出ま"
+                                         "す。",
+        "normalize_log_tooltip": "実行の記録です。",
+        "normalize_done": "完了: {produced} 件を書き出し、{refused} 件"
+                          "を拒否、{observed} 件を観測。",
     },
 }
 

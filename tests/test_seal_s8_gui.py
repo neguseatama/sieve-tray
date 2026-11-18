@@ -27,7 +27,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 EXISTING_KEYS = ("doc", "code", "text", "audit", "history",
                  "sanitize_history", "crowd", "gate", "cohort")
 NEW_KEYS = ("manifest", "rename", "draw")
-ALL_KEYS = EXISTING_KEYS + NEW_KEYS
+# Canon 2.3 (request §3.7): the three new pages join at the end
+CANON_KEYS = ("clean", "normalize", "table_diff")
+ALL_KEYS = EXISTING_KEYS + NEW_KEYS + CANON_KEYS
 # §3.7 plan B: the scan operation row lives on the scan pages only.
 SCAN_PAGE_KEYS = ("doc", "code", "text", "audit")
 
