@@ -668,7 +668,7 @@ class TR2_T12_Version140(unittest.TestCase):
     CHANGELOG (pin refreshed for the 2.2.1 release)."""
 
     def test_version_is_2_0_0(self):
-        self.assertEqual(sieve_tray.__version__, "2.3.0")
+        self.assertEqual(sieve_tray.__version__, "2.3.1")
 
     def test_pyproject_reads_version_from_module(self):
         text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
