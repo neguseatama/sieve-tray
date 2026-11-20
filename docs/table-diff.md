@@ -1,6 +1,6 @@
 # 表の比較（`docs/table-diff.md`）
 
-Sieve Tray 2.3.0（Canon）。この文書は `table-diff` コマンドの読み込み、
+Sieve Tray 2.3.1（Canon）。この文書は `table-diff` コマンドの読み込み、
 状態の分類、処理記録の中身を定める。既知の例は §4（KV-C3）で、文書から
 読み戻すテスト（`tests/test_canon_docs.py`）が確かめる。
 
@@ -40,8 +40,10 @@ Sieve Tray 2.3.0（Canon）。この文書は `table-diff` コマンドの読み
   **値・キーの値・列名は `handoff/` に出ない**（キー列は番号で載る）。
 - `local/table-diff-report.html` に、行ごとの状態と、`changed` の列名と
   A / B の値が出る。
-- 終了符号: 比較そのものは成功が 0（違いがあっても 0。違いを見つける
-  ことがこのコマンドの目的だから）。キー列の欠落・読み込みの拒否は 2。
+- 終了符号: 表が一致すれば 0・違いがあれば 1（changed / removed / added /
+  duplicate_key のどれかが 1 以上。duplicate_key の行は比較しないが、
+  一致ではない）。キー列の欠落・読み込みの拒否など、実行できない場合は 2
+  （2.3.0 では違いがあっても 0 だった）。
 
 ## 4. 既知の例（KV-C3）
 

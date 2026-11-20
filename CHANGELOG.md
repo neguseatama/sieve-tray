@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.1] - 2026-11-19
+
+### Changed
+- **Table comparison exit code**: `table-diff` now exits with 1 when
+  the comparison finds differences - any of changed / removed / added
+  above zero, or a duplicate key (those rows are not compared, so the
+  tables do not agree) - and with 0 only when the tables agree;
+  2.3.0 exited with 0 in every compared run.  A missing key column or
+  a refused read still refuses with exit code 2, so the contract is
+  0 = agree / 1 = differ / 2 = cannot run.
+
 ## [2.3.0] - 2026-11-17
 
 ### Added

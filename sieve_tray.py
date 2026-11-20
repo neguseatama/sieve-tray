@@ -52,7 +52,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "2.3.0"
+__version__ = "2.3.1"
 
 
 CODE_EXTS = {".py"}
@@ -6359,7 +6359,15 @@ def _gate_main(argv: List[str]) -> int:
         print("Receipt digest: %s" % receipt["digest"])
         print("Report: %s" % (args.output / "local"
                               / "table-diff-report.html"))
-        return 0
+        # the 2026-11-19 ruling: the comparison's own exit contract is
+        # agree 0 / differ 1 / cannot run 2 (2.3.0 returned 0 in every
+        # compared run).  "Differ" is any of the closed states beyond
+        # same: changed / removed / added, and a duplicate key too -
+        # its rows are not compared, so the tables do not agree.
+        s = receipt["summary"]
+        differ = (s.get("rows_changed", 0) or s.get("rows_removed", 0)
+                  or s.get("rows_added", 0) or s.get("duplicate_keys", 0))
+        return 1 if differ else 0
     if args.cmd == "unpack":
         if args.zip_file is None or args.output is None:
             parser.error("unpack needs a zip file and -o/--output")

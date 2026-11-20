@@ -190,3 +190,55 @@ def test_undecodable_input_refuses_with_closed_words(tmp_path):
     assert proc.returncode == 2
     assert "encoding_unknown" in proc.stdout
     assert not (out / "handoff").exists()
+
+
+# ---------------------------------------------------------------------------
+# 2.3.1: the exit contract of the comparison itself (the 2026-11-19
+# ruling): the tables agree -> 0, they differ -> 1, the run cannot
+# happen -> 2.  Written red first: 2.3.0 returned 0 even when the
+# tables differ.  "Differ" is any of the closed states beyond same -
+# changed / removed / added, and a duplicate key too (its rows are not
+# compared, so the tables do not agree).
+
+def test_cli_exits_1_when_the_tables_differ(tmp_path):
+    a = tmp_path / "a.csv"
+    b = tmp_path / "b.csv"
+    _write_csv(a, "id,v\n1,x\n2,y\n")
+    _write_csv(b, "id,v\n1,y\n3,z\n")            # the KV-C3 shape
+    out = tmp_path / "out"
+    proc = subprocess.run(
+        [sys.executable, "sieve_tray.py", "table-diff", str(a), str(b),
+         "--key", "id", "-o", str(out)],
+        cwd=REPO, capture_output=True, text=True, encoding="utf-8")
+    assert proc.returncode == 1
+    receipt = json.loads((out / "handoff" / "table-diff-receipt.json")
+                         .read_text(encoding="utf-8"))
+    s = receipt["summary"]
+    assert (s["rows_changed"], s["rows_removed"],
+            s["rows_added"]) == (1, 1, 1)
+
+
+def test_cli_exits_0_when_the_tables_agree(tmp_path):
+    a = tmp_path / "a.csv"
+    b = tmp_path / "b.csv"
+    _write_csv(a, "id,v\n1,x\n")
+    _write_csv(b, "id,v\n1,x\n")
+    out = tmp_path / "out"
+    proc = subprocess.run(
+        [sys.executable, "sieve_tray.py", "table-diff", str(a), str(b),
+         "--key", "id", "-o", str(out)],
+        cwd=REPO, capture_output=True, text=True, encoding="utf-8")
+    assert proc.returncode == 0
+
+
+def test_cli_exits_1_for_a_duplicate_key_alone(tmp_path):
+    a = tmp_path / "a.csv"
+    b = tmp_path / "b.csv"
+    _write_csv(a, "id,v\n1,x\n")
+    _write_csv(b, "id,v\n1,x\n1,y\n")            # only a duplicate key in B
+    out = tmp_path / "out"
+    proc = subprocess.run(
+        [sys.executable, "sieve_tray.py", "table-diff", str(a), str(b),
+         "--key", "id", "-o", str(out)],
+        cwd=REPO, capture_output=True, text=True, encoding="utf-8")
+    assert proc.returncode == 1
