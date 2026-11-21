@@ -294,18 +294,23 @@ def test_pd_t09_pdf_without_pypdf_keeps_closed_vocabulary(
 
 
 def test_pd_t10_readme_documents_the_reopen():
-    """PD-T10: the Gate section carries the two reopen sentences
-    (en/ja) and the install note names what now rides in (PDF and
-    HTML reading); the version pins (test_release_version_pins) and
-    the forbidden-screen-words sweep (SL-T18) stay the guards for the
-    rest."""
+    """PD-T10: the Gate section documents the PDF check (en/ja) and the
+    install note names what now rides in (PDF and HTML reading); the
+    version pins (test_release_version_pins) and the
+    forbidden-screen-words sweep (SL-T18) stay the guards for the rest.
+
+    2.4.0 (the 2026-11-21 verification): the "render mode 3" sentence
+    grew into the five-kind description, and the white-text background
+    judgment rides it."""
     en = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     ja = (REPO_ROOT / "README.ja.md").read_text(encoding="utf-8")
-    # the two sentences, both languages
-    assert "render mode 3" in en
-    assert "the visible text comes out empty" in en
-    assert "描画モード 3" in ja
-    assert "可視のテキストが空になります" in ja
+    # the five kinds, both languages (the old single sentence is gone)
+    assert "five kinds of invisible text" in en
+    assert "render modes 3 and 7" in en
+    assert "White text standing on a painted rectangle stays visible" in en
+    assert "5 種類の不可視テキスト" in ja
+    assert "描画モード 3 と 7" in ja
+    assert "色つきの矩形の上に描かれた白い文字は可視として扱い" in ja
     # the install note names the PDF and HTML reading (option 2 area)
     en_install = en.split("### Option 2", 1)[1].split("\n## ", 1)[0]
     ja_install = ja.split("### 方法2", 1)[1].split("\n## ", 1)[0]

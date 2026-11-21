@@ -1,11 +1,13 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v2.3.1
+# Sieve Tray v2.4.0
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
-> Combines [Sieve Lens](https://github.com/neguseatama/sieve-lens)'s invisible-content
-> observation, [Sieve Scope](https://github.com/neguseatama/sieve-scope)'s code
+> Combines [Sieve Lens](https://github.com/neguseatama/sieve-lens)'s answer
+> to the question "does this document contain something a human can't see but
+> a parser can?" — Lens surfaces what is invisible, with its location, so a
+> human can decide what to do — together with [Sieve Scope](https://github.com/neguseatama/sieve-scope)'s code
 > similarity detection, and [Sieve Referee](https://github.com/neguseatama/sieve-referee)'s
 > text paraphrase detection — plus, new in v0.8.0, Sieve Referee's quantifier
 > audit lane — into a single desktop app. It also bundles
@@ -74,7 +76,12 @@ Pick a folder, and Gate gets it ready to hand to an AI or to other people.
 - Replaces personal information such as names and email addresses with `[REDACTED]1`, `[REDACTED]2`, …
 - Checks for prompts aimed at an AI hidden in invisible text (text in the same color as the background, for example)
 
-For PDFs, Gate confirms the characters that are never painted on screen or in print (render mode 3, for example). When a text-recognition layer rides invisibly on top, as in a scanned PDF, that layer also counts as invisible, and the visible text comes out empty.
+PDFs are checked for five kinds of invisible text: characters the page never
+paints (render modes 3 and 7), characters a text-recognition layer rides
+invisibly on top of (as in a scanned PDF), text too small to read, text drawn
+outside the page, text on a layer switched off, and white text with no
+background. White text standing on a painted rectangle stays visible and
+reaches the output — the background is judged, not assumed.
 
 Output is split into two folders:
 
@@ -159,7 +166,7 @@ The procedure and how to re-check it by hand: [docs/draw-procedure.md](docs/draw
 
 ## 🧼 Clean Metadata
 
-Strip the metadata from JPEG, PNG and Office files before sharing them; the pictures and the documents themselves stay unchanged.
+Strip the metadata from PDF, JPEG, PNG and Office files before sharing them; the pages, the pictures and the documents themselves stay unchanged.
 
 1. Pick the folder (or a single file) and the output folder
 2. The cleaned copies land in `handoff/`, next to the record

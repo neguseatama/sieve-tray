@@ -647,6 +647,32 @@ def test_px_t08_content_stream_identity(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# PX-T15: the docs read-back (was T04 before the verification renamed
+# the numbers to the request's own)
+
+def test_px_t15_docs_read_back():
+    """PX-T15: docs/clean-metadata.md carries the PDF section - the
+    scope statement, the removed/kept split, the in_content mapping,
+    the unobserved reasons, and THE determinism contract sentence
+    (the same pypdf version, the same result)."""
+    doc = (REPO_ROOT / "docs" / "clean-metadata.md").read_text("utf-8")
+    # the scope: PDF joined in 2.4.0
+    assert "### 1.4 PDF（2.4.0 から）" in doc
+    # the removed/kept split
+    assert "Info 辞書" in doc
+    assert "XMP（`/Metadata`。文書全体に加え、ページ、画像とフォームの"
+    assert "XObject、\nAcroForm にも付くもの）" in doc
+    assert "/Thumb" in doc and "/PieceInfo" in doc
+    assert "**残す**: ページと内容ストリーム・注釈・添付ファイル・フォームの欄と" in doc
+    # THE determinism contract sentence (the 2026-11-21 ruling)
+    assert "同じ pypdf の版で、同じ結果" in doc
+    # the in_content mapping and the unobserved reasons
+    assert "`comment`" in doc and "`hidden_part`" in doc
+    assert "`refused`" in doc and "`parse_failed" in doc
+    assert "`engine_unavailable`" in doc
+
+
+# ---------------------------------------------------------------------------
 # PX-T11: the in_content observation (kept, never removed)
 
 def test_px_t11_in_content_observed_not_removed(tmp_path):

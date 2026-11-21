@@ -1107,7 +1107,7 @@ class TR3_T19_Version140(unittest.TestCase):
     referee 1.6.0)."""
 
     def test_version_is_140(self):
-        self.assertEqual(sieve_tray.__version__, "2.3.1")
+        self.assertEqual(sieve_tray.__version__, "2.4.0")
 
     def test_changelog_has_140(self):
         text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")

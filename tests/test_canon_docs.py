@@ -182,6 +182,11 @@ def test_selfcheck_constants_match_the_docs():
         _doc("table-diff.md"), "B の整えた形の SHA-256:")
 
 
-def test_clean_doc_states_the_pdf_exclusion():
+def test_clean_doc_states_the_pdf_inclusion():
+    # 2.4.0 (the PDF request): the doc no longer excludes the PDF - the
+    # PDF section (1.4) states the scope, the removed/kept split and
+    # the determinism contract
     doc = _doc("clean-metadata.md")
-    assert "対象外" in doc and "PDF" in doc
+    assert "### 1.4 PDF（2.4.0 から）" in doc
+    assert "取り除く" in doc and "残す" in doc
+    assert "同じ pypdf の版で、同じ結果" in doc
