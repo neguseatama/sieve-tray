@@ -3,10 +3,11 @@ JSON / CSV normalization, and the table diff.
 
 Everything in this module rides the existing receipt frame of
 sieve_tray (the shared `_gate_*` helpers are imported lazily to keep
-the import acyclic) and the deterministic-zip rules of Seal.  No new
-external dependency: JPEG / PNG / Office byte structures are handled
-with the standard library only (request §2-3: `clean` does not depend
-on Pillow and does not import it).
+the import acyclic) and the deterministic-zip rules of Seal.  The
+standard library carries JPEG / PNG / Office by itself (request §2-3:
+`clean` does not depend on Pillow and does not import it); the 2.4.0
+PDF lane uses pypdf when it is importable and reports the existing
+`engine_unavailable` word when it is not - no new hard dependency.
 
 Vocabulary rules (request §3.6-3 and the shared header of sieve_tray):
 the verify words stay closed; the new words this module uses are the
@@ -27,6 +28,15 @@ import tempfile
 import unicodedata
 import zipfile
 from pathlib import Path
+
+try:
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import ArrayObject, ByteStringObject
+except ImportError:      # the PDF lane reports engine_unavailable without
+    PdfReader = None     # pypdf - every other format keeps working
+    PdfWriter = None
+    ArrayObject = None
+    ByteStringObject = None
 
 # ---------------------------------------------------------------------------
 # the closed vocabularies (request §3.1-10, §3.1-11, §3.2-2, §3.5-3)
@@ -58,7 +68,8 @@ CN_TEXT_EXTS = frozenset(
     {".txt", ".md", ".csv", ".json", ".log", ".xml", ".yaml", ".yml"})
 
 CN_CLEAN_EXTS = {".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png",
-                 ".docx": "office", ".xlsx": "office", ".pptx": "office"}
+                 ".docx": "office", ".xlsx": "office", ".pptx": "office",
+                 ".pdf": "pdf"}
 
 # §3.1-8: the Office output zip rides the pack rules; the constants
 # are pinned against sieve_tray._SEAL_ZIP_* by tests/test_canon_common.py.
@@ -486,7 +497,14 @@ def clean_self_check(progress=None) -> dict:
     """The self-check (§3.8-4): clean the KV-C1 PNG (the metadata
     tEXt) and compare the published known values - the cleaned bytes'
     checksum, the before/after categories, the content checksum match,
-    and the run-to-run determinism."""
+    and the run-to-run determinism.
+
+    2.4.0 (the PDF request §3.3): one hand-built PDF with a full Info
+    dict joins as a second known example.  Its check is composite (the
+    before categories, the zero after, the content match and the
+    run-to-run sha equality in one field) and carries NO absolute
+    sha256 - the determinism contract is the same-version two-run
+    equality, never a frozen hash (the 2026-11-21 ruling)."""
     import zlib as _zlib
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -506,6 +524,44 @@ def clean_self_check(progress=None) -> dict:
             src.write_bytes(png)
             r1 = run_clean(src, d / "out1", progress=progress)
             r2 = run_clean(src, d / "out2", progress=progress)
+
+            # the 2.4.0 PDF known example: pure bytes, an Info dict
+            # with the standard six keys, one painted line
+            pdf_stream = (b"BT /F1 12 Tf 72 720 Td "
+                          b"(CANON SELF-CHECK PDF) Tj ET")
+            pdf_objs = [
+                b"<< /Type /Catalog /Pages 2 0 R >>",
+                b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> "
+                b">> >>",
+                b"<< /Length " + str(len(pdf_stream)).encode()
+                + b" >>\nstream\n" + pdf_stream + b"\nendstream",
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+                b"<< /Author (SIEVE-C1-AUTHOR) /Title (SIEVE-C1-TITLE) "
+                b"/Subject (SIEVE-C1-SUBJECT) /Keywords (SIEVE-C1-KEYS) "
+                b"/Creator (SIEVE-C1-CREATOR) "
+                b"/Producer (SIEVE-C1-PRODUCER) "
+                b"/CreationDate (D:20260101120000Z) "
+                b"/ModDate (D:20260102120000Z) >>",
+            ]
+            out = bytearray(b"%PDF-1.4\n")
+            offsets = []
+            for i, body in enumerate(pdf_objs, 1):
+                offsets.append(len(out))
+                out += f"{i} 0 obj\n".encode() + body + b"\nendobj\n"
+            xref_at = len(out)
+            out += f"xref\n0 {len(pdf_objs) + 1}\n".encode()
+            out += b"0000000000 65535 f \n"
+            for off in offsets:
+                out += f"{off:010d} 00000 n \n".encode()
+            out += (f"trailer\n<< /Size {len(pdf_objs) + 1} /Root 1 0 R "
+                    f"/Info 6 0 R >>\nstartxref\n{xref_at}\n%%EOF\n"
+                    ).encode()
+            pdf_src = d / "kv-c1.pdf"
+            pdf_src.write_bytes(bytes(out))
+            p1 = run_clean(pdf_src, d / "pdfout1", progress=progress)
+            p2 = run_clean(pdf_src, d / "pdfout2", progress=progress)
     except OSError as e:
         return {"error": "self_check_input_unavailable", "detail": str(e)}
     diffs = []
@@ -521,7 +577,28 @@ def clean_self_check(progress=None) -> dict:
     _cn_self_check_fail(diffs, "run 2 cleaned sha256",
                         it["output_sha256"],
                         r2["items"][0]["output_sha256"])
-    return {"expected": 5, "matching": 5 - len(diffs),
+    # the PDF known example: one composite check, no absolute sha256
+    pit = p1["items"][0]
+    pdf_expected = {
+        "status": "cleaned",
+        "categories_before": {"author": 1, "time": 2, "software": 2,
+                              "title_subject": 3, "custom": 0,
+                              "thumbnail": 0},
+        "categories_after": _cn_zero_categories(),
+        "content_checksum_match": True,
+        "run2_sha_equal": True,
+    }
+    pdf_actual = {
+        "status": pit["status"],
+        "categories_before": {k: pit["categories_before"][k]
+                              for k in pdf_expected["categories_before"]},
+        "categories_after": pit["categories_after"],
+        "content_checksum_match": bool(pit["content_checksum_match"]),
+        "run2_sha_equal": (pit["output_sha256"]
+                           == p2["items"][0]["output_sha256"]),
+    }
+    _cn_self_check_fail(diffs, "pdf example", pdf_expected, pdf_actual)
+    return {"expected": 6, "matching": 6 - len(diffs),
             "differences": diffs}
 
 
@@ -1636,6 +1713,206 @@ def _cn_office_content_sha(members):
         n.encode("utf-8") + b"\x00" + p for n, p in picked))
 
 
+# --- the PDF lane (2.4.0 request §3.3) ----------------------------------
+
+# the Info keys of the PDF, mapped onto the closed 8 categories (the
+# correspondence is part of the 2026-11-21 report)
+_CN_PDF_INFO_CATS = {
+    "/Author": "author",
+    "/CreationDate": "time", "/ModDate": "time",
+    "/Creator": "software", "/Producer": "software",
+    "/Title": "title_subject", "/Subject": "title_subject",
+    "/Keywords": "title_subject",
+}
+
+
+def _cn_pdf_obj_str(value):
+    """One metadata value as a local-report string (bytes-safe; the
+    values never reach handoff/ - the receipt carries counts only)."""
+    if isinstance(value, bytes):
+        return value.decode("latin-1", "replace")
+    try:
+        return str(value)
+    except Exception:  # noqa: BLE001 - the report is best-effort
+        return ""
+
+
+def _cn_pdf_walk_xobjects(obj, sink, depth=0):
+    """Collect every image / form XObject dictionary reachable from a
+    resource dictionary (the widened XMP scope of the 2026-11-21
+    verification).  The walk is depth-capped and skips anything that
+    does not resolve."""
+    if obj is None or depth > 8:
+        return
+    try:
+        xobjs = obj.get("/XObject")
+        xobjs = xobjs.get_object() if xobjs is not None else None
+        if xobjs is None:
+            return
+        for value in xobjs.values():
+            resolved = value.get_object()
+            subtype = str(resolved.get("/Subtype"))
+            if subtype in ("/Image", "/Form"):
+                sink.append(resolved)
+                _cn_pdf_walk_xobjects(resolved.get("/Resources"),
+                                      sink, depth + 1)
+    except Exception:  # noqa: BLE001 - an unreadable resource is skipped
+        return
+
+
+def _cn_pdf_observe(reader):
+    """The clean observation of one PDF (request §3.3): the closed 8
+    categories over the Info dict, the XMP packets (catalog, page,
+    image and form), the page thumbnails and the piece info, plus the
+    in_content counts (§3.2-6: annotations -> comment, embedded files
+    and form values -> hidden_part - counted, never removed).  Returns
+    (before, removed, in_content)."""
+    before = _cn_zero_categories()
+    removed = []
+    in_content = {k: 0 for k in CN_IN_CONTENT}
+    # the Info dict
+    info = reader.trailer.get("/Info")
+    if info is not None:
+        info = info.get_object()
+        for key, value in list(info.items()):
+            cat = _CN_PDF_INFO_CATS.get(str(key), "custom")
+            before[cat] += 1
+            removed.append((cat, _cn_pdf_obj_str(value)))
+    # the XMP packets and the thumbnails, level by level
+    root = reader.trailer.get("/Root")
+    root = root.get_object() if root is not None else {}
+    if root.get("/Metadata") is not None:
+        before["custom"] += 1
+        removed.append(("custom", "(catalog XMP)"))
+    if root.get("/PieceInfo") is not None:
+        before["custom"] += 1
+        removed.append(("custom", "(catalog piece info)"))
+    for idx, page in enumerate(reader.pages, start=1):
+        if page.get("/Thumb") is not None:
+            before["thumbnail"] += 1
+            removed.append(("thumbnail",
+                            "(page %d thumbnail)" % idx))
+        if page.get("/Metadata") is not None:
+            before["custom"] += 1
+            removed.append(("custom", "(page %d XMP)" % idx))
+        if page.get("/PieceInfo") is not None:
+            before["custom"] += 1
+            removed.append(("custom",
+                            "(page %d piece info)" % idx))
+        xobjs = []
+        _cn_pdf_walk_xobjects(page.get("/Resources"), xobjs)
+        for xobj in xobjs:
+            if xobj.get("/Metadata") is not None:
+                before["custom"] += 1
+                removed.append(("custom",
+                                "(XObject XMP)"))
+    acro = root.get("/AcroForm")
+    if acro is not None:
+        acro = acro.get_object()
+        if acro.get("/Metadata") is not None:
+            before["custom"] += 1
+            removed.append(("custom", "(AcroForm XMP)"))
+    # the in_content survivors: annotations, embedded files, form values
+    for page in reader.pages:
+        annots = page.get("/Annots")
+        if annots is not None:
+            try:
+                in_content["comment"] += len(annots.get_object())
+            except Exception:  # noqa: BLE001
+                pass
+    names = root.get("/Names")
+    if names is not None:
+        try:
+            emb = names.get_object().get("/EmbeddedFiles")
+            if emb is not None:
+                arr = emb.get_object().get("/Names")
+                if arr is not None:
+                    in_content["hidden_part"] += len(arr.get_object()) // 2
+        except Exception:  # noqa: BLE001
+            pass
+    if acro is not None:
+        try:
+            fields = acro.get("/Fields")
+            fields = fields.get_object() if fields is not None else []
+
+            def _count_values(field_list):
+                n = 0
+                for f in field_list:
+                    f = f.get_object()
+                    if f.get("/V") is not None:
+                        n += 1
+                    kids = f.get("/Kids")
+                    if kids is not None:
+                        n += _count_values(kids.get_object())
+                return n
+
+            in_content["hidden_part"] += _count_values(fields)
+        except Exception:  # noqa: BLE001
+            pass
+    return before, removed, in_content
+
+
+def _cn_pdf_content_sha(reader):
+    """sha256 over the page count and every page's decoded content
+    stream - the logical content the clean must keep (the CN-T08 idiom
+    on PDF; it also feeds the content-derived /ID, §3.2)."""
+    h = hashlib.sha256()
+    h.update(b"pages=%d\n" % len(reader.pages))
+    for page in reader.pages:
+        contents = page.get_contents()
+        if contents is not None:
+            h.update(contents.get_data())
+        else:
+            h.update(b"<none>\n")
+    return h.digest()
+
+
+def _cn_pdf_clean(reader):
+    """The clean of one PDF (request §3.3): clone through pypdf, drop
+    the Info dict entirely, every XMP /Metadata (catalog, page, image
+    and form XObject, AcroForm), the page thumbnails and the piece
+    info, and overwrite the /ID with a content-derived value (never a
+    random one, never the source's).  Returns (out_bytes, after,
+    content_match)."""
+    writer = PdfWriter(clone_from=reader)
+    # the Info: removed entirely (the setter nulls the object and the
+    # trailer entry - the fresh-writer /Producer stamp cannot survive)
+    writer.metadata = None
+    root = writer._root_object
+    for key in ("/Metadata", "/PieceInfo"):
+        if key in root:
+            del root[key]
+    for page in writer.pages:
+        for key in ("/Thumb", "/Metadata", "/PieceInfo"):
+            if key in page:
+                del page[key]
+        xobjs = []
+        _cn_pdf_walk_xobjects(page.get("/Resources"), xobjs)
+        for xobj in xobjs:
+            if "/Metadata" in xobj:
+                del xobj["/Metadata"]
+    if "/AcroForm" in root:
+        acro = root["/AcroForm"].get_object()
+        if "/Metadata" in acro:
+            del acro["/Metadata"]
+    # the /ID: decided by the content alone
+    digest = _cn_pdf_content_sha(reader)
+    writer._ID = ArrayObject([
+        ByteStringObject(digest[:16]), ByteStringObject(digest[16:])])
+    # the deletions above leave orphaned objects (the old XMP streams,
+    # thumbnails, piece info, Info) in the object table - drop them so
+    # the removed values cannot survive in the output bytes
+    writer.compress_identical_objects(remove_unreferenced=True)
+    buf = io.BytesIO()
+    writer.write(buf)
+    out_bytes = buf.getvalue()
+    out_reader = PdfReader(io.BytesIO(out_bytes))
+    after, _removed2, _in2 = _cn_pdf_observe(out_reader)
+    content_match = (_cn_pdf_content_sha(reader)
+                     == _cn_pdf_content_sha(out_reader))
+    return out_bytes, after, content_match
+
+
 # --- the clean run (request §3.1) --------------------------------------
 
 def _cn_png_content_sha(data: bytes) -> str:
@@ -1734,6 +2011,44 @@ def run_clean(input_path, output_dir, *, no_paths=False,
                 orientation_kept = bool(o_kept)
                 content_match = (_cn_jpeg_content_sha(data)
                                  == out_content)
+            elif fmt == "pdf":
+                # the engine check comes first: without pypdf the PDF
+                # lane cannot even parse (the closed word only)
+                try:
+                    import pypdf  # noqa: F401 - the availability IS it
+                except ImportError:
+                    item["status"] = "refused"
+                    item["reason"] = "engine_unavailable"
+                    items.append(item)
+                    refused += 1
+                    continue
+                try:
+                    reader = PdfReader(io.BytesIO(data))
+                except Exception:  # noqa: BLE001 - not a parseable PDF
+                    item["status"] = "refused"
+                    item["reason"] = "parse_failed"
+                    items.append(item)
+                    refused += 1
+                    continue
+                if reader.is_encrypted:
+                    # the closed word for an engine refusal (§3.2)
+                    item["status"] = "refused"
+                    item["reason"] = "refused"
+                    items.append(item)
+                    refused += 1
+                    continue
+                try:
+                    before, removed, in_content = \
+                        _cn_pdf_observe(reader)
+                    out_bytes, after, content_match = \
+                        _cn_pdf_clean(reader)
+                except Exception:  # noqa: BLE001
+                    item["status"] = "refused"
+                    item["reason"] = "parse_failed"
+                    items.append(item)
+                    refused += 1
+                    continue
+                orientation_kept = None
             else:
                 members = _cn_office_members(data)
                 before, removed, in_content = _cn_office_observe(members)

@@ -213,3 +213,44 @@ def test_last_page_restores_the_new_pages(tmp_path):
             win._page_keys.index("normalize")
     finally:
         win.close()
+
+
+# ---------------------------------------------------------------------------
+# PX-T03 entry half (2.4.0 request §3.3): the clean page carries all
+# four entry paths - the folder walk, the file selection, the drop and
+# the CLI (the CLI/core half is pinned in tests/test_px_pdf_exchange.py;
+# this file is the GUI half and runs on the Qt-capable environments).
+
+def test_clean_page_file_select_and_drop_entries(tmp_path):
+    _require_qt()
+    from PySide6.QtCore import QUrl
+    import sieve_tray_gui as gui
+
+    win = _make_window(tmp_path)
+    try:
+        page = win.clean_page
+        # the file-select entry exists and its filter derives from the
+        # clean extensions (PDF joined in 2.4.0)
+        assert page._clean_file_filter().startswith("Metadata files (")
+        assert "*.pdf" in page._clean_file_filter()
+        assert "*.png" in page._clean_file_filter()
+        # the drop entry fills the input field and accepts local files
+        dropped = tmp_path / "drop-me.pdf"
+        dropped.write_bytes(b"%PDF-1.4\n")
+
+        class _FakeMime:
+            def urls(self):
+                return [QUrl.fromLocalFile(str(dropped))]
+
+        class _FakeEvent:
+            def mimeData(self):
+                return _FakeMime()
+
+            def acceptProposedAction(self):
+                pass
+
+        fake = _FakeEvent()
+        page.dropEvent(fake)
+        assert page.clean_input_edit.text() == str(dropped)
+    finally:
+        win.close()

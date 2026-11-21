@@ -397,8 +397,12 @@ def test_out_of_scope_and_broken_files(tmp_path):
     receipt = _run_clean(root, out)
     by_path = {it["path"]: it for it in receipt["items"]}
     assert by_path["plain.txt"]["status"] == "not_applicable"
-    assert by_path["doc.pdf"]["status"] == "not_applicable"
+    # 2.4.0: the PDF joined clean, so this one-line "%PDF-1.4" stub is
+    # no longer out of scope - it is a broken PDF now (the closed
+    # parse_failed word; PX-T12 pins the same mapping)
+    assert by_path["doc.pdf"]["status"] == "refused"
     assert by_path["doc.pdf"]["format"] == "pdf"
+    assert by_path["doc.pdf"]["reason"] == "parse_failed"
     assert by_path["weird.xyz"]["status"] == "not_applicable"
     for name in ("broken.jpg", "broken.png", "broken.docx"):
         assert by_path[name]["status"] == "refused"

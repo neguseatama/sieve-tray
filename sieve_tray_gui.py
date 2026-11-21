@@ -1376,7 +1376,13 @@ class CleanPage(QScrollArea):
     """The Canon 2.3 metadata clean page (request §3.7): pick the
     folder (or file), pick the output folder, run the clean.  The
     originals are never written; the report alone carries the removed
-    values.  The texts describe the actual behavior."""
+    values.  The texts describe the actual behavior.
+
+    2.4.0 (the PDF request §3.3): the input accepts PDFs too, and the
+    page carries all four entry paths the request lists - the folder
+    walk, the file selection (the dialog filter derives from the clean
+    extensions), the drop of files and folders, and the CLI.  The drop
+    fills the input field only; nothing runs without the button."""
 
     def __init__(self, lang: str, parent=None):
         super().__init__(parent)
@@ -1400,8 +1406,12 @@ class CleanPage(QScrollArea):
         clean_browse = QPushButton(self._("browse_folder"))
         clean_browse.setToolTip(self._("clean_input_tooltip"))
         clean_browse.clicked.connect(self.choose_input)
+        clean_browse_file = QPushButton(self._("browse_file"))
+        clean_browse_file.setToolTip(self._("clean_input_tooltip"))
+        clean_browse_file.clicked.connect(self.choose_input_file)
         grid.addWidget(self.clean_input_edit, 0, 1)
         grid.addWidget(clean_browse, 0, 2)
+        grid.addWidget(clean_browse_file, 0, 3)
         grid.addWidget(QLabel(self._("clean_output_label")), 1, 0)
         self.clean_output_edit = QLineEdit()
         self.clean_output_edit.setReadOnly(True)
@@ -1442,12 +1452,47 @@ class CleanPage(QScrollArea):
         layout.addWidget(self.clean_log, stretch=1)
         self._out = None
         self.setWidget(content)
+        # the drop entry (2.4.0 request §3.3): files and folders land
+        # in the input field, the run itself stays behind the button
+        self.setAcceptDrops(True)
+        content.setAcceptDrops(True)
+
+    @staticmethod
+    def _clean_file_filter() -> str:
+        """The dialog filter derived from the clean extensions (the
+        closed set lives in sieve_canon; PDF joined in 2.4.0)."""
+        from sieve_canon import CN_CLEAN_EXTS
+        known = sorted(set(CN_CLEAN_EXTS))
+        pattern = " ".join("*%s" % ext for ext in known)
+        return "Metadata files (%s);;All files (*)" % pattern
 
     def choose_input(self):
         d = QFileDialog.getExistingDirectory(
             self, self._("clean_input_label"))
         if d:
             self.clean_input_edit.setText(d)
+
+    def choose_input_file(self):
+        f, _filter = QFileDialog.getOpenFileName(
+            self, self._("clean_input_label"), "",
+            self._clean_file_filter())
+        if f:
+            self.clean_input_edit.setText(f)
+
+    def dragEnterEvent(self, event):  # noqa: N802 - Qt naming
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                event.acceptProposedAction()
+                return
+
+    def dropEvent(self, event):  # noqa: N802 - Qt naming
+        for url in event.mimeData().urls():
+            if not url.isLocalFile():
+                continue
+            path = Path(url.toLocalFile())
+            self.clean_input_edit.setText(str(path))
+            break
+        event.acceptProposedAction()
 
     def choose_output(self):
         d = QFileDialog.getExistingDirectory(

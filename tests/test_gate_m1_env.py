@@ -369,7 +369,9 @@ def test_t20_dependency_floors():
     # unchanged at the published 0.22.0.
     # v2.2.1 (the reopen request 3.1): the pdf extra joins and the
     # floor moves to the published 0.22.1.
-    assert "sieve-lens[pdf,html-css-full]>=0.22.1" in pyproject
+    # v2.4.0 (the PDF exchange request 3.4): the floor moves to the
+    # published 0.23.0 (the six fixed hidden kinds ride it).
+    assert "sieve-lens[pdf,html-css-full]>=0.23.0" in pyproject
 
 
 # ---------------------------------------------------------------------------

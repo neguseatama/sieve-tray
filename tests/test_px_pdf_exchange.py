@@ -78,6 +78,7 @@ from px_pdf_builders import (ANNOT_TEXT, EMBED_NAME, FORM_FIELD,
                              build_incremental_pdf, build_meta_pdf,
                              build_six_kinds_pdf, build_white_bg_pdf,
                              build_xmp_full_pdf, need_pypdf)
+from test_pd_pdf_reopen import wheel_path  # noqa: F401  (the PX-T06 fix)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -209,19 +210,20 @@ def test_px_t04_cohort_pdf_observed_not_compared(tmp_path):
     inp, out = tmp_path / "in", tmp_path / "out"
     inp.mkdir()
     build_six_kinds_pdf(inp / "a.pdf")
-    build_meta_pdf(inp / "b.pdf")
+    build_white_bg_pdf(inp / "white.pdf")
     (inp / "note.txt").write_bytes(b"shared sentence one.\n")
 
     receipt = _run_cohort(inp, out)
     by_path = {it.get("path"): it for it in receipt["items"]}
     a = by_path["a.pdf"]
-    b = by_path["b.pdf"]
+    b = by_path["white.pdf"]
     # observed: the five kinds ride the hidden count, the mask is real
     assert a["kind"] == "document"
     assert a["hidden_segments"]["count"] == 6
     assert a["hidden_segments"]["order_observed"] == 6
     assert a["lens"]["mask"] == "1001-000"
-    assert b["hidden_segments"]["count"] == 0
+    assert b["hidden_segments"]["count"] == 1
+    assert b["hidden_segments"]["order_observed"] == 1
     # the PDF text never joins the comparison pool (the closed words:
     # not_compared + not_applicable)
     assert a["status"] == "not_compared"
@@ -334,7 +336,7 @@ def test_px_t03_raw_bytes_and_local_kind_record(tmp_path):
     # and the verify verdict stay exactly as without it
     from sieve_tray import verify_gate
     verdict = verify_gate(out / "handoff" / "gate-receipt.json",
-                          output_dir=out)
+                          output_dir=out / "handoff")
     assert verdict["overall"] == "match", verdict
 
 
@@ -571,6 +573,77 @@ def test_px_t10_incremental_old_info_dropped(tmp_path):
             handoff_raw += p.read_bytes()
     assert OLD_AUTHOR.encode("ascii") not in handoff_raw
     assert NEW_AUTHOR.encode("ascii") not in handoff_raw
+
+
+# ---------------------------------------------------------------------------
+# PX-T06: the wheel METADATA (the PD-T06 idiom, the wheel built once)
+
+def test_px_t06_wheel_metadata_requires_dist(wheel_path):
+    """PX-T06: the built wheel's METADATA carries the published 0.23.0
+    floor with the pdf and html-css-full extras, and pypdf is not
+    declared on the tray side (it rides the lens pdf extra)."""
+    import zipfile
+    with zipfile.ZipFile(wheel_path) as z:
+        meta_name = next(n for n in z.namelist()
+                         if n.endswith(".dist-info/METADATA"))
+        meta = z.read(meta_name).decode("utf-8")
+    reqs = [line for line in meta.splitlines()
+            if line.startswith("Requires-Dist:")]
+    lens_reqs = [r for r in reqs
+                 if r.startswith("Requires-Dist: sieve-lens[")]
+    assert len(lens_reqs) == 1, reqs
+    lens_req = lens_reqs[0][len("Requires-Dist: sieve-lens["):]
+    extras, _, floor = lens_req.partition("]")
+    assert set(extras.split(",")) == {"pdf", "html-css-full"}
+    assert floor == ">=0.23.0"
+    assert not any(r.startswith("Requires-Dist: pypdf") for r in reqs)
+
+
+# ---------------------------------------------------------------------------
+# PX-T08: the content stream identity
+
+def test_px_t08_content_stream_identity(tmp_path):
+    """PX-T08: the clean keeps the logical content - the page count,
+    the decoded content streams and the visible text are identical
+    before and after.  This is the assertion that also holds across
+    pypdf versions (the 4.0.0 byte difference is a string-encoding
+    difference only - measured in §2-5-6 on three environments), so
+    the cross-version logical identity rides this test per the
+    2026-11-21 verification."""
+    need_pypdf()
+    from pypdf import PdfReader
+    from sieve_canon import _cn_pdf_content_sha
+
+    inp, out = tmp_path / "in", tmp_path / "out"
+    inp.mkdir()
+    for name, builder in (("doc.pdf", build_meta_pdf),
+                          ("full.pdf", build_xmp_full_pdf),
+                          ("incr.pdf", build_incremental_pdf)):
+        builder(inp / name)
+
+    receipt = _run_clean(inp, out)
+    by_path = {it.get("path"): it for it in receipt["items"]}
+    for name, text in (("doc.pdf", META_TEXT),
+                       ("full.pdf", FULL_TEXT),
+                       ("incr.pdf", INCREMENTAL_TEXT)):
+        item = by_path[name]
+        assert item["status"] == "cleaned", (name, item)
+        assert item["content_checksum_match"] is True, name
+        before_reader = PdfReader(str(inp / name))
+        after_reader = PdfReader(str(out / "handoff" / name))
+        assert len(before_reader.pages) == len(after_reader.pages), name
+        # the decoded content streams are byte-identical
+        for p_before, p_after in zip(before_reader.pages,
+                                     after_reader.pages):
+            cb = p_before.get_contents().get_data()
+            ca = p_after.get_contents().get_data()
+            assert cb == ca, name
+        # the visible text is identical
+        assert text in before_reader.pages[0].extract_text()
+        assert text in after_reader.pages[0].extract_text()
+        # and the content sha helper agrees with the identity
+        assert _cn_pdf_content_sha(before_reader) == \
+            _cn_pdf_content_sha(after_reader), name
 
 
 # ---------------------------------------------------------------------------
