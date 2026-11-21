@@ -5,11 +5,17 @@ and the hidden report from one shared classification (the text a PDF
 does not paint can never appear on the visible side), so Gate can
 observe PDFs again.  The PD tests pin the reopened lane:
 
-  PD-T02 - one marker per text render mode 0..7 on one page: the
-           painted modes (0, 1, 2, 4, 5, 6) reach the handoff visible
-           text, mode 3 stays out (and is reported as a hidden body),
-           mode 7 (clip only, paints nothing) stays out entirely
-           (measured 2026-11-16 with Lens 0.22.1).
+  PD-T02 - one marker per text render mode 0..7 on one page: with
+           Lens 0.23.0 the hidden report follows the observation
+           (the mold update of 2026-11-21): the builder's ``<y> 0 Td``
+           idiom puts the first Td operand in x, so M0/M1/M2/M4/M5
+           draw at x 620..720, outside the 612-wide MediaBox, and the
+           new off_page kind hides them; mode 7 is reported as hidden
+           text now (0.22.1 merely excluded it).  The handoff hidden
+           count is 3 (the off_page bundle + Tr 3 + Tr 7), the
+           visible text keeps only M6, the mask stays 1001-000
+           (first measured 2026-11-16 with Lens 0.22.1, re-measured
+           2026-11-21 with Lens 0.23.0).
   PD-T03 - the same word on both the visible and the invisible line:
            exactly one occurrence in the handoff visible text.
   PD-T04 - an OCR-layer-only PDF (no painted text, one ``3 Tr``
@@ -86,24 +92,30 @@ def test_pd_t02_render_modes_painted_vs_not(tmp_path):
     assert item["kind"] == "document"
     assert item["status"] == "flagged"
     assert item["treatment"] == "produced"
-    # one hidden body: the mode-3 marker
-    assert item["hidden_segments"]["count"] == 1
+    # the mold of the Lens 0.23.0 adoption: mode 7 rides the
+    # observation now, and the off_page kind hides the M0/M1/M2/M4/M5
+    # bundle (the builder draws their origins at x 620..720, outside
+    # the 612-wide MediaBox).  Three hidden bodies: the off_page
+    # bundle, Tr 3, Tr 7.
+    assert item["hidden_segments"]["count"] == 3
+    assert item["hidden_segments"]["order_observed"] == 3
 
     text = _visible_text_of(out, item)
-    for mode in (0, 1, 2, 4, 5, 6):
-        assert MODE_MARKERS[mode].encode("ascii") in text, \
-            f"painted mode {mode} ({MODE_MARKERS[mode]}) missing"
+    # the visible text keeps only the one painted on-page mode
+    assert MODE_MARKERS[6].encode("ascii") in text, \
+        "painted mode 6 (M6fillstrokeclip) missing"
 
-    # modes 3 and 7: nowhere in the whole handoff/ tree (raw bytes)
+    # every other mode's marker: nowhere in the whole handoff/ tree
+    # (raw bytes) - hidden by the observation, never painted again
     for p in (out / "handoff").rglob("*"):
         if not p.is_file():
             continue
         blob = p.read_bytes()
-        for bad in (3, 7):
-            assert MODE_MARKERS[bad].encode("ascii") not in blob, \
-                f"mode-{bad} text leaked into {p}"
-            assert MODE_MARKERS[bad].encode("utf-16-le") not in blob, \
-                f"mode-{bad} text (utf-16) leaked into {p}"
+        for mode in (0, 1, 2, 3, 4, 5, 7):
+            assert MODE_MARKERS[mode].encode("ascii") not in blob, \
+                f"mode-{mode} text leaked into {p}"
+            assert MODE_MARKERS[mode].encode("utf-16-le") not in blob, \
+                f"mode-{mode} text (utf-16) leaked into {p}"
 
 
 def test_pd_t03_same_word_visible_and_invisible(tmp_path):
