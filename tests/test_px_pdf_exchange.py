@@ -1,27 +1,43 @@
-"""Tray 2.4.0 - the PDF exchange lane (request §4, PX-T01..T10).
+"""Tray 2.4.0 - the PDF exchange lane (request §4, PX-T01..T15).
 
 Red-first (2026-11-21): the five red tests PX-T01 / T03 / T07 / T09 /
 T10 enter the suite BEFORE the implementation and fail on the 2.3.1
-tree, plus two pins that guard what must not move (PX-T02's handoff
-shape - green at birth - and the Lens 0.23.x location grammar the
-record extraction reads).
+tree, plus pins that guard what must not move (PX-T05's handoff shape
+- green at birth - and the Lens 0.23.x location grammar the record
+extraction reads).  The 2026-11-21 verification added the missing
+rows and fixed the numbering to the request's own: the white-text
+background judgment is PX-T02 (green at birth under the 0.23.x
+observation, red under the 0.22.1 floor), Cohort is PX-T04, the
+in_content observation is PX-T11, the unobserved reasons are PX-T12,
+and the widened XMP scope rides PX-T07.  The former T02/T04/T05
+functions were renamed mechanically (T02 -> T05, docs -> T15, the
+frozen-app self-check -> T13).
 
   PX-T01 - the dependency floor moves to the PUBLISHED 0.23.0, and
            the six fixed hidden kinds (Tr 3, Tr 7, tiny_font,
            off_page, off_layer, white_text) reach Gate's
            hidden_segments count and the Order observation.
-  PX-T02 - (pin) the handoff processing record keeps its existing
-           shape: the closed hidden_segments keys, no location, no
-           kind word anywhere in the receipt; a run without PDFs
-           writes no kind record at all.
+  PX-T02 - the white-text background judgment: white text ON a
+           painted rectangle is visible (it reaches the handoff
+           output), bare white text hides; the Lens diagnostic keys
+           never enter the receipt.
   PX-T03 - the raw-byte inspection: the layer name and the fixed
            words never enter handoff/, the local record carries only
            the fixed words + page positions (the name part is thrown
            away, unknown location shapes record the position alone),
            and the digest and verify are untouched by the record.
+  PX-T04 - Cohort: the PDF's five-kind observation reaches the
+           report (hidden count + fragments), the PDF text joins no
+           comparison pool, and cohort writes no kind record.
+  PX-T05 - (pin) the handoff processing record keeps its existing
+           shape: the closed hidden_segments keys, no location, no
+           kind word anywhere in the receipt; a run without PDFs
+           writes no kind record at all.
   PX-T07 - a PDF joins clean: the Info metadata is removed, the
            content is kept, the removed values ride the local report
-           only, and the original file is untouched.
+           only, and the original file is untouched; the XMP
+           /Metadata is removed at the catalog, page, image-XObject
+           and AcroForm level together with /Thumb and /PieceInfo.
   PX-T09 - the determinism contract: SAME pypdf version, two runs,
            byte-identical output (no fixed sha256 lives in this
            test), and the /ID is decided by the content - two inputs
@@ -29,25 +45,39 @@ record extraction reads).
   PX-T10 - an incremental-update PDF (old front-half Info behind
            /Prev) is rewritten so the old values survive nowhere in
            the output bytes while the page and its text survive.
+  PX-T11 - the in_content observation: annotations, embedded files
+           and form field values are observed, reported with the
+           EXISTING closed words, and never removed.
+  PX-T12 - the unobserved reasons: encrypted = refused, a broken PDF
+           = parse_failed, no pypdf = engine_unavailable (the size
+           and symlink rules stay as they are).
 
 The expectations were measured before the red commit
 (scripts/tray240_px_probe.py against sieve-lens 0.23.0 / pypdf 6.6.0,
-tree fcd5a484).  The PX-T02 pin and the T03 handoff-absence half are
-green at birth; the record-dependent and clean-dependent halves go
-red here and turn green with the feature commit.
+tree fcd5a484; probe2/probe3 on pypdf 7.1.0 for the verification
+rows).  The PX-T05 pin and the T03 handoff-absence half are green at
+birth; the record-dependent and clean-dependent halves go red here
+and turn green with the feature commit.
 """
 import io
 import json
+import sys
 from pathlib import Path
 
+import pytest
+
 import sieve_tray
-from px_pdf_builders import (INCREMENTAL_TEXT, LAYER_NAME, LOCATION_WORDS,
-                             META_MARKERS, META_TEXT, NEW_AUTHOR,
-                             NEW_CREATOR, OLD_AUTHOR, OLD_CREATOR,
-                             SIX_KIND_LOCATIONS, SIX_KIND_TEXTS,
-                             VISIBLE_LINE, build_incremental_pdf,
-                             build_meta_pdf, build_six_kinds_pdf,
-                             need_pypdf)
+from px_pdf_builders import (ANNOT_TEXT, EMBED_NAME, FORM_FIELD,
+                             FORM_VALUE, FULL_TEXT, INCREMENTAL_TEXT,
+                             LAYER_NAME, LOCATION_WORDS, META_MARKERS,
+                             META_TEXT, NEW_AUTHOR, NEW_CREATOR,
+                             OLD_AUTHOR, OLD_CREATOR, SIX_KIND_LOCATIONS,
+                             SIX_KIND_TEXTS, VISIBLE_LINE,
+                             WHITE_BARE_TEXT, WHITE_BG_PLAIN_TEXT,
+                             WHITE_ON_PAINTED_TEXT, XMP_MARKERS,
+                             build_incremental_pdf, build_meta_pdf,
+                             build_six_kinds_pdf, build_white_bg_pdf,
+                             build_xmp_full_pdf, need_pypdf)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -64,6 +94,11 @@ def _run_gate(input_dir, output_dir):
 def _run_clean(input_dir, output_dir):
     from sieve_canon import run_clean
     return run_clean(Path(input_dir), Path(output_dir))
+
+
+def _run_cohort(input_dir, output_dir):
+    from sieve_tray import run_cohort
+    return run_cohort(Path(input_dir), Path(output_dir))
 
 
 def _item_by_name(receipt, needle):
@@ -116,10 +151,102 @@ def test_px_t01_dependency_floor_and_hidden_kinds(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# PX-T02: the handoff shape pin (green at birth)
+# PX-T02: the white-text background judgment (the 2026-11-21 verification)
 
-def test_px_t02_handoff_shape_unchanged(tmp_path):
-    """PX-T02: the receipt item keeps the exact 2.3.1 key set, the
+def test_px_t02_white_text_background_judgment(tmp_path):
+    """PX-T02: white text ON a painted rectangle is visible - it
+    reaches the handoff output; bare white text hides (count 1).
+    The Lens diagnostic keys (white_on_painted, color_unresolved)
+    fire on this input yet never enter the receipt bytes."""
+    need_pypdf()
+    from sieve_lens import SieveLensEngine
+    from sieve_lens_ext.pdf import install as _pdf_install
+
+    inp, out = tmp_path / "in", tmp_path / "out"
+    inp.mkdir()
+    build_white_bg_pdf(inp / "whitebg.pdf")
+
+    # the observation sanity: the judgment fired (painted white kept,
+    # bare white hidden) - under the 0.22.1 floor both whites ride the
+    # visible side and this test goes red (the floor guard)
+    engine = SieveLensEngine()
+    _pdf_install(engine)
+    obs = engine.observe(inp / "whitebg.pdf")
+    assert dict(obs.diagnostics).get("white_on_painted") == 1
+    hidden = [s for s in obs.segments if not s.visible]
+    assert [s.text for s in hidden] == [WHITE_BARE_TEXT]
+
+    receipt = _run_gate(inp, out)
+    item = _item_by_name(receipt, "whitebg.pdf")
+    assert item["status"] == "flagged"
+    assert item["hidden_segments"]["count"] == 1
+    assert item["treatment"] == "produced"
+
+    # the painted white and the plain line reach the handoff output;
+    # the bare white does not
+    vis = (out / item["output"]["path"]).read_text("utf-8")
+    assert WHITE_ON_PAINTED_TEXT in vis
+    assert WHITE_BG_PLAIN_TEXT in vis
+    assert WHITE_BARE_TEXT not in vis
+
+    # the diagnostic keys never enter the receipt
+    receipt_bytes = json.dumps(receipt, sort_keys=True).encode("utf-8")
+    assert b"white_on_painted" not in receipt_bytes
+    assert b"color_unresolved" not in receipt_bytes
+
+
+# ---------------------------------------------------------------------------
+# PX-T04: Cohort - observed, but never text-compared
+
+def test_px_t04_cohort_pdf_observed_not_compared(tmp_path):
+    """PX-T04: the cohort document lane observes the PDFs (the hidden
+    count carries the five kinds, the fragments reach the local
+    report), the PDF text joins NO comparison pair, and cohort writes
+    no kind record.  Red before the feature commit: the PDFs join the
+    referee pool."""
+    need_pypdf()
+
+    inp, out = tmp_path / "in", tmp_path / "out"
+    inp.mkdir()
+    build_six_kinds_pdf(inp / "a.pdf")
+    build_meta_pdf(inp / "b.pdf")
+    (inp / "note.txt").write_bytes(b"shared sentence one.\n")
+
+    receipt = _run_cohort(inp, out)
+    by_path = {it.get("path"): it for it in receipt["items"]}
+    a = by_path["a.pdf"]
+    b = by_path["b.pdf"]
+    # observed: the five kinds ride the hidden count, the mask is real
+    assert a["kind"] == "document"
+    assert a["hidden_segments"]["count"] == 6
+    assert a["hidden_segments"]["order_observed"] == 6
+    assert a["lens"]["mask"] == "1001-000"
+    assert b["hidden_segments"]["count"] == 0
+    # the PDF text never joins the comparison pool (the closed words:
+    # not_compared + not_applicable)
+    assert a["status"] == "not_compared"
+    assert a["unobserved_reason"] == "not_applicable"
+    assert b["status"] == "not_compared"
+    assert b["unobserved_reason"] == "not_applicable"
+    # the non-PDF document still compares
+    assert by_path["note.txt"]["status"] == "compared"
+    # no pair carries a PDF side
+    for p in receipt.get("pairs", []):
+        assert not str(p.get("a", "")).endswith(".pdf"), p
+        assert not str(p.get("b", "")).endswith(".pdf"), p
+    # the observation reaches the local report (the fragments)
+    report = (out / "local" / "cohort-report.html").read_text("utf-8")
+    assert SIX_KIND_TEXTS["Tr 3"] in report
+    # cohort writes no kind record (the record is the Gate lane only)
+    assert not (out / "local" / "gate-hidden-kinds.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# PX-T05: the handoff shape pin (green at birth; was T02 before the
+# 2026-11-21 verification renamed the numbers to the request's own)
+
+def test_px_t05_handoff_shape_unchanged(tmp_path):
+    """PX-T05: the receipt item keeps the exact 2.3.1 key set, the
     closed hidden_segments keys, and no location / kind word anywhere
     in the receipt bytes."""
     need_pypdf()
@@ -145,8 +272,8 @@ def test_px_t02_handoff_shape_unchanged(tmp_path):
     assert b"page 1 (" not in receipt_bytes
 
 
-def test_px_t02_run_without_pdf_writes_no_kind_record(tmp_path):
-    """PX-T02: a run without any PDF keeps the local tree exactly as
+def test_px_t05_run_without_pdf_writes_no_kind_record(tmp_path):
+    """PX-T05: a run without any PDF keeps the local tree exactly as
     2.3.1 wrote it - no kind record file appears (the stopping
     condition stays untriggered for non-PDF inputs)."""
     inp, out = tmp_path / "in", tmp_path / "out"
@@ -303,6 +430,58 @@ def test_px_t07_clean_pdf_joins_metadata_removal(tmp_path):
     assert (inp / "doc.pdf").read_bytes() == before
 
 
+def test_px_t07_xmp_removed_at_every_level(tmp_path):
+    """PX-T07 (the 2026-11-21 verification row): the XMP /Metadata
+    leaves at EVERY level - the catalog, the page, the image XObject
+    and the AcroForm - together with the page /Thumb and /PieceInfo at
+    the catalog and the page.  The marker streams ride uncompressed in
+    the input (measured), so the raw-byte absence in the output is a
+    real assertion, and the after-observation counts zero everywhere."""
+    need_pypdf()
+    from pypdf import PdfReader
+
+    inp, out = tmp_path / "in", tmp_path / "out"
+    inp.mkdir()
+    build_xmp_full_pdf(inp / "full.pdf")
+
+    # the measured premise: the markers ARE in the input raw bytes
+    raw_in = (inp / "full.pdf").read_bytes()
+    for marker in XMP_MARKERS.values():
+        assert marker.encode("ascii") in raw_in, marker
+    assert b"/Thumb" in raw_in
+
+    receipt = _run_clean(inp, out)
+    item = receipt["items"][0]
+    assert item["status"] == "cleaned"
+    assert item["categories_after"] == _zeros()
+    assert item["content_checksum_match"] is True
+
+    out_bytes = (out / "handoff" / "full.pdf").read_bytes()
+    for marker in XMP_MARKERS.values():
+        assert marker.encode("ascii") not in out_bytes, marker
+    assert b"/Thumb" not in out_bytes
+
+    # the logical view agrees: no /Metadata anywhere, no /Thumb,
+    # no /PieceInfo; the content still reads
+    reader = PdfReader(io.BytesIO(out_bytes))
+    root = reader.trailer["/Root"]
+    assert root.get("/Metadata") is None
+    assert root.get("/PieceInfo") is None
+    # /Names carries the embedded file - CONTENT, kept (PX-T11)
+    assert root.get("/Names") is not None
+    page = reader.pages[0]
+    assert page.get("/Metadata") is None
+    assert page.get("/Thumb") is None
+    assert page.get("/PieceInfo") is None
+    acro = root.get("/AcroForm")
+    assert acro is not None and acro.get("/Metadata") is None
+    img = (page["/Resources"].get("/XObject") or {})["/Im1"].get_object()
+    assert img.get("/Metadata") is None
+    assert FULL_TEXT in page.extract_text()
+    # the reader-side metadata is gone entirely
+    assert dict(reader.metadata or {}).get("/Author") is None
+
+
 # ---------------------------------------------------------------------------
 # PX-T09: the determinism contract (same version, two runs)
 
@@ -392,6 +571,115 @@ def test_px_t10_incremental_old_info_dropped(tmp_path):
             handoff_raw += p.read_bytes()
     assert OLD_AUTHOR.encode("ascii") not in handoff_raw
     assert NEW_AUTHOR.encode("ascii") not in handoff_raw
+
+
+# ---------------------------------------------------------------------------
+# PX-T11: the in_content observation (kept, never removed)
+
+def test_px_t11_in_content_observed_not_removed(tmp_path):
+    """PX-T11: the annotations, the embedded files and the form field
+    values are OBSERVED with the existing closed in_content words and
+    reported in the receipt, and the output keeps every one of them.
+    Red before the feature commit: the PDF is not_applicable."""
+    need_pypdf()
+    from pypdf import PdfReader
+
+    inp, out = tmp_path / "in", tmp_path / "out"
+    inp.mkdir()
+    build_xmp_full_pdf(inp / "full.pdf")
+
+    receipt = _run_clean(inp, out)
+    item = receipt["items"][0]
+    assert item["status"] == "cleaned"
+    # the closed words only: the annotation counts as a comment, the
+    # embedded file and the form value count as hidden parts; a PDF
+    # carries no tracked change
+    assert item["in_content"] == {"comment": 1, "tracked_change": 0,
+                                  "hidden_part": 2}
+
+    out_bytes = (out / "handoff" / "full.pdf").read_bytes()
+    reader = PdfReader(io.BytesIO(out_bytes))
+    root = reader.trailer["/Root"]
+    # the annotation survives
+    assert len(reader.pages[0].get("/Annots") or []) == 1
+    # the embedded file survives
+    assert (root.get("/Names") or {}).get("/EmbeddedFiles") is not None
+    # the form field with its value survives
+    acro = root.get("/AcroForm")
+    assert acro is not None
+    field = acro["/Fields"][0].get_object()
+    assert str(field.get("/T")) == FORM_FIELD
+    assert str(field.get("/V")) == FORM_VALUE
+    assert FULL_TEXT in reader.pages[0].extract_text()
+
+    # the receipt carries the counts, not the values
+    receipt_blob = json.dumps(receipt, sort_keys=True).encode("utf-8")
+    for value in (ANNOT_TEXT, EMBED_NAME, FORM_VALUE):
+        assert value.encode("ascii") not in receipt_blob, value
+
+
+# ---------------------------------------------------------------------------
+# PX-T12: the unobserved reasons
+
+def test_px_t12_unobserved_reasons(tmp_path, monkeypatch):
+    """PX-T12: an encrypted PDF is refused, a broken PDF is
+    parse_failed, and without pypdf the reason is engine_unavailable -
+    all three with the existing closed words.  The symlink rule stays
+    untouched (the scan skips links; no new size rule appears)."""
+    need_pypdf()
+    import os as _os
+    from pypdf import PdfWriter
+
+    inp, out = tmp_path / "in", tmp_path / "out"
+    inp.mkdir()
+
+    # the encrypted probe (RC4, user password set)
+    enc_writer = PdfWriter()
+    enc_writer.add_blank_page(width=612, height=792)
+    enc_writer.encrypt("secret")
+    with open(inp / "enc.pdf", "wb") as f:
+        enc_writer.write(f)
+    # the broken probe (not a PDF at all)
+    (inp / "broken.pdf").write_bytes(b"%PDF-1.4\nnot really a pdf\x00\x01")
+
+    receipt = _run_clean(inp, out)
+    by_path = {it.get("path"): it for it in receipt["items"]}
+    enc = by_path["enc.pdf"]
+    assert enc["status"] == "refused"
+    assert enc["reason"] == "refused"
+    assert enc["output_sha256"] is None
+    broken = by_path["broken.pdf"]
+    assert broken["status"] == "refused"
+    assert broken["reason"] == "parse_failed"
+    # no copy of either reaches handoff/
+    assert not (out / "handoff" / "enc.pdf").exists()
+    assert not (out / "handoff" / "broken.pdf").exists()
+
+    # the engine_unavailable probe: no pypdf importable
+    out2 = tmp_path / "out2"
+    inp2 = tmp_path / "in2"
+    inp2.mkdir()
+    build_meta_pdf(inp2 / "doc.pdf")
+    monkeypatch.setitem(sys.modules, "pypdf", None)
+    receipt2 = _run_clean(inp2, out2)
+    it2 = receipt2["items"][0]
+    assert it2["status"] == "refused"
+    assert it2["reason"] == "engine_unavailable"
+    monkeypatch.undo()
+
+    # the symlink rule stays as it is: the scan skips the link and the
+    # receipt carries no row for it (POSIX - Windows CI cannot symlink)
+    if _os.name != "nt":
+        inp3 = tmp_path / "in3"
+        inp3.mkdir()
+        (inp3 / "plain.txt").write_bytes(b"plain body line\n")
+        link = inp3 / "link.pdf"
+        link.symlink_to(inp2 / "doc.pdf")
+        out3 = tmp_path / "out3"
+        receipt3 = _run_clean(inp3, out3)
+        paths = [it.get("path") for it in receipt3["items"]]
+        assert "link.pdf" not in paths
+        assert "plain.txt" in paths
 
 
 # ---------------------------------------------------------------------------

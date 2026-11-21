@@ -7,6 +7,13 @@ one page with the six fixed location words in first-occurrence order
 plain painted line for the visible side.  The metadata PDF carries
 every clean-relevant Info key.  The incremental PDF carries an old
 front-half Info that an appended update section overrides via /Prev.
+The white-background PDF (the 2026-11-21 verification) carries one
+white text ON a painted rectangle (visible) and one bare white text
+(hidden).  The XMP-full PDF carries an Info dict AND an XMP /Metadata
+stream at the catalog, page, image-XObject and AcroForm level plus a
+page /Thumb, /PieceInfo, one annotation, one embedded file and one
+form field value (the widened removal scope and the in_content
+survivors).
 
 The marker strings never overlap the fixed words or each other as
 substrings (the 2.2.1 request §3.5 rule, carried over).
@@ -16,7 +23,7 @@ import pytest
 try:
     from pypdf import PdfWriter
     from pypdf.generic import (ArrayObject, DecodedStreamObject,
-                               DictionaryObject, NameObject,
+                               DictionaryObject, NameObject, NumberObject,
                                TextStringObject)
 except ImportError:          # the module stays importable without pypdf
     PdfWriter = None         # (the tests skip through need_pypdf first)
@@ -64,6 +71,27 @@ META_MARKERS = {
     "custom": "SIEVE-PDF-CUSTOM",
 }
 META_TEXT = "Meta probe line."
+
+# The white-background probe (the 2026-11-21 verification): the white
+# text ON the painted rectangle is visible, the bare white text hides.
+WHITE_ON_PAINTED_TEXT = "Painted white line pxp."
+WHITE_BARE_TEXT = "Bare white line pxb."
+WHITE_BG_PLAIN_TEXT = "Plain body line pxv."
+
+# The XMP-full probe: one XMP packet at every level the widened scope
+# must reach, plus the in_content survivors (kept, never removed).
+XMP_MARKERS = {
+    "catalog": "SIEVE-XMP-CATALOG",
+    "page": "SIEVE-XMP-PAGE",
+    "image": "SIEVE-XMP-IMAGE",
+    "form": "SIEVE-XMP-FORM",
+}
+ANNOT_TEXT = "SIEVE-ANNOT-NOTE"
+EMBED_NAME = "SIEVE-EMBED-NAME"
+EMBED_BODY = "SIEVE-EMBED-BODY"
+FORM_FIELD = "SIEVE-FORM-FIELD"
+FORM_VALUE = "SIEVE-FORM-VALUE"
+FULL_TEXT = "Full probe line pxf."
 
 # The incremental PDF: the front half carries the old author, the
 # appended update section overrides /Info with the new one (/Prev).
@@ -159,6 +187,120 @@ def build_meta_pdf(path, *, author="SIEVE-PDF-AUTHOR") -> None:
         "/CustomKey": META_MARKERS["custom"],
         "/CreationDate": "D:20260101120000Z",
         "/ModDate": "D:20260102120000Z"})
+    with open(path, "wb") as f:
+        writer.write(f)
+
+
+def build_white_bg_pdf(path) -> None:
+    """One page: a painted rectangle (non-white fill), one white text
+    fully inside it (visible through the background judgment), one
+    bare white text (hidden), one plain line.  The rectangle is wide
+    enough for the width-over-estimated text bbox to sit fully inside
+    it (Lens paints only fills with a non-near-white decidable color)."""
+    _require_writer()
+    writer = PdfWriter()
+    page = _add_page(writer, b" ".join([
+        b"q 0.2 0.4 0.8 rg 40 596 520 36 re f Q",
+        b"BT 0 Tr 1 g /F1 12 Tf 60 608 Td "
+        b"(%s) Tj ET" % WHITE_ON_PAINTED_TEXT.encode("ascii"),
+        b"BT 0 Tr 1 g /F1 12 Tf 50 560 Td "
+        b"(%s) Tj ET" % WHITE_BARE_TEXT.encode("ascii"),
+        b"BT 0 Tr 0 g /F1 12 Tf 50 540 Td "
+        b"(%s) Tj ET" % WHITE_BG_PLAIN_TEXT.encode("ascii"),
+    ]))
+    with open(path, "wb") as f:
+        writer.write(f)
+
+
+def build_xmp_full_pdf(path) -> None:
+    """One page with the metadata at EVERY level the widened scope
+    reaches: the Info dict, the catalog XMP, the page XMP, an image
+    XObject with its own XMP, the AcroForm XMP, a page /Thumb, /PieceInfo
+    at the catalog and the page, one annotation, one embedded file and
+    one form field with a value.  The XMP streams ride uncompressed so
+    the markers are visible in the raw bytes (measured 2026-11-21)."""
+    _require_writer()
+    writer = PdfWriter()
+    page = _add_page(writer, b"BT /F1 12 Tf 72 720 Td (%s) Tj ET"
+                     % FULL_TEXT.encode("ascii"))
+    writer.add_metadata({
+        "/Author": META_MARKERS["author"],
+        "/Title": META_MARKERS["title"],
+        "/Creator": META_MARKERS["creator"],
+        "/Producer": META_MARKERS["producer"],
+        "/CreationDate": "D:20260101120000Z",
+        "/ModDate": "D:20260102120000Z"})
+
+    def xmp_stream(marker: str) -> DecodedStreamObject:
+        s = DecodedStreamObject()
+        s.set_data(b"<x:xmpmeta>%s</x:xmpmeta>" % marker.encode("ascii"))
+        return s
+
+    # catalog-level XMP + /PieceInfo
+    writer._root_object[NameObject("/Metadata")] = writer._add_object(
+        xmp_stream(XMP_MARKERS["catalog"]))
+    writer._root_object[NameObject("/PieceInfo")] = DictionaryObject({
+        NameObject("/App"): DictionaryObject({
+            NameObject("/Private"): TextStringObject(
+                META_MARKERS["custom"])})})
+    # page-level XMP + /Thumb + /PieceInfo
+    page[NameObject("/Metadata")] = writer._add_object(
+        xmp_stream(XMP_MARKERS["page"]))
+    thumb = DecodedStreamObject()
+    thumb.set_data(b"q Q")
+    page[NameObject("/Thumb")] = writer._add_object(thumb)
+    page[NameObject("/PieceInfo")] = DictionaryObject({
+        NameObject("/App"): DictionaryObject({
+            NameObject("/Private"): TextStringObject(
+                META_MARKERS["custom"])})})
+    # an image XObject with its own XMP
+    img = DecodedStreamObject()
+    img.set_data(b"\xff\x00\x00")
+    img[NameObject("/Type")] = NameObject("/XObject")
+    img[NameObject("/Subtype")] = NameObject("/Image")
+    img[NameObject("/Width")] = NumberObject(1)
+    img[NameObject("/Height")] = NumberObject(1)
+    img[NameObject("/ColorSpace")] = NameObject("/DeviceRGB")
+    img[NameObject("/BitsPerComponent")] = NumberObject(8)
+    img[NameObject("/Metadata")] = writer._add_object(
+        xmp_stream(XMP_MARKERS["image"]))
+    img_ref = writer._add_object(img)
+    page[NameObject("/Resources")][NameObject("/XObject")] = \
+        DictionaryObject({NameObject("/Im1"): img_ref})
+    # one annotation (kept by clean - reported under in_content)
+    annot = DictionaryObject({
+        NameObject("/Type"): NameObject("/Annot"),
+        NameObject("/Subtype"): NameObject("/FreeText"),
+        NameObject("/Rect"): ArrayObject([
+            NumberObject(0), NumberObject(0),
+            NumberObject(100), NumberObject(20)]),
+        NameObject("/Contents"): TextStringObject(ANNOT_TEXT)})
+    page[NameObject("/Annots")] = ArrayObject(
+        [writer._add_object(annot)])
+    # one embedded file (kept - hidden_part)
+    ef_stream = DecodedStreamObject()
+    ef_stream.set_data(EMBED_BODY.encode("ascii"))
+    ef_stream[NameObject("/Type")] = NameObject("/EmbeddedFile")
+    ef_ref = writer._add_object(ef_stream)
+    ef_file = DictionaryObject({
+        NameObject("/Type"): NameObject("/Filespec"),
+        NameObject("/F"): TextStringObject(EMBED_NAME),
+        NameObject("/EF"): DictionaryObject({
+            NameObject("/F"): ef_ref})})
+    writer._root_object[NameObject("/Names")] = DictionaryObject({
+        NameObject("/EmbeddedFiles"): DictionaryObject({
+            NameObject("/Names"): ArrayObject([
+                TextStringObject(EMBED_NAME), ef_file])})})
+    # one form field with a value (kept - hidden_part) + the form XMP
+    field = DictionaryObject({
+        NameObject("/T"): TextStringObject(FORM_FIELD),
+        NameObject("/V"): TextStringObject(FORM_VALUE),
+        NameObject("/FT"): NameObject("/Tx")})
+    acro = DictionaryObject({
+        NameObject("/Fields"): ArrayObject([writer._add_object(field)])})
+    acro[NameObject("/Metadata")] = writer._add_object(
+        xmp_stream(XMP_MARKERS["form"]))
+    writer._root_object[NameObject("/AcroForm")] = acro
     with open(path, "wb") as f:
         writer.write(f)
 
