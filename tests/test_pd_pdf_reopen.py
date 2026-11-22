@@ -5,11 +5,17 @@ and the hidden report from one shared classification (the text a PDF
 does not paint can never appear on the visible side), so Gate can
 observe PDFs again.  The PD tests pin the reopened lane:
 
-  PD-T02 - one marker per text render mode 0..7 on one page: the
-           painted modes (0, 1, 2, 4, 5, 6) reach the handoff visible
-           text, mode 3 stays out (and is reported as a hidden body),
-           mode 7 (clip only, paints nothing) stays out entirely
-           (measured 2026-11-16 with Lens 0.22.1).
+  PD-T02 - one marker per text render mode 0..7 on one page: with
+           Lens 0.23.0 the hidden report follows the observation
+           (the mold update of 2026-11-21): the builder's ``<y> 0 Td``
+           idiom puts the first Td operand in x, so M0/M1/M2/M4/M5
+           draw at x 620..720, outside the 612-wide MediaBox, and the
+           new off_page kind hides them; mode 7 is reported as hidden
+           text now (0.22.1 merely excluded it).  The handoff hidden
+           count is 3 (the off_page bundle + Tr 3 + Tr 7), the
+           visible text keeps only M6, the mask stays 1001-000
+           (first measured 2026-11-16 with Lens 0.22.1, re-measured
+           2026-11-21 with Lens 0.23.0).
   PD-T03 - the same word on both the visible and the invisible line:
            exactly one occurrence in the handoff visible text.
   PD-T04 - an OCR-layer-only PDF (no painted text, one ``3 Tr``
@@ -86,24 +92,30 @@ def test_pd_t02_render_modes_painted_vs_not(tmp_path):
     assert item["kind"] == "document"
     assert item["status"] == "flagged"
     assert item["treatment"] == "produced"
-    # one hidden body: the mode-3 marker
-    assert item["hidden_segments"]["count"] == 1
+    # the mold of the Lens 0.23.0 adoption: mode 7 rides the
+    # observation now, and the off_page kind hides the M0/M1/M2/M4/M5
+    # bundle (the builder draws their origins at x 620..720, outside
+    # the 612-wide MediaBox).  Three hidden bodies: the off_page
+    # bundle, Tr 3, Tr 7.
+    assert item["hidden_segments"]["count"] == 3
+    assert item["hidden_segments"]["order_observed"] == 3
 
     text = _visible_text_of(out, item)
-    for mode in (0, 1, 2, 4, 5, 6):
-        assert MODE_MARKERS[mode].encode("ascii") in text, \
-            f"painted mode {mode} ({MODE_MARKERS[mode]}) missing"
+    # the visible text keeps only the one painted on-page mode
+    assert MODE_MARKERS[6].encode("ascii") in text, \
+        "painted mode 6 (M6fillstrokeclip) missing"
 
-    # modes 3 and 7: nowhere in the whole handoff/ tree (raw bytes)
+    # every other mode's marker: nowhere in the whole handoff/ tree
+    # (raw bytes) - hidden by the observation, never painted again
     for p in (out / "handoff").rglob("*"):
         if not p.is_file():
             continue
         blob = p.read_bytes()
-        for bad in (3, 7):
-            assert MODE_MARKERS[bad].encode("ascii") not in blob, \
-                f"mode-{bad} text leaked into {p}"
-            assert MODE_MARKERS[bad].encode("utf-16-le") not in blob, \
-                f"mode-{bad} text (utf-16) leaked into {p}"
+        for mode in (0, 1, 2, 3, 4, 5, 7):
+            assert MODE_MARKERS[mode].encode("ascii") not in blob, \
+                f"mode-{mode} text leaked into {p}"
+            assert MODE_MARKERS[mode].encode("utf-16-le") not in blob, \
+                f"mode-{mode} text (utf-16) leaked into {p}"
 
 
 def test_pd_t03_same_word_visible_and_invisible(tmp_path):
@@ -200,11 +212,12 @@ def wheel_path(tmp_path_factory):
 
 
 def test_pd_t06_dependency_floor_pins():
-    """PD-T06: pyproject pins the published 0.22.1 floor with the pdf
-    extra; pypdf is not declared on the tray side."""
+    """PD-T06: pyproject pins the published 0.23.0 floor with the pdf
+    extra; pypdf is not declared on the tray side (the 2.4.0 request
+    section 3.4 moved the floor to the six-kind release)."""
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"sieve-lens[pdf,html-css-full]>=0.22.1"' in pyproject
-    assert '"sieve-lens[html-css-full]>=0.22.0"' not in pyproject
+    assert '"sieve-lens[pdf,html-css-full]>=0.23.0"' in pyproject
+    assert '"sieve-lens[pdf,html-css-full]>=0.22.1"' not in pyproject
     deps_line = pyproject.split("dependencies = ", 1)[1].splitlines()[0]
     assert "pypdf" not in deps_line
 
@@ -225,15 +238,16 @@ def test_pd_t06_wheel_metadata_requires_dist(wheel_path):
     lens_req = lens_reqs[0][len("Requires-Dist: sieve-lens["):]
     extras, _, floor = lens_req.partition("]")
     assert set(extras.split(",")) == {"pdf", "html-css-full"}
-    assert floor == ">=0.22.1"
+    assert floor == ">=0.23.0"
     assert not any(r.startswith("Requires-Dist: pypdf") for r in reqs)
 
 
 def test_pd_t08_self_check_carries_pdf_probe():
-    """PD-T08: gate --self-check runs the PDF probe (13 + 1 = 14) and
+    """PD-T08: gate --self-check runs BOTH PDF probes (13 + 2 = 15 -
+    the render-mode probe and the 2.4.0 white-background probe) and
     matches everything on a healthy environment."""
     result = sieve_tray.gate_self_check(progress=None)
-    assert result["expected"] == 14, result["differences"]
+    assert result["expected"] == 15, result["differences"]
     assert result["matching"] == result["expected"]
     assert result["differences"] == []
 
@@ -280,18 +294,23 @@ def test_pd_t09_pdf_without_pypdf_keeps_closed_vocabulary(
 
 
 def test_pd_t10_readme_documents_the_reopen():
-    """PD-T10: the Gate section carries the two reopen sentences
-    (en/ja) and the install note names what now rides in (PDF and
-    HTML reading); the version pins (test_release_version_pins) and
-    the forbidden-screen-words sweep (SL-T18) stay the guards for the
-    rest."""
+    """PD-T10: the Gate section documents the PDF check (en/ja) and the
+    install note names what now rides in (PDF and HTML reading); the
+    version pins (test_release_version_pins) and the
+    forbidden-screen-words sweep (SL-T18) stay the guards for the rest.
+
+    2.4.0 (the 2026-11-21 verification): the "render mode 3" sentence
+    grew into the five-kind description, and the white-text background
+    judgment rides it."""
     en = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     ja = (REPO_ROOT / "README.ja.md").read_text(encoding="utf-8")
-    # the two sentences, both languages
-    assert "render mode 3" in en
-    assert "the visible text comes out empty" in en
-    assert "描画モード 3" in ja
-    assert "可視のテキストが空になります" in ja
+    # the five kinds, both languages (the old single sentence is gone)
+    assert "five kinds of invisible text" in en
+    assert "render modes 3 and 7" in en
+    assert "White text standing on a painted rectangle stays visible" in en
+    assert "5 種類の不可視テキスト" in ja
+    assert "描画モード 3 と 7" in ja
+    assert "色つきの矩形の上に描かれた白い文字は可視として扱い" in ja
     # the install note names the PDF and HTML reading (option 2 area)
     en_install = en.split("### Option 2", 1)[1].split("\n## ", 1)[0]
     ja_install = ja.split("### 方法2", 1)[1].split("\n## ", 1)[0]

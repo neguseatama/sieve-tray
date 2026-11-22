@@ -369,7 +369,9 @@ def test_t20_dependency_floors():
     # unchanged at the published 0.22.0.
     # v2.2.1 (the reopen request 3.1): the pdf extra joins and the
     # floor moves to the published 0.22.1.
-    assert "sieve-lens[pdf,html-css-full]>=0.22.1" in pyproject
+    # v2.4.0 (the PDF exchange request 3.4): the floor moves to the
+    # published 0.23.0 (the six fixed hidden kinds ride it).
+    assert "sieve-lens[pdf,html-css-full]>=0.23.0" in pyproject
 
 
 # ---------------------------------------------------------------------------
@@ -413,10 +415,10 @@ def test_t21_readme_no_limits_section_added():
 # ---------------------------------------------------------------------------
 
 def test_t22_version_consistency():
-    assert sieve_tray.__version__ == "2.3.1"
+    assert sieve_tray.__version__ == "2.4.0"
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'dynamic = ["version"]' in pyproject or \
-        'version = "2.3.1"' in pyproject
+        'version = "2.4.0"' in pyproject
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert changelog.lstrip("# \n").startswith("[2.2.1]") or \
         "## [2.2.1]" in changelog

@@ -651,8 +651,10 @@ class TR2_T11_DependencyFloors(unittest.TestCase):
         # extra - the floor itself is unchanged.
         # v2.2.1 (the reopen request 3.1): the pdf extra joins and the
         # floor moves to the published 0.22.1.
+        # v2.4.0 (the PDF exchange request 3.4): the floor moves to
+        # the published 0.23.0 (the six fixed hidden kinds ride it).
         deps = _load_pyproject()["project"]["dependencies"]
-        self.assertIn("sieve-lens[pdf,html-css-full]>=0.22.1", deps)
+        self.assertIn("sieve-lens[pdf,html-css-full]>=0.23.0", deps)
 
     def test_other_floors_match_measurement(self):
         deps = _load_pyproject()["project"]["dependencies"]
@@ -668,7 +670,7 @@ class TR2_T12_Version140(unittest.TestCase):
     CHANGELOG (pin refreshed for the 2.2.1 release)."""
 
     def test_version_is_2_0_0(self):
-        self.assertEqual(sieve_tray.__version__, "2.3.1")
+        self.assertEqual(sieve_tray.__version__, "2.4.0")
 
     def test_pyproject_reads_version_from_module(self):
         text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")

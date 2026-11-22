@@ -1090,9 +1090,11 @@ class TR3_T18_DependencyFloorsStayPublished(unittest.TestCase):
         # html-css-full extra - the floor is still the published 0.22.0.
         # v2.2.1 (the reopen request 3.1): the pdf extra joins and the
         # floor moves to the published 0.22.1.
+        # v2.4.0 (the PDF exchange request 3.4): the floor moves to the
+        # published 0.23.0 (the six fixed hidden kinds ride it).
         self.assertEqual(
             proj["dependencies"],
-            ["sieve-lens[pdf,html-css-full]>=0.22.1", "sieve-scope>=1.5.0",
+            ["sieve-lens[pdf,html-css-full]>=0.23.0", "sieve-scope>=1.5.0",
              "sieve-referee>=1.6.0"])
         gui = proj["optional-dependencies"]["gui"]
         self.assertIn("Pillow>=10.0", gui)
@@ -1105,7 +1107,7 @@ class TR3_T19_Version140(unittest.TestCase):
     referee 1.6.0)."""
 
     def test_version_is_140(self):
-        self.assertEqual(sieve_tray.__version__, "2.3.1")
+        self.assertEqual(sieve_tray.__version__, "2.4.0")
 
     def test_changelog_has_140(self):
         text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")

@@ -41,6 +41,7 @@ import os
 import stat as stat_module
 import sys
 import tempfile
+import re
 import unicodedata
 import webbrowser
 import zipfile
@@ -52,7 +53,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "2.3.1"
+__version__ = "2.4.0"
 
 
 CODE_EXTS = {".py"}
@@ -3508,6 +3509,45 @@ def _gate_classify_hidden(segments) -> Tuple[list, list]:
     return orderable, rule_hidden
 
 
+# the fixed word list of the 2026-11-21 ruling, in the fixed match
+# order; the local kind record carries at most one word per hidden body
+GATE_KIND_WORD_ORDER = ("Tr 3", "Tr 7", "tiny_font", "off_page",
+                        "off_layer", "white_text")
+
+_GATE_KIND_PAGE_RE = re.compile(r"\Apage (\d+)\b")
+
+
+def _gate_hidden_kinds_entries(location) -> list:
+    """The fixed-list matcher of the local kind record (the 2026-11-21
+    ruling, request §3.1): the page position and at most ONE fixed
+    word.  The quoted name part (a layer name, a form name) is thrown
+    away BEFORE the match, so a name that contains a fixed word cannot
+    fabricate it; a location outside the list records the position
+    alone (no new word is ever invented); a location without a page
+    position records nothing."""
+    if not location:
+        return []
+    loc = str(location).strip()
+    m = _GATE_KIND_PAGE_RE.match(loc)
+    if m is None:
+        return []          # no page position -> nothing is recorded
+    page = "page %s" % m.group(1)
+    # the name parts (inside single quotes) leave the residue first
+    outside = []
+    in_quote = False
+    for ch in loc[m.end():]:
+        if ch == "'":
+            in_quote = not in_quote
+            continue
+        if not in_quote:
+            outside.append(ch)
+    residue = "".join(outside)
+    for word in GATE_KIND_WORD_ORDER:
+        if word in residue:
+            return [{"page": page, "word": word}]
+    return [{"page": page}]
+
+
 def _gate_order_on_hidden(orderable) -> dict:
     """Observe up to GATE_ORDER_MAX_SEGMENTS hidden segments with
     Order; record truncations and skips (request §3.3)."""
@@ -3703,6 +3743,7 @@ def run_gate(input_dir: Path, output_dir: Path, *,
 
     items: List[dict] = []
     fragments: List[dict] = []
+    kinds_items: List[dict] = []
     engine = _gate_build_engine()
     rels = _gate_walk(input_dir)
     progress("Gate: %d items" % len(rels))
@@ -3740,7 +3781,7 @@ def run_gate(input_dir: Path, output_dir: Path, *,
                                     (() if no_redact else redact_builtins),
                                     redact_mode,
                                     (None if no_redact else redact_config),
-                                    include_paths, fragments)
+                                    include_paths, fragments, kinds_items)
             elif kind == "table":
                 _gate_item_table(src, item, seq, handoff, crowd_config)
             elif kind == "image":
@@ -3814,6 +3855,17 @@ def run_gate(input_dir: Path, output_dir: Path, *,
     _gate_write_atomic(local / "gate-report.html",
                        report.encode("utf-8"))
 
+    # --- the local kind record (the 2026-11-21 ruling): written ONLY
+    # when some document item produced entries; a run without any PDF
+    # keeps the local tree byte-identical to 2.3.1.  The record never
+    # enters handoff/, the digest, or the verify verdict.
+    if kinds_items:
+        record = {"record_version": 1,
+                  "kind": "sieve-gate-hidden-kinds",
+                  "items": kinds_items}
+        _gate_write_atomic(local / "gate-hidden-kinds.json",
+                           _gate_norm_json(record).encode("utf-8"))
+
     # --- history (allowlisted counts only; no paths, no bodies)
     if storage_path is not None:
         try:
@@ -3856,7 +3908,8 @@ def _gate_kind_of(rel: str) -> str:
 def _gate_item_document(engine, src: Path, data: bytes, suffix: str,
                         item: dict, handoff: Path, receipts_dir: Path,
                         seq: int, builtins, mode, redact_config_path,
-                        include_paths: bool, fragments: List[dict]) -> None:
+                        include_paths: bool, fragments: List[dict],
+                        kinds_items: Optional[List[dict]] = None) -> None:
     """The document lane: Lens observation -> visible text (strip) ->
     Redact (label) -> handoff.  HTML rides the extras lane with a
     charset pre-check done here first; a rule-originated css_hidden
@@ -3944,6 +3997,15 @@ def _gate_item_document(engine, src: Path, data: bytes, suffix: str,
         if seg.text and seg.text.strip():
             fragments.append({"item": seq, "text": seg.text,
                               "kind": "hidden"})
+    if kinds_items is not None:
+        # the local kind record (the 2026-11-21 ruling): one entry per
+        # hidden body, the fixed word + the page position only; the
+        # handoff receipt carries none of it (PX-T03/T05)
+        entries = []
+        for seg in orderable:
+            entries.extend(_gate_hidden_kinds_entries(seg.location))
+        if entries:
+            kinds_items.append({"item": seq, "entries": entries})
     item["hidden_segments"] = _gate_order_on_hidden(orderable)
     # --- visible text
     try:
@@ -4733,7 +4795,7 @@ def run_cohort(input_dir: Path, output_dir: Path, *,
             item["kind"] = "document"
             doc_item = _cohort_document_item(
                 doc_engine, src, data, suffix, item, hidden, fragments,
-                seq)
+                seq, compare=(suffix != ".pdf"))
             if doc_item is not None:
                 doc_texts[rel] = doc_item
         elif suffix == ".py" or suffix in COHORT_GENERIC_EXTENSIONS:
@@ -4977,13 +5039,19 @@ def run_cohort(input_dir: Path, output_dir: Path, *,
 
 def _cohort_document_item(engine, src: Path, data: bytes, suffix: str,
                           item: dict, hidden: dict,
-                          fragments: List[dict], seq: int
+                          fragments: List[dict], seq: int,
+                          compare: bool = True
                           ) -> Optional[str]:
     """The document lane (request §3.1): Lens observation -> visible
     text for the referee map.  A rule-originated css_hidden segment
     fails the item closed (the gate ruling - its visible text is never
     compared).  Returns the visible text or None (the item stays
-    not_compared)."""
+    not_compared).
+
+    compare=False (a PDF, the 2.4.0 request §3.1): the observation is
+    in scope - the five kinds ride the hidden count and the fragments
+    reach the local report - but the text never joins the comparison
+    pool (the closed words: not_compared + not_applicable)."""
     try:
         obs = engine.observe(str(src))
         mask = obs.mask
@@ -5020,6 +5088,12 @@ def _cohort_document_item(engine, src: Path, data: bytes, suffix: str,
             fragments.append({"item": seq, "text": seg.text,
                               "kind": "hidden"})
     item["hidden_segments"] = _gate_order_on_hidden(orderable)
+    if not compare:
+        # the PDF text is never a comparison material (2.4.0 request
+        # §3.1) - the observation stays, the pool does not see it
+        item["status"] = "not_compared"
+        item["unobserved_reason"] = "not_applicable"
+        return None
     try:
         from sieve_lens import visible_text
     except ImportError:
@@ -5585,6 +5659,46 @@ def _gate_self_check_pdf_build(path: Path, visible_line: str,
     path.write_bytes(bytes(out))
 
 
+def _gate_self_check_pdf_build_white(path: Path, painted_line: str,
+                                     bare_line: str, plain_line: str) -> None:
+    """Build the self-check's white-background probe (the 2.4.0
+    request §3.1, the 2026-11-21 verification): a painted rectangle
+    with a white text fully inside it (visible through the background
+    judgment), a bare white text (hidden), one plain line.  The marks
+    stay short so the width-over-estimated bbox sits inside the
+    rectangle (the Lens judgment needs full containment)."""
+    stream = (
+        b"q 0.2 0.4 0.8 rg 40 596 520 36 re f Q\n"
+        b"BT 0 Tr 1 g /F1 12 Tf 60 608 Td (" + painted_line.encode("utf-8")
+        + b") Tj ET\n"
+        b"BT 0 Tr 1 g /F1 12 Tf 50 560 Td (" + bare_line.encode("utf-8")
+        + b") Tj ET\n"
+        b"BT 0 Tr 0 g /F1 12 Tf 50 540 Td (" + plain_line.encode("utf-8")
+        + b") Tj ET\n")
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length " + str(len(stream)).encode() + b">\nstream\n"
+        + stream + b"endstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_at = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n".encode()
+    out += b"0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_at}\n%%EOF\n").encode()
+    path.write_bytes(bytes(out))
+
+
 def gate_self_check(progress: ProgressCallback = _silent) -> dict:
     """The self-check (request §3.5): run the sample pack through Gate
     in a temp folder and compare the expected observations (never a
@@ -5601,7 +5715,8 @@ def gate_self_check(progress: ProgressCallback = _silent) -> dict:
     running (possibly frozen) environment on every release OS; a
     missing or broken pypdf shows up as an ordinary difference (exit
     1), not as "cannot run" (2).  The expected count is the manifest
-    items + 1 (the PDF probe)."""
+    items + 2 (the PDF probes: the render-mode probe and the
+    white-background probe of 2.4.0)."""
     manifest_path = REPO_ROOT / "samples" / "gate" / "MANIFEST.json"
     if not manifest_path.is_file():
         # The sample pack is a repository resource (the audit's reference
@@ -5615,6 +5730,11 @@ def gate_self_check(progress: ProgressCallback = _silent) -> dict:
     pdf_name = "selfcheck-pdf.pdf"
     pdf_visible = "GATE SELF-CHECK PDF VISIBLE LINE"
     pdf_hidden = "GATE SELF-CHECK PDF HIDDEN MARKER r8q4z"
+    # the 2.4.0 white-background probe (the 2026-11-21 verification)
+    white_name = "selfcheck-white.pdf"
+    white_painted = "WHITE ON PAINT"
+    white_bare = "WHITE BARE r9z2"
+    white_plain = "PLAIN LINE"
     with tempfile.TemporaryDirectory() as td:
         inp = Path(td) / "in"
         inp.mkdir()
@@ -5623,6 +5743,8 @@ def gate_self_check(progress: ProgressCallback = _silent) -> dict:
             _shutil.copyfile(REPO_ROOT / "samples" / "gate" / entry["file"],
                              inp / entry["file"])
         _gate_self_check_pdf_build(inp / pdf_name, pdf_visible, pdf_hidden)
+        _gate_self_check_pdf_build_white(inp / white_name, white_painted,
+                                         white_bare, white_plain)
         receipt = run_gate(inp, out, progress=progress)
         by_name = {it["path"]: it for it in receipt["items"]}
         fields = ("kind", "status", "hidden_count", "order_observed",
@@ -5691,7 +5813,55 @@ def gate_self_check(progress: ProgressCallback = _silent) -> dict:
                     pdf_visible.encode("utf-8") not in vf.read_bytes():
                 diffs.append({"file": pdf_name, "field": "visible line",
                               "expected": True, "actual": False})
-    total = len(manifest["items"]) + 1
+        # --- the white-background probe (2.4.0, the 2026-11-21
+        # verification): the painted white is VISIBLE (it reaches the
+        # handoff output), the bare white hides (count 1), and the
+        # diagnostic keys never enter the receipt
+        wit = by_name.get(white_name)
+        white_expect = {"kind": "document", "status": "flagged",
+                        "hidden_count": 1, "order_observed": 1,
+                        "redact_spans": 0, "treatment": "produced"}
+        if wit is None:
+            diffs.append({"file": white_name, "field": "presence",
+                          "expected": True, "actual": None})
+        else:
+            white_actual = {
+                "kind": wit["kind"],
+                "status": wit["status"],
+                "hidden_count": wit["hidden_segments"]["count"],
+                "order_observed": wit["hidden_segments"]["order_observed"],
+                "redact_spans": wit["redact"]["spans"],
+                "treatment": wit["treatment"],
+            }
+            for field in pdf_fields:
+                if white_actual[field] != white_expect[field]:
+                    diffs.append({"file": white_name, "field": field,
+                                  "expected": white_expect[field],
+                                  "actual": white_actual[field]})
+        # the bare white marker is nowhere in the whole handoff/ tree
+        for p in (out / "handoff").rglob("*"):
+            if not p.is_file():
+                continue
+            blob = p.read_bytes()
+            if (white_bare.encode("utf-8") in blob
+                    or white_bare.encode("utf-16-le") in blob):
+                diffs.append({"file": white_name, "field": "handoff leak",
+                              "expected": None, "actual": str(p.name)})
+        # the painted white reaches the handoff file
+        if wit is not None and wit.get("output"):
+            vf = out / wit["output"]["path"]
+            if not vf.is_file() or \
+                    white_painted.encode("utf-8") not in vf.read_bytes():
+                diffs.append({"file": white_name, "field": "painted line",
+                              "expected": True, "actual": False})
+        receipt_blob = json.dumps(receipt, sort_keys=True).encode("utf-8")
+        for key in (b"white_on_painted", b"color_unresolved"):
+            if key in receipt_blob:
+                diffs.append({"file": white_name,
+                              "field": "diagnostic key in receipt",
+                              "expected": None,
+                              "actual": key.decode("ascii")})
+    total = len(manifest["items"]) + 2
     return {"expected": total,
             "matching": total - len(diffs),
             "differences": diffs}
@@ -6124,8 +6294,9 @@ def _gate_main(argv: List[str]) -> int:
     n.add_argument("--self-check", action="store_true")
     # Canon 2.3 (§3.1): the metadata clean.  The originals are never
     # written; the removed values stay in local/ (never handoff/).
-    cl = sub.add_parser("clean", help="strip metadata from JPEG, PNG "
-                                      "and Office files (Canon 2.3)")
+    cl = sub.add_parser("clean", help="strip metadata from JPEG, PNG, "
+                                      "Office and PDF files (Canon 2.3; "
+                                      "the PDF lane joins in 2.4.0)")
     cl.add_argument("input", type=Path, nargs="?", default=None)
     cl.add_argument("-o", "--output", type=Path, default=None)
     cl.add_argument("--no-paths", action="store_true",

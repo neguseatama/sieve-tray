@@ -1,13 +1,12 @@
 # メタデータの除去の形式（`docs/clean-metadata.md`）
 
-Sieve Tray 2.3.0（Canon）。この文書は `clean` コマンドが扱う 3 つの形式
-（JPEG・PNG・Office）について、**取り除くもの**と**残すもの**、観測の分類、
-そして本文の中にあるものの扱いを定める。既知の例は §4（KV-C1）で、
+Sieve Tray 2.4.0（Canon）。この文書は `clean` コマンドが扱う 4 つの形式
+（PDF・JPEG・PNG・Office）について、**取り除くもの**と**残すもの**、観測の
+分類、そして本文の中にあるものの扱いを定める。既知の例は §4（KV-C1）で、
 文書から読み戻すテスト（`tests/test_canon_docs.py`）が確かめる。
 
-PDF は本版の対象外である（PDF のメタデータ除去には書き出し機能が要るため、
-別の版で設計する。`clean` では PDF は `not_applicable` として記録され、
-出力には含まれない）。
+PDF は 2.4.0 から対象に加わった（§1.4。依存の下限は、公開済みの
+`sieve-lens[pdf,html-css-full]>=0.23.0`）。
 
 ---
 
@@ -53,6 +52,39 @@ EXIF は、TIFF ヘッダ（II）+ IFD0 の 1 エントリ（タグ 0x0112・型
 バイト列昇順・日時は 1980-01-01 00:00:00・`create_system = 3`・
 外部属性はファイル 0o644・圧縮は ZIP_STORED）。同じ入力から、同じ
 バイト列になる。
+
+### 1.4 PDF（2.4.0 から）
+
+**取り除く**: Info 辞書（`/Title` `/Author` `/Subject` `/Keywords`
+`/Creator` `/Producer`・`/CreationDate` `/ModDate`・規格外の項目ごと全部）・
+XMP（`/Metadata`。文書全体に加え、ページ、画像とフォームの XObject、
+AcroForm にも付くもの）・ページのサムネイル（`/Thumb`）・`/PieceInfo`
+（文書とページの両方）。追記型（`/Prev` つき）は、前半部ごと捨てて
+最新版だけを書き出す。
+
+**残す**: ページと内容ストリーム・注釈・添付ファイル・フォームの欄と
+入力値・資源。内容ストリームの前後一致（`content_checksum_match`）で
+確かめる。
+
+**決定性**: 同じ pypdf の版で、同じ結果。`/ID` は内容から決めた値で
+上書きする（乱数は作らない・元の `/ID` は引き継がない）。版が違うと
+バイト列は変わることがある（文字列のエンコードの違い）が、論理内容
+（ページ数・内容ストリーム・可視テキスト）は同じ。
+
+**観測の分類の対応**: `/Author` → author・`/CreationDate` `/ModDate` →
+time・`/Creator` `/Producer` → software・`/Title` `/Subject`
+`/Keywords` → title_subject・`/Thumb` → thumbnail・XMP と `/PieceInfo`
+と規格外の Info 項目 → custom。location と device は PDF 由来では 0。
+再観測の分類ごとの残りはすべて 0。
+
+**本文の中にあるもの**: 注釈（`/Annots`）→ `comment`・添付ファイル
+（`/EmbeddedFiles`）→ `hidden_part`・フォームの入力値（`/AcroForm` の
+`/V` つきの欄）→ `hidden_part`。いずれも**取り除かない**
+（§3 と同じ扱い。`tracked_change` は PDF 由来では 0）。
+
+**読めないとき**: 暗号化は `refused`、壊れた PDF は `parse_failed`、
+pypdf が無い環境では `engine_unavailable`（いずれも既存の閉じた語彙）。
+大きさの上限とシンボリックリンクは既存の規則のまま。
 
 ## 2. 観測の分類（閉じた 8 種）
 

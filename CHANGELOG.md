@@ -1,6 +1,57 @@
 # Changelog
 
-## [2.3.1] - 2026-11-19
+## [2.4.0] - 2026-11-21
+
+### Added
+- **PDF joins the metadata clean (`clean`)**: the Info dict is removed
+  entirely, the XMP `/Metadata` leaves at every level (the catalog, the
+  page, the image and form XObjects, the AcroForm) together with the
+  page `/Thumb` and `/PieceInfo`, and the orphans are dropped so no
+  removed value survives in the output bytes; the page and the content
+  streams, the annotations, the embedded files and the form values stay
+  (`content_checksum_match`).  The output `/ID` is derived from the
+  content, and an incremental update (/Prev) is rewritten so the old
+  front-half metadata survives nowhere.
+- **The local kind record**: Gate writes `local/gate-hidden-kinds.json`
+  when a PDF hides text - one entry per hidden body carrying the page
+  position and one of the six fixed kinds (Tr 3, Tr 7, tiny_font,
+  off_page, off_layer, white_text) matched against the fixed list with
+  the quoted name part thrown away.  The record never enters `handoff/`,
+  the digest or the verify verdict, and a run without PDFs writes
+  nothing.
+- **The clean page gains the file and the drop entries**: the input now
+  accepts a single file (the dialog filter derives from the clean
+  extensions) and files/folders can be dropped on the page, beside the
+  folder walk and the CLI.
+- **The self-check known examples**: `gate --self-check` runs 15 checks
+  (a white-background PDF probe joins), `clean --self-check` runs 6
+  (a hand-built PDF with a full Info dict joins; no absolute sha256 -
+  the same-version two-run equality is the contract).
+
+### Changed
+- **The dependency floor**: `sieve-lens[pdf,html-css-full]>=0.23.0` -
+  0.23.x reports the six fixed hidden kinds the Gate hidden count and
+  the kind record read, and its white-text background judgment keeps
+  white text standing on a painted rectangle visible while bare white
+  text hides.  pypdf still rides the lens pdf extra and is not declared
+  on this side.
+- **Cohort and PDFs**: the document lane observes PDFs (the hidden
+  count and the fragments reach the receipt and the local report) while
+  the PDF text never joins the comparison pool (the existing closed
+  words: `not_compared` + `not_applicable`).
+- **`clean` reason words for PDFs**: encrypted = `refused`, broken =
+  `parse_failed`, no pypdf = `engine_unavailable` - the existing closed
+  vocabulary only.
+
+### Fixed
+- **The never-painted text no longer leaks as visible**: since Lens
+  0.23, the visible text and the hidden report come from one shared
+  classification, so characters a PDF never paints (the render-mode 3
+  leak that rode the 0.22.1 extraction) cannot re-enter the visible
+  side; Gate's handoff output carries only what the page paints, and
+  the white-text background judgment keeps white-on-painted visible
+  without re-opening the leak.
+
 
 ### Changed
 - **Table comparison exit code**: `table-diff` now exits with 1 when

@@ -29,6 +29,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "window_title": "Sieve Tray",
         "select_folder_placeholder": "Select a folder to scan",
         "browse_folder": "Select Folder...",
+        "browse_file": "Select File...",
         "run_scan": "Run Scan",
         "settings_button": "Settings...",
         "doc_tab": "Documents ({n})",
@@ -394,12 +395,15 @@ STRINGS: Dict[str, Dict[str, str]] = {
 
         # Canon 2.3 (request §3.7): the metadata clean page.
         "clean_tab": "Clean Metadata",
-        "clean_desc": "Remove the metadata from JPEG, PNG and Office "
-                      "files before sharing them. The pictures and the "
-                      "documents themselves stay unchanged.",
+        "clean_desc": "Remove the metadata from PDF, JPEG, PNG and "
+                      "Office files before sharing them. The pages, "
+                      "the pictures and the documents themselves stay "
+                      "unchanged.",
         "clean_input_label": "Folder or file",
         "clean_input_tooltip": "The folder (or the single file) to "
-                               "clean; the original is never modified.",
+                               "clean; files and folders can also be "
+                               "dropped onto the page. The original is "
+                               "never modified.",
         "clean_output_label": "Output folder",
         "clean_output_tooltip": "The copies without metadata and the "
                                 "record go here.",
@@ -488,6 +492,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "window_title": "Sieve Tray",
         "select_folder_placeholder": "スキャンするフォルダを選択してください",
         "browse_folder": "フォルダを選択...",
+        "browse_file": "ファイルを選択...",
         "run_scan": "スキャン実行",
         "settings_button": "設定...",
         "doc_tab": "ドキュメント ({n})",
@@ -845,11 +850,14 @@ STRINGS: Dict[str, Dict[str, str]] = {
 
         # Canon 2.3（依頼書 §3.7）: メタデータの除去のページ。
         "clean_tab": "メタデータの除去",
-        "clean_desc": "JPEG・PNG・Office ファイルのメタデータを取り除い"
-                      "てから渡せます。画像や文書の中身は変わりません。",
+        "clean_desc": "PDF・JPEG・PNG・Office ファイルのメタデータを取り"
+                      "除いてから渡せます。ページや画像、文書の中身は変"
+                      "わりません。",
         "clean_input_label": "フォルダまたはファイル",
         "clean_input_tooltip": "取り除く対象のフォルダ（またはファイ"
-                               "ル）。元のファイルは変更しません。",
+                               "ル）。ファイルやフォルダのドラッグ＆ドロッ"
+                               "プでも指定できます。元のファイルは変更しませ"
+                               "ん。",
         "clean_output_label": "出力先フォルダ",
         "clean_output_tooltip": "メタデータを取り除いたコピーと処理記録"
                                 "が入ります。",
