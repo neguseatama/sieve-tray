@@ -5,9 +5,9 @@
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
 > Combines [Sieve Lens](https://github.com/neguseatama/sieve-lens)'s answer
-> to the question "does this document contain something a human can't see but
-> a parser can?" — Lens surfaces what is invisible, with its location, so a
-> human can decide what to do — together with [Sieve Scope](https://github.com/neguseatama/sieve-scope)'s code
+> to the question "does this document contain something AI can read but a
+> human can't see?" — Lens surfaces what is invisible, with its location, so
+> a human can decide what to do — together with [Sieve Scope](https://github.com/neguseatama/sieve-scope)'s code
 > similarity detection, and [Sieve Referee](https://github.com/neguseatama/sieve-referee)'s
 > text paraphrase detection — plus, new in v0.8.0, Sieve Referee's quantifier
 > audit lane — into a single desktop app. It also bundles
@@ -37,7 +37,7 @@
 ## 💡 Concept
 
 [Sieve Lens](https://github.com/neguseatama/sieve-lens) answers "does this
-document contain something a human can't see but a parser can?".
+document contain something AI can read but a human can't see?".
 [Sieve Scope](https://github.com/neguseatama/sieve-scope) answers "do these two
 source files share suspiciously similar logic, beyond coincidence?".
 [Sieve Referee](https://github.com/neguseatama/sieve-referee) answers "does
@@ -79,7 +79,7 @@ Pick a folder, and Gate gets it ready to hand to an AI or to other people.
 PDFs are checked for five kinds of invisible text: characters the page never
 paints (render modes 3 and 7), characters a text-recognition layer rides
 invisibly on top of (as in a scanned PDF), text too small to read, text drawn
-outside the page, text on a layer switched off, and white text with no
+outside the page, text on a hidden layer, and white text with no
 background. White text standing on a painted rectangle stays visible and
 reaches the output — the background is judged, not assumed.
 

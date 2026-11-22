@@ -401,7 +401,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
                       "unchanged.",
         "clean_input_label": "Folder or file",
         "clean_input_tooltip": "The folder (or the single file) to "
-                               "clean; the original is never modified.",
+                               "clean; files and folders can also be "
+                               "dropped onto the page. The original is "
+                               "never modified.",
         "clean_output_label": "Output folder",
         "clean_output_tooltip": "The copies without metadata and the "
                                 "record go here.",
@@ -853,7 +855,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
                       "わりません。",
         "clean_input_label": "フォルダまたはファイル",
         "clean_input_tooltip": "取り除く対象のフォルダ（またはファイ"
-                               "ル）。元のファイルは変更しません。",
+                               "ル）。ファイルやフォルダのドラッグ＆ドロッ"
+                               "プでも指定できます。元のファイルは変更しませ"
+                               "ん。",
         "clean_output_label": "出力先フォルダ",
         "clean_output_tooltip": "メタデータを取り除いたコピーと処理記録"
                                 "が入ります。",
