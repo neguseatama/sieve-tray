@@ -23,8 +23,8 @@ def test_tr_basic_lookup():
 
 
 def test_tr_formats_with_kwargs():
-    assert tr("en", "doc_tab", n=3) == "Documents (3)"
-    assert tr("ja", "doc_tab", n=3) == "ドキュメント (3)"
+    assert tr("en", "doc_tab", n=3) == "Check Documents (3)"
+    assert tr("ja", "doc_tab", n=3) == "文書の確認 (3)"
 
 
 def test_tr_unknown_language_falls_back_to_english():

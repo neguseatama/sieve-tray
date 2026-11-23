@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QPlainTextEdit, QFileDialog, QMessageBox, QHeaderView,
     QDialog, QFormLayout, QGridLayout, QSpinBox, QDialogButtonBox, QCheckBox,
     QComboBox, QListWidget, QListWidgetItem, QScrollArea, QSizePolicy,
-    QStackedWidget, QProgressBar,
+    QStackedWidget, QProgressBar, QGroupBox, QAbstractItemView,
 )
 from PySide6.QtGui import (QColor, QIcon, QAction, QPainter, QPixmap,
                            QFontDatabase, QShortcut, QKeySequence, QPalette)
@@ -54,7 +54,15 @@ from sieve_tray import (
     validate_region_spec,
     build_region_config,
     validate_rect,
+    # 2.5.0 (§3.1): the registration table references the engine-side
+    # extension constants directly - the pages never carry a copy
+    # (NV-T07's no-duplicate rule).
+    CODE_EXTS,
+    DOC_EXTS,
+    GATE_DOC_EXTS,
+    COHORT_GENERIC_EXTENSIONS,
 )
+from sieve_canon import CN_CLEAN_EXTS, CN_TEXT_EXTS
 from sieve_tray_storage import Storage, RunSummary
 from sieve_tray_i18n import (
     tr, normalize_language, SUPPORTED_LANGUAGES, LANGUAGE_NAMES,
@@ -77,7 +85,7 @@ from sieve_tray import (
 )
 from sieve_crowd import ConfigError, InputError, Role, parse_key
 from sieve_crowd.hints import hint as crowd_hint
-from sieve_crowd.tableio import detect_format
+from sieve_crowd.tableio import detect_format, _EXTENSIONS as CROWD_TABLE_EXTS
 
 
 def resource_path(relative: str) -> Path:
@@ -116,6 +124,176 @@ SIGNAL_FG = {
     "RED": QColor("#b00000"),
     "YELLOW": QColor("#8a5a00"),
 }
+
+
+# ===========================================================================
+# 2.5.0 (the 迷わない画面 request §3.1): the ONE registration table of
+# the sidebar.  Every sidebar row - the five headings and the sixteen
+# pages - is defined here and nowhere else; the sidebar, the はじめに
+# cards, Ctrl/Cmd+1..9 and the last_page restore are built from it.
+# Fields:
+#   kind           "page" (selectable) or "head" (the non-selectable
+#                  heading row).
+#   key            the stable identifier (last_page stores it).
+#   name_key/tip_key  the i18n keys of the display name and the
+#                  one-sentence tooltip.
+#   folder_input   a FOLDER drop matches the page (the page walks
+#                  folders); folder_delivers - the folder then lands
+#                  in the page's input (False for the scan pages, whose
+#                  input row is absent and whose operation is the scan
+#                  itself: those open only).
+#   file_exts      the extensions a FILE drop matches - ALWAYS a
+#                  reference to the engine-side constant, never a copy.
+#                  None (rename / manifest) means the page handles no
+#                  extension by name, so per the 2026-11-23 ruling it
+#                  leaves the file-drop candidates entirely.
+#                  table_diff carries {".csv"}: the engine import
+#                  (sieve_canon.run_table_diff) has no extension
+#                  constant - it reads comma-CSV - so the registered
+#                  type is the one the import actually accepts.
+#   file_delivers  a matched file then lands in the page's input
+#                  (crowd and clean; the rest open only).
+# Pages without any drop field (start, draw - the roster is a helper
+# field, §2-5 ruling -, history, sanitize_history) never join the
+# drop candidates.
+# ===========================================================================
+
+PAGE_DEFS = (
+    {"kind": "page", "key": "start", "name_key": "start_tab",
+     "tip_key": "start_tip"},
+    {"kind": "head", "key": "grp_before_ai", "name_key": "grp_before_ai_tab",
+     "tip_key": "grp_before_ai_tip"},
+    {"kind": "page", "key": "gate", "name_key": "gate_tab",
+     "tip_key": "gate_tip",
+     "folder_input": True, "folder_delivers": True,
+     "file_exts": GATE_DOC_EXTS, "file_delivers": False},
+    {"kind": "page", "key": "crowd", "name_key": "crowd_tab",
+     "tip_key": "crowd_tip",
+     "folder_input": False,
+     "file_exts": frozenset(CROWD_TABLE_EXTS), "file_delivers": True},
+    {"kind": "page", "key": "doc", "name_key": "doc_tab",
+     "tip_key": "doc_tip",
+     "folder_input": True, "folder_delivers": False,
+     "file_exts": DOC_EXTS, "file_delivers": False},
+    {"kind": "head", "key": "grp_compare", "name_key": "grp_compare_tab",
+     "tip_key": "grp_compare_tip"},
+    {"kind": "page", "key": "cohort", "name_key": "cohort_tab",
+     "tip_key": "cohort_tip",
+     "folder_input": True, "folder_delivers": True,
+     "file_exts": frozenset(GATE_DOC_EXTS) | frozenset(CODE_EXTS)
+                  | frozenset(COHORT_GENERIC_EXTENSIONS),
+     "file_delivers": False},
+    {"kind": "page", "key": "text", "name_key": "text_tab",
+     "tip_key": "text_tip",
+     "folder_input": True, "folder_delivers": False,
+     "file_exts": TEXT_EXTS, "file_delivers": False},
+    {"kind": "page", "key": "code", "name_key": "code_tab",
+     "tip_key": "code_tip",
+     "folder_input": True, "folder_delivers": False,
+     "file_exts": CODE_EXTS, "file_delivers": False},
+    {"kind": "page", "key": "audit", "name_key": "audit_tab",
+     "tip_key": "audit_tip",
+     "folder_input": True, "folder_delivers": False,
+     "file_exts": TEXT_EXTS, "file_delivers": False},
+    {"kind": "page", "key": "table_diff", "name_key": "table_diff_tab",
+     "tip_key": "table_diff_tip",
+     "folder_input": False,
+     "file_exts": frozenset({".csv"}), "file_delivers": False},
+    {"kind": "head", "key": "grp_tidy", "name_key": "grp_tidy_tab",
+     "tip_key": "grp_tidy_tip"},
+    {"kind": "page", "key": "rename", "name_key": "rename_tab",
+     "tip_key": "rename_tip",
+     "folder_input": True, "folder_delivers": True,
+     "file_exts": None, "file_delivers": False},
+    {"kind": "page", "key": "clean", "name_key": "clean_tab",
+     "tip_key": "clean_tip",
+     "folder_input": True, "folder_delivers": True,
+     "file_exts": frozenset(CN_CLEAN_EXTS), "file_delivers": True},
+    {"kind": "page", "key": "normalize", "name_key": "normalize_tab",
+     "tip_key": "normalize_tip",
+     "folder_input": True, "folder_delivers": True,
+     "file_exts": CN_TEXT_EXTS, "file_delivers": False},
+    {"kind": "head", "key": "grp_records", "name_key": "grp_records_tab",
+     "tip_key": "grp_records_tip"},
+    {"kind": "page", "key": "manifest", "name_key": "manifest_tab",
+     "tip_key": "manifest_tip",
+     "folder_input": True, "folder_delivers": True,
+     "file_exts": None, "file_delivers": False},
+    {"kind": "page", "key": "draw", "name_key": "draw_tab",
+     "tip_key": "draw_tip"},
+    {"kind": "head", "key": "grp_history", "name_key": "grp_history_tab",
+     "tip_key": "grp_history_tip"},
+    {"kind": "page", "key": "history", "name_key": "history_tab",
+     "tip_key": "history_tip"},
+    {"kind": "page", "key": "sanitize_history",
+     "name_key": "sanitize_history_tab", "tip_key": "sanitize_history_tip"},
+)
+
+# the counted display (the (n) suffix) rides the six measured pages
+# only - the §3.2 clause-table correction of 2026-11-22.
+_COUNTED_PAGES = frozenset(
+    {"doc", "code", "text", "audit", "history", "sanitize_history"})
+
+# the はじめに cards (§3.3): the title key and the pages of the card,
+# in the registration-table order.  The cards carry no history.
+START_CARDS = (
+    ("start_card_before_ai", ("gate", "crowd", "doc")),
+    ("start_card_compare",
+     ("cohort", "text", "code", "audit", "table_diff")),
+    ("start_card_tidy", ("rename", "clean", "normalize")),
+    ("start_card_records", ("manifest", "draw")),
+)
+
+
+def drop_candidates(paths, pages=None):
+    """The drop-candidate classifier of the はじめに page (§3.3).
+
+    Pure and mechanical: only ``is_dir()`` and the name suffix are
+    read - never a file's contents (the NV-T05 detection pins this by
+    monkeypatching every content reader).  Returns the sidebar-ordered
+    ``(key, mode, accepted)`` triples:
+      mode     "input" when the page can receive the matched input,
+               "open" when the page only opens;
+      accepted "all" when the page matches every dropped path, "some"
+               when it matches only part of the drop (a folder-and-file
+               mix puts the folder-only pages - rename, manifest - in
+               the "some" group, the 2026-11-23 ruling).
+    The headings, start itself and the pages without an input lane
+    (draw / history / sanitize_history) never appear.  The candidate
+    order is the sidebar page order.
+    """
+    if pages is None:
+        pages = PAGE_DEFS
+    paths = [Path(p) for p in paths]
+    folders = [p for p in paths if p.is_dir()]
+    files = [p for p in paths if not p.is_dir()]
+    out = []
+    for d in pages:
+        if d.get("kind") != "page":
+            continue
+        exts = d.get("file_exts")
+        hits_any = False
+        hits_all = True
+        if folders:
+            if d.get("folder_input"):
+                hits_any = True
+            else:
+                hits_all = False
+        for f in files:
+            if exts and f.suffix.lower() in exts:
+                hits_any = True
+            else:
+                hits_all = False
+        if not hits_any:
+            continue
+        if folders and d.get("folder_delivers"):
+            mode = "input"
+        elif files and d.get("file_delivers"):
+            mode = "input"
+        else:
+            mode = "open"
+        out.append((d["key"], mode, "all" if hits_all else "some"))
+    return out
 
 
 class ScanWorker(QObject):
@@ -2209,6 +2387,176 @@ class DrawPage(QScrollArea):
             str(self._out / "local")))
 
 
+class StartPage(QWidget):
+    """The はじめに page (2.5.0 §3.3): the four cards built from the
+    registration table (the title rides the card key, each link is a
+    page of the card and its description is the page's tooltip
+    sentence), plus the drop area whose candidates come from the pure
+    drop_candidates() - the contents of a dropped file are never read.
+    The candidates ride the two kinds of the §2-5 ruling: input
+    candidates move the page and fill its input, open candidates only
+    open the page (the one-line hint rides them, key start_drop_hint).
+    """
+
+    def __init__(self, lang):
+        super().__init__()
+        self.lang = lang
+        self._win = None
+        self._last_paths = []
+        layout = QVBoxLayout(self)
+        intro = QLabel(self._("start_intro"))
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        # the four cards (§3.3): one QGroupBox per card, the links
+        # inside built from PAGE_DEFS names and tooltip sentences.
+        cards_row = QHBoxLayout()
+        for title_key, keys in START_CARDS:
+            card = QGroupBox(self._(title_key))
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(8, 4, 8, 4)
+            for key in keys:
+                d = self._page_def(key)
+                name = self._(d["name_key"], n=0) \
+                    if key in _COUNTED_PAGES else self._(d["name_key"])
+                row = QLabel(
+                    '<a href="%s">%s</a> - %s'
+                    % (key, name, self._(d["tip_key"])))
+                row.setWordWrap(True)
+                row.linkActivated.connect(
+                    lambda _link, k=key: self._open_page(k))
+                row.setToolTip(self._(d["tip_key"]))
+                card_layout.addWidget(row)
+            card_layout.addStretch(1)
+            cards_row.addWidget(card, stretch=1)
+        layout.addLayout(cards_row)
+
+        # the drop area: the outcome of the last drop (§3.3).  The
+        # display rebuilds from drop_candidates() on every drop.
+        self.drop_title = QLabel("")
+        self.drop_title.setWordWrap(True)
+        layout.addWidget(self.drop_title)
+        self.drop_area = QWidget()
+        self.drop_layout = QVBoxLayout(self.drop_area)
+        self.drop_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.drop_area)
+        layout.addStretch(1)
+        self.setAcceptDrops(True)
+        self._show_drop_intro()
+
+    # -- helpers --------------------------------------------------------
+
+    def _(self, key, **kwargs):
+        return tr(self.lang, key, **kwargs)
+
+    @staticmethod
+    def _page_def(key):
+        for d in PAGE_DEFS:
+            if d["key"] == key:
+                return d
+        raise KeyError(key)
+
+    def set_window(self, win) -> None:
+        """The MainWindow callback (candidate clicks and page moves)."""
+        self._win = win
+
+    def _open_page(self, key: str) -> None:
+        if self._win is not None:
+            self._win._select_page(key)
+
+    # -- the drop flow (§3.3) -------------------------------------------
+
+    def dragEnterEvent(self, event):  # noqa: N802 - Qt naming
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                event.acceptProposedAction()
+                return
+
+    def dropEvent(self, event):  # noqa: N802 - Qt naming
+        paths = [Path(u.toLocalFile()) for u in event.mimeData().urls()
+                 if u.isLocalFile()]
+        if paths:
+            self.show_candidates(paths)
+        event.acceptProposedAction()
+
+    def show_candidates(self, paths) -> None:
+        """The candidates of one drop (the NV-T05 surface).  The order
+        is the sidebar page order; the groups ride the accepted flag
+        (all -> すべて, some -> 一部)."""
+        self._last_paths = [Path(p) for p in paths]
+        cands = drop_candidates(self._last_paths)
+        while self.drop_layout.count():
+            item = self.drop_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        if not cands:
+            self.drop_title.setText(self._("start_drop_none"))
+            return
+        self.drop_title.setText("")
+        groups = (("start_drop_all_label", "all"),
+                  ("start_drop_some_label", "some"))
+        for label_key, flag in groups:
+            rows = [c for c in cands if c[2] == flag]
+            if not rows:
+                continue
+            label = QLabel(self._(label_key))
+            label.setWordWrap(True)
+            self.drop_layout.addWidget(label)
+            for key, mode, _accepted in rows:
+                d = self._page_def(key)
+                name = self._(d["name_key"], n=0) \
+                    if key in _COUNTED_PAGES else self._(d["name_key"])
+                text = '<a href="%s|%s">%s</a>' % (key, mode, name)
+                if mode == "open":
+                    text += " - %s" % self._("start_drop_hint")
+                row = QLabel(text)
+                row.setWordWrap(True)
+                row.linkActivated.connect(
+                    lambda link: self._candidate_chosen(link))
+                self.drop_layout.addWidget(row)
+
+    def _show_drop_intro(self) -> None:
+        # the area stays empty until the first drop - the intro line at
+        # the top already names the drop (§3.3)
+        self.drop_title.setText("")
+        while self.drop_layout.count():
+            item = self.drop_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+    def _candidate_chosen(self, link: str) -> None:
+        # the link href carries "key|mode" so the delivery knows both
+        key, _sep, mode = link.partition("|")
+        if self._win is not None:
+            self._win.open_drop_candidate(key, mode or "open",
+                                          self._last_paths)
+
+
+class _SidebarList(QListWidget):
+    """The 2.5.0 sidebar list (§3.2): the arrow keys skip the
+    non-selectable heading rows - a Down from はじめに lands on gate,
+    never on the heading."""
+
+    def keyPressEvent(self, event):  # noqa: N802 - Qt naming
+        step = None
+        if event.key() == QtCore.Qt.Key.Key_Down:
+            step = 1
+        elif event.key() == QtCore.Qt.Key.Key_Up:
+            step = -1
+        if step is not None:
+            row = self.currentRow()
+            while True:
+                row += step
+                if not (0 <= row < self.count()):
+                    return  # the edge: stay put
+                if self.item(row).flags() & QtCore.Qt.ItemFlag.ItemIsSelectable:
+                    self.setCurrentRow(row)
+                    return
+        super().keyPressEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, storage: Storage | None = None, lang=None):
         super().__init__()
@@ -2320,12 +2668,15 @@ class MainWindow(QMainWindow):
         # light background (normal, disabled and selected alike; the
         # background itself stays fixed, so one colour set serves both
         # palettes - the dark-palette offscreen renders prove it).
-        self.sidebar = QListWidget()
+        self.sidebar = _SidebarList()
         self.sidebar.setObjectName("page_sidebar")
         self.sidebar.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarAlwaysOff)
         self.sidebar.setTextElideMode(QtCore.Qt.ElideRight)
-        self.sidebar.setUniformItemSizes(True)
+        # 2.5.0: the uniform item sizes are gone - the heading rows
+        # carry a smaller font, so the row heights differ and the
+        # scroll range must follow the real heights (the stale uniform
+        # range kept the tail rows out of the viewport's reach)
         self.sidebar.setStyleSheet(
             "#page_sidebar { background: #f5f6f8; }"
             "#page_sidebar::item { padding: 6px 8px;"
@@ -2340,11 +2691,12 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
         self._page_keys: list = []
         self._page_name_keys: dict = {}
+        self._page_widgets: dict = {}
         for pos in range(1, 10):
             shortcut = QShortcut(QKeySequence("Ctrl+%d" % pos), self)
             shortcut.setContext(QtCore.Qt.ApplicationShortcut)
             shortcut.activated.connect(
-                lambda pos=pos: self._select_page_at(pos - 1))
+                lambda pos=pos: self._select_page_at(pos))
 
         self.doc_table = self._make_table(
             [self._("doc_header_file"), self._("doc_header_mask"),
@@ -2355,12 +2707,11 @@ class MainWindow(QMainWindow):
         self.doc_filter_edit.textChanged.connect(self._apply_doc_filter)
         self.doc_flagged_only_cb = QCheckBox(self._("flagged_only"))
         self.doc_flagged_only_cb.stateChanged.connect(self._apply_doc_filter)
-        self._add_page(
+        self._register_page(
             "doc",
             self._make_filterable_tab(
                 self.doc_table, self.doc_filter_edit,
-                self.doc_flagged_only_cb),
-            "doc_tab", n=0)
+                self.doc_flagged_only_cb))
 
         self.code_table = self._make_table(
             [self._("code_header_a"), self._("code_header_b"),
@@ -2369,11 +2720,10 @@ class MainWindow(QMainWindow):
         self.code_filter_edit = QLineEdit()
         self.code_filter_edit.setPlaceholderText(self._("filter_by_filename"))
         self.code_filter_edit.textChanged.connect(self._apply_code_filter)
-        self._add_page(
+        self._register_page(
             "code",
             self._make_filterable_tab(self.code_table,
-                                      self.code_filter_edit),
-            "code_tab", n=0)
+                                      self.code_filter_edit))
 
         self.text_table = self._make_table(
             [self._("text_header_a"), self._("text_header_b"),
@@ -2382,11 +2732,10 @@ class MainWindow(QMainWindow):
         self.text_filter_edit = QLineEdit()
         self.text_filter_edit.setPlaceholderText(self._("filter_by_filename"))
         self.text_filter_edit.textChanged.connect(self._apply_text_filter)
-        self._add_page(
+        self._register_page(
             "text",
             self._make_filterable_tab(self.text_table,
-                                      self.text_filter_edit),
-            "text_tab", n=0)
+                                      self.text_filter_edit))
 
         # v0.8.0: Quantifier Audit tab. One row per flagged sentence
         # across all scanned .txt/.md files. Double-click opens a
@@ -2400,11 +2749,10 @@ class MainWindow(QMainWindow):
         self.audit_filter_edit = QLineEdit()
         self.audit_filter_edit.setPlaceholderText(self._("filter_by_filename"))
         self.audit_filter_edit.textChanged.connect(self._apply_audit_filter)
-        self._add_page(
+        self._register_page(
             "audit",
             self._make_filterable_tab(self.audit_table,
-                                      self.audit_filter_edit),
-            "audit_tab", n=0)
+                                      self.audit_filter_edit))
 
         self.history_table = self._make_table([
             self._("history_header_timestamp"), self._("history_header_folder"),
@@ -2422,7 +2770,7 @@ class MainWindow(QMainWindow):
         history_layout.setContentsMargins(0, 0, 0, 0)
         history_layout.addWidget(self.history_table, stretch=1)
         history_layout.addWidget(self.history_clear_btn)
-        self._add_page("history", history_container, "history_tab", n=0)
+        self._register_page("history", history_container)
         self.sanitize_history_table = self._make_table([
             self._("history_header_timestamp"),
             self._("history_header_folder"),
@@ -2441,8 +2789,8 @@ class MainWindow(QMainWindow):
         sanitize_history_layout.setContentsMargins(0, 0, 0, 0)
         sanitize_history_layout.addWidget(self.sanitize_history_table, stretch=1)
         sanitize_history_layout.addWidget(self.sanitize_history_clear_btn)
-        self._add_page("sanitize_history", sanitize_history_container,
-                       "sanitize_history_tab", n=0)
+        self._register_page("sanitize_history",
+                            sanitize_history_container)
 
         # --- Crowd tab (sieve-crowd integration): select a table,
         # inspect it, edit the k-anonymity config as JSON, measure
@@ -2608,29 +2956,29 @@ class MainWindow(QMainWindow):
         crowd_layout.addWidget(self.crowd_history_table)
 
         crowd_page = self._wrap_scroll(crowd_page)
-        self._add_page("crowd", crowd_page, "crowd_tab")
+        self._register_page("crowd", crowd_page)
 
         # v2.0.0 (M1 Gate): the Gate tab (request §3.6).
         self.gate_page = GatePage(self.lang)
-        self._add_page("gate", self.gate_page, "gate_tab")
+        self._register_page("gate", self.gate_page)
 
         # v2.1.0 (request §3.9): the Cohort tab rides the sidebar as the
         # ninth page (addendum 2 §1.1 order); the run leaves the UI
         # thread (the §3.9 ruling) and the history rides the existing
         # storage (§3.7: one allowlisted cohort_runs row per run).
         self.cohort_page = CohortPage(self.lang, storage=self.storage)
-        self._add_page("cohort", self.cohort_page, "cohort_tab")
+        self._register_page("cohort", self.cohort_page)
 
         # v2.2.0 (request §3.7): the three new pages join after the
         # existing order - the file list and the check code, the
         # renaming, the draw.  The pages speak the operation; the
         # product name stays in the README / About (§3.2).
         self.manifest_page = ManifestPage(self.lang)
-        self._add_page("manifest", self.manifest_page, "manifest_tab")
+        self._register_page("manifest", self.manifest_page)
         self.rename_page = RenamePage(self.lang)
-        self._add_page("rename", self.rename_page, "rename_tab")
+        self._register_page("rename", self.rename_page)
         self.draw_page = DrawPage(self.lang)
-        self._add_page("draw", self.draw_page, "draw_tab")
+        self._register_page("draw", self.draw_page)
 
         # Canon 2.3 (request §3.7): the three new pages join at the
         # end of the existing order - the metadata clean, the
@@ -2638,13 +2986,21 @@ class MainWindow(QMainWindow):
         # stays hidden on them (they are not in _scan_page_keys, the
         # §3.7-2 rule); the product name stays out of the UI.
         self.clean_page = CleanPage(self.lang)
-        self._add_page("clean", self.clean_page, "clean_tab")
+        self._register_page("clean", self.clean_page)
         self.normalize_page = NormalizePage(self.lang)
-        self._add_page("normalize", self.normalize_page,
-                       "normalize_tab")
+        self._register_page("normalize", self.normalize_page)
         self.table_diff_page = TableDiffPage(self.lang)
-        self._add_page("table_diff", self.table_diff_page,
-                       "table_diff_tab")
+        self._register_page("table_diff", self.table_diff_page)
+
+        # --- the sidebar rows (2.5.0 §3.1): the ONE registration table
+        # builds them in its own order - start, the five headings, the
+        # sixteen pages.  No per-screen table exists anywhere else.
+        self.start_page = StartPage(self.lang)
+        self.start_page.set_window(self)
+        self._register_page("start", self.start_page)
+        self._sidebar_rows: list = []  # (kind, key) parallel to the rows
+        for d in PAGE_DEFS:
+            self._add_page_from_def(d)
 
         # --- the body: the sidebar on the left, the page on the right
         body = QWidget()
@@ -2662,23 +3018,26 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.log_view, stretch=1)
 
         # the last selected page (§1.3): restored from the settings; a
-        # saved key that no longer exists falls back to the first row
+        # saved value that does not read as an identifier falls to the
+        # first row = start (2.5.0 §3.4: the three fallbacks)
         try:
             saved = self.storage.get_setting("last_page")
         except Exception:
             saved = None
-        if saved in self._page_keys:
-            self.sidebar.setCurrentRow(self._page_keys.index(saved))
+        row = self._sidebar_row_of(saved) if isinstance(saved, str) else -1
+        if row >= 0:
+            self.sidebar.setCurrentRow(row)
         else:
             self.sidebar.setCurrentRow(0)
         self._recalc_sidebar_width()
         # §3.7 plan B: the scan row starts in the restored page's mode
         # (the currentRowChanged signal above already set it; this is
         # the defensive sync for a no-op selection)
-        if self._page_keys:
-            row = max(0, self.sidebar.currentRow())
+        if self._sidebar_rows:
+            srow = max(0, self.sidebar.currentRow())
+            kind, key = self._sidebar_rows[srow]
             self.scan_row_widget.setVisible(
-                self._page_keys[row] in self._scan_page_keys)
+                kind == "page" and key in self._scan_page_keys)
 
         # --- export row ---
         export_row = QHBoxLayout()
@@ -2783,40 +3142,149 @@ class MainWindow(QMainWindow):
     # the last_page restore ride the existing settings store.
     # ------------------------------------------------------------------
 
-    def _add_page(self, key: str, widget, name_key: str, n=None) -> None:
-        """Register one page in the sidebar order (§1.1).  The item's
-        text is the display name and doubles as the accessible name
-        (Qt's accessibility reads the item text); the tooltip carries
-        the same full text (§1.2)."""
-        name = self._(name_key) if n is None else self._(name_key, n=n)
-        from PySide6.QtGui import QIcon
+    def _register_page(self, key: str, widget) -> None:
+        """2.5.0 (§3.1): the build-time registration of one page widget.
+        The sidebar row is created later from the PAGE_DEFS order, so
+        the pages can be constructed in any code order."""
+        self._page_widgets[key] = widget
+
+    def _add_page_from_def(self, d: dict) -> None:
+        """One PAGE_DEFS entry -> the sidebar row (+ the stacked
+        widget).  The heading rows are not selectable (§3.2), carry a
+        quieter look and their own tooltip; the page rows carry the
+        display name, the counted suffix on the six measured pages
+        only, and the one-sentence tooltip."""
+        kind = d["kind"]
+        key = d["key"]
+        if kind == "head":
+            item = QListWidgetItem(self._(d["name_key"]))
+            item.setFlags(item.flags()
+                          & ~QtCore.Qt.ItemFlag.ItemIsSelectable)
+            font = item.font()
+            font.setPointSizeF(max(font.pointSizeF() - 1.0, 8.0))
+            item.setFont(font)
+            item.setForeground(QColor("#6b7480"))
+            item.setToolTip(self._(d["tip_key"]))
+            self.sidebar.addItem(item)
+            self._sidebar_rows.append(("head", key))
+            return
+        if key in _COUNTED_PAGES:
+            name = self._(d["name_key"], n=0)
+        else:
+            name = self._(d["name_key"])
         item = QListWidgetItem(name)
-        item.setData(QtCore.Qt.UserRole, key)
-        item.setToolTip(name)
+        item.setData(QtCore.Qt.ItemDataRole.UserRole, key)
+        item.setToolTip(self._(d["tip_key"]))
         self.sidebar.addItem(item)
-        self.pages.addWidget(widget)
+        self.pages.addWidget(self._page_widgets[key])
         self._page_keys.append(key)
-        self._page_name_keys[key] = name_key
+        self._page_name_keys[key] = d["name_key"]
+        self._sidebar_rows.append(("page", key))
+
+    def _sidebar_row_of(self, key: str) -> int:
+        """The sidebar ROW of the page key (the headings offset it
+        from the page index)."""
+        for row, (kind, k) in enumerate(self._sidebar_rows):
+            if kind == "page" and k == key:
+                return row
+        return -1
+
+    def _ensure_row_visible(self, row: int) -> None:
+        """2.5.0 (§2-7, the third point of 切れない): the selected row
+        enters the viewport - on the last_page restore and on the
+        Ctrl/Cmd+digit moves alike.  The explicit scrollToItem also
+        refreshes the scroll range the 21-row list can carry stale
+        after construction."""
+        item = self.sidebar.item(row)
+        if item is not None:
+            self.sidebar.scrollToItem(
+                item, QAbstractItemView.ScrollHint.EnsureVisible)
 
     def _on_sidebar_row_changed(self, row: int) -> None:
-        if 0 <= row < self.pages.count():
-            self.pages.setCurrentIndex(row)
+        if 0 <= row < len(self._sidebar_rows):
+            kind, key = self._sidebar_rows[row]
+            # the headings carry no page: the selection never lands on
+            # them (the flags), so this is the defensive branch
+            if kind != "page":
+                return
+            self.pages.setCurrentIndex(self._page_keys.index(key))
             # v2.2.0 (request §3.7 plan B): the scan operation row
             # shows on the scan pages only, and hides on every other
             # page (the container exists from the row's creation on)
-            if row < len(self._page_keys):
-                self.scan_row_widget.setVisible(
-                    self._page_keys[row] in self._scan_page_keys)
+            self.scan_row_widget.setVisible(key in self._scan_page_keys)
+            self._ensure_row_visible(row)
 
     def _select_page(self, key: str) -> None:
         """Select the page by key (the tab-switching calls' successor)."""
-        if key in self._page_keys:
-            self.sidebar.setCurrentRow(self._page_keys.index(key))
-
-    def _select_page_at(self, row: int) -> None:
-        """Ctrl+1..9 (Cmd on macOS): switch by position (§1.3)."""
-        if 0 <= row < self.sidebar.count():
+        row = self._sidebar_row_of(key)
+        if row >= 0:
             self.sidebar.setCurrentRow(row)
+            self._ensure_row_visible(row)
+
+    def _select_page_at(self, pos: int) -> None:
+        """Ctrl+1..9 (Cmd on macOS): the first nine PAGES, counting
+        the headings out (§3.2): start=1, gate=2 .. table_diff=9."""
+        if 1 <= pos <= 9 and pos <= len(self._page_keys):
+            self._select_page(self._page_keys[pos - 1])
+
+    # ------------------------------------------------------------------
+    # 2.5.0 (§3.3): a drop candidate chosen on the はじめに page.  The
+    # input candidates move the page and fill its input (the output
+    # fields stay untouched); the open candidates only move the page.
+    # ------------------------------------------------------------------
+
+    # the folder walks whose input field receives the dropped folder
+    # (clean takes a folder or a single file; crowd takes a file)
+    _FOLDER_INPUT_FIELDS = {
+        "gate": "gate_input_edit",
+        "cohort": "cohort_input_edit",
+        "rename": "rename_input_edit",
+        "normalize": "normalize_input_edit",
+        "manifest": "manifest_input_edit",
+        "clean": "clean_input_edit",
+    }
+
+    def open_drop_candidate(self, key: str, mode: str, paths) -> None:
+        """One candidate row of the はじめに drop area was chosen."""
+        self._select_page(key)
+        if mode != "input":
+            return
+        if key == "crowd":
+            # the single-file page takes the first dropped file the
+            # page handles (the drop order, the handled set only)
+            exts = self._page_file_exts(key)
+            for p in (Path(p) for p in paths):
+                if p.is_file() and p.suffix.lower() in exts:
+                    self.crowd_load_file(p)
+                    return
+            return
+        attr = self._FOLDER_INPUT_FIELDS.get(key)
+        if attr is None:
+            return
+        edit = getattr(self, attr, None)
+        if edit is None:
+            return
+        target = None
+        for p in (Path(p) for p in paths):
+            if p.is_dir():
+                target = p
+                break
+        if target is None and key == "clean":
+            # the file-select lane: the first handled file (CN_CLEAN_EXTS)
+            exts = self._page_file_exts(key)
+            for p in (Path(p) for p in paths):
+                if p.is_file() and p.suffix.lower() in exts:
+                    target = p
+                    break
+        if target is not None:
+            edit.setText(str(target))
+
+    @staticmethod
+    def _page_file_exts(key: str):
+        for d in PAGE_DEFS:
+            if d["key"] == key:
+                return d.get("file_exts") or frozenset()
+        return frozenset()
 
     def _set_page_title(self, key: str, n=None) -> None:
         """The counted display name update (§1.1: 動的に更新する)."""
@@ -2824,11 +3292,10 @@ class MainWindow(QMainWindow):
             return
         name_key = self._page_name_keys[key]
         name = self._(name_key) if n is None else self._(name_key, n=n)
-        row = self._page_keys.index(key)
+        row = self._sidebar_row_of(key)
         item = self.sidebar.item(row)
         if item is not None:
             item.setText(name)
-            item.setToolTip(name)
 
     def _recalc_sidebar_width(self) -> None:
         """The sidebar width (§1.2): the longest item's text width plus
@@ -2867,12 +3334,14 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         # v2.1.0 (addendum 2 §1.3): the last selected page rides the
-        # same settings store; a failure never blocks the close itself.
+        # same settings store as the stable identifier (2.5.0 §3.4);
+        # a failure never blocks the close itself.
         try:
             row = self.sidebar.currentRow()
-            if 0 <= row < len(self._page_keys):
-                self.storage.set_setting("last_page",
-                                         self._page_keys[row])
+            if 0 <= row < len(self._sidebar_rows):
+                kind, key = self._sidebar_rows[row]
+                if kind == "page":
+                    self.storage.set_setting("last_page", key)
         except Exception:
             pass
         if self._scan_running and self._thread is not None:
@@ -3079,6 +3548,25 @@ class MainWindow(QMainWindow):
             return
         self._launch_scan(input_dir, groups=None)
 
+    def _scan_file_filter(self) -> str:
+        """2.5.0 (§2-4 ruling): the file-select dialog's patterns are
+        machine-generated from the current scan page's own constant -
+        doc -> DOC_EXTS, code -> CODE_EXTS, text and audit -> TEXT_EXTS
+        - no longer the shared narrow .txt/.md filter that sat narrower
+        than both pages' reality.  The secondary All Files filter stays
+        (a file outside the constant still reports not_applicable)."""
+        key = None
+        row = max(0, self.sidebar.currentRow())
+        if 0 <= row < len(self._sidebar_rows):
+            kind, skey = self._sidebar_rows[row]
+            if kind == "page":
+                key = skey
+        exts = {"doc": DOC_EXTS, "code": CODE_EXTS}.get(key, TEXT_EXTS)
+        pattern = " ".join("*%s" % e for e in sorted(exts))
+        return "%s;;%s" % (self._("supported_files_filter",
+                                  pattern=pattern),
+                           self._("all_files_filter"))
+
     def start_scan_files(self):
         """v0.9.0: file-selection mode. User picks one or more files; they
         are scanned as a single group (any suffix). code_pairs and
@@ -3087,7 +3575,7 @@ class MainWindow(QMainWindow):
         enabled = standalone audit run)."""
         path, _ = QFileDialog.getOpenFileNames(
             self, self._("choose_files_dialog_title"), "",
-            self._("choose_files_filter"))
+            self._scan_file_filter())
         if not path:
             return
         files = [Path(p) for p in path]
@@ -3560,9 +4048,16 @@ class MainWindow(QMainWindow):
     # in the background. Refused runs are a normal result, not an error.
     # ------------------------------------------------------------------
 
+    def _crowd_file_filter(self) -> str:
+        """2.5.0 (§2-4 ruling): the pattern rides tableio._EXTENSIONS
+        (the engine's own set) instead of a hand-copied string; the
+        display stays identical (csv json xml xlsx)."""
+        pattern = " ".join("*%s" % e for e in sorted(CROWD_TABLE_EXTS))
+        return self._("crowd_file_filter", pattern=pattern)
+
     def crowd_choose_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, self._("crowd_file_select"), "", self._("crowd_file_filter"))
+            self, self._("crowd_file_select"), "", self._crowd_file_filter())
         if path:
             self.crowd_load_file(Path(path))
 

@@ -1,5 +1,47 @@
 # Changelog
 
+## [2.5.0] - 2026-11-23
+
+### Added
+- **The Start page (はじめに)**: the app opens on it; it names what every
+  page does (four cards built from the one page-registration table) and
+  it takes a drop - the candidates are decided mechanically (extension
+  and folder-ness only, never the contents) from the engine-side
+  constants, listed in the sidebar page order and split into the pages
+  that accept everything you dropped and the pages that accept only some
+  of it (a folder-and-file mix puts the folder-only pages - rename and
+  manifest - in the "some" group).  An input candidate moves the page and
+  fills its input; an open candidate only opens the page (the one-line
+  hint rides it); a type no page accepts (.zip, a video) says so.
+- **The sidebar headings**: five non-selectable group rows (Before
+  Sharing with AI / Compare & Inspect / Tidy Files / Records &
+  Verification / History) join the sixteen pages - 21 rows; the arrow
+  keys skip the headings and Ctrl/Cmd+1..9 count the pages only; every
+  row carries a one-sentence tooltip (ja/en); the selected row always
+  scrolls into the viewport.
+
+### Changed
+- **Six display names** (the i18n values only - the keys never move):
+  Documents -> **Check Documents** / 文書の確認, Text Similarity ->
+  **Compare Texts** / 文章の比較, Code Pairs -> **Compare Code** /
+  コードの比較, Anonymize -> **Anonymize Tables** / 表の匿名化,
+  Quantifier Audit -> **Detect Universal Statements** /
+  全称表現の検出, Sanitize History -> **Masking History** /
+  マスキング履歴.  The sidebar, the tooltips, the counted titles, the
+  Start-page cards, the READMEs and the docs ride the new names; the
+  processing records, the JSON keys and values, the CLI, the history
+  allowlist and the report outputs keep their 2.4.0 wording.
+- **The file-select dialogs of the scan pages** are machine-generated
+  from the page's own extension constant (doc -> DOC_EXTS, code ->
+  CODE_EXTS, text and audit -> TEXT_EXTS; the label is 対応ファイル /
+  Supported files and the All Files secondary filter stays) instead of
+  the shared narrower .txt/*.md filter; the Crowd dialog's pattern rides
+  `tableio._EXTENSIONS` (the display stays identical).
+- **`last_page` fallbacks**: a saved value that does not read as an
+  identifier (missing, empty, numeric, unknown) lands on Start (row 0)
+  instead of the first scan page; the save and the restore keep riding
+  the stable identifiers.
+
 ## [2.4.0] - 2026-11-21
 
 ### Added

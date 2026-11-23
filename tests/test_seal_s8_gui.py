@@ -24,12 +24,19 @@ from test_v1_4_scan import _require_qt
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # §3.7: the new pages join AFTER the existing order (no reordering).
+# 2.5.0 (§2-6): the sidebar re-reads the registration table - start
+# joins at the head and the order follows PAGE_DEFS; the pins below
+# address every page by key.
 EXISTING_KEYS = ("doc", "code", "text", "audit", "history",
                  "sanitize_history", "crowd", "gate", "cohort")
 NEW_KEYS = ("manifest", "rename", "draw")
-# Canon 2.3 (request §3.7): the three new pages join at the end
+# Canon 2.3 (request §3.7): the three canon pages
 CANON_KEYS = ("clean", "normalize", "table_diff")
-ALL_KEYS = EXISTING_KEYS + NEW_KEYS + CANON_KEYS
+ALL_KEYS = ("start", "gate", "crowd", "doc", "cohort", "text", "code",
+            "audit", "table_diff", "rename", "clean", "normalize",
+            "manifest", "draw", "history", "sanitize_history")
+assert sorted(ALL_KEYS) == sorted(EXISTING_KEYS + NEW_KEYS + CANON_KEYS
+                                  + ("start",))
 # §3.7 plan B: the scan operation row lives on the scan pages only.
 SCAN_PAGE_KEYS = ("doc", "code", "text", "audit")
 
@@ -63,22 +70,22 @@ def test_sl_t15_three_new_pages_join_the_sidebar(tmp_path):
         for lang in ("en", "ja"):
             win2 = _make_window(tmp_path, lang=lang)
             try:
-                for offset, key in enumerate(NEW_KEYS):
-                    row = len(EXISTING_KEYS) + offset
-                    item = win2.sidebar.item(row)
+                for key in NEW_KEYS:
+                    item = win2.sidebar.item(win2._sidebar_row_of(key))
                     assert item.text() == tr(lang, key + "_tab"), \
                         (lang, key, item.text())
-                    assert item.toolTip() == item.text()
+                    # 2.5.0 §3.2: the tooltip carries the one-sentence tip
+                    assert item.toolTip() == tr(lang, key + "_tip"), \
+                        (lang, key, item.toolTip())
                     # the product name stays in the README / About
                     assert "Seal" not in item.text()
             finally:
                 win2.close()
         # selecting a new page switches the right-hand stack
         for key in NEW_KEYS:
-            row = win._page_keys.index(key)
-            win.sidebar.setCurrentRow(row)
-            assert win.pages.currentIndex() == row, key
-            assert win.pages.currentWidget() is win.pages.widget(row)
+            win.sidebar.setCurrentRow(win._sidebar_row_of(key))
+            assert win.pages.currentWidget() is \
+                win.pages.widget(win._page_keys.index(key)), key
     finally:
         win.close()
 
@@ -280,7 +287,10 @@ def test_sl_t15_last_page_restores_the_new_pages(tmp_path):
         win2 = _make_window(tmp_path)
         try:
             win2.show()
-            assert win2._page_keys[win2.sidebar.currentRow()] == key
+            # the sidebar row -> the page key (the headings offset it)
+            row = win2.sidebar.currentRow()
+            kind, skey = win2._sidebar_rows[row]
+            assert kind == "page" and skey == key, (key, skey)
         finally:
             win2.close()
         store.set_setting("last_page", "no-such-page")

@@ -621,12 +621,18 @@ class TR3_T07_CrowdTabReadsThroughV090InputLayer(unittest.TestCase):
 
 class TR3_T08_CrowdFileFilterAndContainerRefusal(unittest.TestCase):
     """TR3-T08: the file dialog filter includes *.xlsx (static), and
-    .xls/.xlsm reach the engine's unsupported_format refusal."""
+    .xls/.xlsm reach the engine's unsupported_format refusal.  2.5.0
+    (§2-4): the pattern is generated from tableio._EXTENSIONS - the
+    static template carries {pattern} and the engine's own set carries
+    the extensions."""
 
     def test_filter_includes_xlsx(self):
+        from sieve_tray_gui import CROWD_TABLE_EXTS
+        self.assertIn(".xlsx", CROWD_TABLE_EXTS)
         for lang in ("en", "ja"):
             filt = STRINGS[lang]["crowd_file_filter"]
-            self.assertIn("*.xlsx", filt, lang + " filter lacks *.xlsx")
+            self.assertIn("{pattern}", filt,
+                          lang + " filter lost the generated pattern")
 
     def test_xls_xlsm_refused_unsupported_format(self):
         from sieve_crowd.model import InputRefused
@@ -1107,7 +1113,7 @@ class TR3_T19_Version140(unittest.TestCase):
     referee 1.6.0)."""
 
     def test_version_is_140(self):
-        self.assertEqual(sieve_tray.__version__, "2.4.0")
+        self.assertEqual(sieve_tray.__version__, "2.5.0")
 
     def test_changelog_has_140(self):
         text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")

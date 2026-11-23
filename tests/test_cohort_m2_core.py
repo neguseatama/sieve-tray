@@ -977,7 +977,11 @@ def test_ch_t14_wheel_smoke(tmp_path):
                      else "Scripts/python.exe")
     proc = subprocess.run(
         [str(py), "-m", "pip", "install", "--no-deps", str(wheels[0])],
-        capture_output=True, text=True)
+        capture_output=True, text=True,
+        # the inherited PYTHONPATH (a working copy on sys.path) would
+        # make pip consider sieve-tray already installed and skip the
+        # wheel - the smoke venv must see the wheel alone here
+        env=dict(os.environ, PYTHONPATH=""))
     assert proc.returncode == 0, proc.stdout + proc.stderr
     # the engines travel from the running environment (see above) - the
     # staging folder rides as PYTHONPATH, never inside the fresh venv

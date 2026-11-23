@@ -61,7 +61,9 @@ def test_gate_tab_i18n(tmp_path):
                              lang=lang)
         try:
             tab = _gate_tab(win)
-            row = win._page_keys.index("gate")
+            # 2.5.0 (§2-6): the sidebar row rides the key mapping (the
+            # headings offset the rows)
+            row = win._sidebar_row_of("gate")
             assert tr(lang, "gate_tab") == win.sidebar.item(row).text()
         finally:
             win.close()

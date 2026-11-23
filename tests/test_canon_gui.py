@@ -27,16 +27,24 @@ def test_three_pages_join_at_the_end(tmp_path):
     from sieve_tray_i18n import tr
     win = _make_window(tmp_path)
     try:
-        assert len(win._page_keys) == 15, win._page_keys
-        assert win._page_keys[-3:] == list(CANON_KEYS)
+        # 2.5.0: 16 pages (start joins, §2-6: the count moves 15 -> 16
+        # pages / 21 sidebar rows)
+        assert len(win._page_keys) == 16, win._page_keys
+        # the canon pages keep their registration order (rename ->
+        # clean -> normalize; table_diff rides the compare group)
+        assert win._page_keys.index("rename") \
+            < win._page_keys.index("clean") \
+            < win._page_keys.index("normalize"), win._page_keys
         for lang in ("en", "ja"):
             win2 = _make_window(tmp_path, lang=lang)
             try:
-                for offset, key in enumerate(CANON_KEYS):
-                    item = win2.sidebar.item(12 + offset)
+                for key in CANON_KEYS:
+                    item = win2.sidebar.item(win2._sidebar_row_of(key))
                     assert item.text() == tr(lang, key + "_tab"), \
                         (lang, key, item.text())
-                    assert item.toolTip() == item.text()
+                    # 2.5.0 §3.2: the tooltip carries the one-sentence tip
+                    assert item.toolTip() == tr(lang, key + "_tip"), \
+                        (lang, key, item.toolTip())
             finally:
                 win2.close()
         # the product name stays out of the screen (§3.7-1)
@@ -82,8 +90,9 @@ def test_new_page_parts_carry_tooltips_and_placeholder(tmp_path):
         win.close()
 
 
-def test_sidebar_15_items_last_reachable_by_selection(tmp_path):
-    """§3.7-3: the sidebar grows to 15 items; the last item enters the
+def test_sidebar_21_rows_last_reachable_by_selection(tmp_path):
+    """§3.7-3 as amended by 2.5.0: the sidebar grows to 21 rows (16
+    pages + 5 headings); the last page (マスキング履歴) enters the
     viewport when selected (the QListWidget scrolls to the
     selection)."""
     _require_qt()
@@ -94,10 +103,11 @@ def test_sidebar_15_items_last_reachable_by_selection(tmp_path):
         win.show()
         QApplication.processEvents()
         sb = win.sidebar
-        assert sb.count() == 15
-        sb.setCurrentRow(14)          # the last page (Compare Tables)
+        assert sb.count() == 21
+        sb.setCurrentRow(win._sidebar_row_of("sanitize_history"))
         QApplication.processEvents()
-        rect = sb.visualItemRect(sb.item(14))
+        last = sb.count() - 1
+        rect = sb.visualItemRect(sb.item(last))
         vh = sb.viewport().height()
         assert rect.isValid(), rect
         assert rect.top() >= -1, rect
@@ -210,7 +220,7 @@ def test_last_page_restores_the_new_pages(tmp_path):
     win = gui.MainWindow(storage=storage)
     try:
         assert win.sidebar.currentRow() == \
-            win._page_keys.index("normalize")
+            win._sidebar_row_of("normalize")
     finally:
         win.close()
 

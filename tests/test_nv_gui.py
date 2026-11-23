@@ -251,7 +251,13 @@ def test_nv_t03_last_page_falls_to_start(tmp_path):
     from sieve_tray_storage import Storage
 
     def _key_of_current_row(win):
-        return win._page_keys[max(0, win.sidebar.currentRow())]
+        # the sidebar row -> the page key (the headings offset the rows)
+        row = max(0, win.sidebar.currentRow())
+        if 0 <= row < len(win._sidebar_rows):
+            kind, key = win._sidebar_rows[row]
+            if kind == "page":
+                return key
+        return None
 
     # (1) no saved value -> start
     win = _make_window(tmp_path)
@@ -260,8 +266,10 @@ def test_nv_t03_last_page_falls_to_start(tmp_path):
         assert _key_of_current_row(win) == "start"
     finally:
         win.close()
-    # (2) values that do not read as an identifier -> start
-    for saved in ("", "3", None, 42):
+    # (2) values that do not read as an identifier -> start (the None
+    # shape has no lane of its own: the settings column is NOT NULL, so
+    # a missing row already returns the None that case (1) covers)
+    for saved in ("", "3", 42):
         store = Storage(tmp_path / "history.db")
         store.set_setting("last_page", saved)
         win = gui.MainWindow(storage=store)
@@ -283,7 +291,7 @@ def test_nv_t03_last_page_falls_to_start(tmp_path):
     win = gui.MainWindow(storage=store)
     try:
         assert _key_of_current_row(win) == "crowd"
-        win.sidebar.setCurrentRow(win._page_keys.index("doc"))
+        win.sidebar.setCurrentRow(win._sidebar_row_of("doc"))
         win.close()
         assert Storage(tmp_path / "history.db").get_setting(
             "last_page") == "doc"
@@ -344,7 +352,7 @@ def test_nv_t05_drop_candidates_never_read_contents(tmp_path, monkeypatch):
     # the mixed folder + pdf + py drop needs is_dir()/suffix only
     got = gui.drop_candidates([folder, paths[".pdf"], paths[".py"]])
     assert got == [
-        ("gate", "input", "all"), ("doc", "open", "all"),
+        ("gate", "input", "some"), ("doc", "open", "some"),
         ("cohort", "input", "all"), ("text", "open", "some"),
         ("code", "open", "some"), ("audit", "open", "some"),
         ("rename", "input", "some"), ("clean", "input", "some"),
@@ -374,12 +382,10 @@ def test_nv_t10_renamed_pages_show_the_new_names(tmp_path):
                     template = name + (" ({n})" if key in COUNTED_KEYS
                                        else "")
                     expected = template.format(n=0)
-                    row = w._page_keys.index(key)
+                    row = w._sidebar_row_of(key)
                     item = w.sidebar.item(row)
                     assert item.text() == expected, \
                         (lang, key, item.text())
-                    assert item.toolTip() == expected, \
-                        (lang, key, "tooltip", item.toolTip())
                     # the counted title rides the new name too
                     w._set_page_title(key, n=2)
                     assert w.sidebar.item(row).text() == \
@@ -412,7 +418,7 @@ def test_nv_t10_decided_tooltip_sentences_hold(tmp_path):
                 for (lg, key), sentence in DECIDED_TIPS:
                     if lg != lang:
                         continue
-                    row = w._page_keys.index(key)
+                    row = w._sidebar_row_of(key)
                     tip = w.sidebar.item(row).toolTip()
                     assert tip == sentence, (lang, key, tip)
             finally:

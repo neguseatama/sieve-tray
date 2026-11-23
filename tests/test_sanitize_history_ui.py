@@ -72,17 +72,14 @@ def test_sanitize_history_tab_structure(window):
     assert table.columnCount() == 7
     headers = [table.horizontalHeaderItem(c).text() for c in range(7)]
     assert headers == EXPECTED_HEADERS
-    # the count moves 8 -> 9 with the §3.9 Cohort page (the same
-    # structure-pin change the addendum 2 §3 ruling permits, reported
-    # with the §3.9 commit)
-    # the count moves 9 -> 12 with the §3.7 pages of 2.2.0 (the same
-    # structure-pin change the addendum 2 §3 ruling permits, reported
-    # with the §3.7 commit)
+    # the count moves 15 -> 21 with the 2.5.0 はじめに + the five
+    # headings (16 pages + 5 headings; the §2-6 ruling's key-based
+    # follow-up)
     # v0.8.0: +1 Audit, v1.0.0: +1 Crowd, v2.0.0: +1 Gate, v2.1.0: +1 Cohort,
-    # v2.2.0: +1 Manifest, +1 Rename, +1 Draw
-    assert window.sidebar.count() == 15
+    # v2.2.0: +1 Manifest, +1 Rename, +1 Draw, 2.5.0: +1 Start +5 headings
+    assert window.sidebar.count() == 21
     label = window.sidebar.item(
-        window._page_keys.index("sanitize_history")).text()
+        window._sidebar_row_of("sanitize_history")).text()
     assert label == tr("en", "sanitize_history_tab", n=0), \
         "initial tab label must show count 0"
 
@@ -117,7 +114,7 @@ def test_sanitize_history_rows(window, tmp_path):
 
 def test_sanitize_history_tab_label_tracks_row_count(window, tmp_path):
     label = window.sidebar.item(
-        window._page_keys.index("sanitize_history")).text()
+        window._sidebar_row_of("sanitize_history")).text()
     assert label == tr("en", "sanitize_history_tab", n=0)
     window.storage.save_sanitization(
         {"n_files": 1, "ok_count": 1, "masked_total": 1,
@@ -129,7 +126,7 @@ def test_sanitize_history_tab_label_tracks_row_count(window, tmp_path):
         Path("/a/in"), Path("/a/cfg.txt"), Path("/a/out"))
     window._refresh_sanitize_history_table()
     assert window.sidebar.item(
-        window._page_keys.index("sanitize_history")).text() == tr(
+        window._sidebar_row_of("sanitize_history")).text() == tr(
         "en", "sanitize_history_tab", n=2)
 
 
@@ -148,7 +145,7 @@ def test_on_sanitize_finished_refreshes_immediately(
     assert t.rowCount() == 1, \
         "sanitize history must refresh immediately after the save"
     assert window.sidebar.item(
-        window._page_keys.index("sanitize_history")).text() == tr(
+        window._sidebar_row_of("sanitize_history")).text() == tr(
         "en", "sanitize_history_tab", n=1)
 
 
@@ -177,5 +174,5 @@ def test_run_image_sanitize_refreshes_immediately(window, tmp_path):
     assert t.item(0, 2).text() == str(cfg).replace(os.sep, "/")
     assert t.item(0, 4).text() == "1 (1)"
     assert window.sidebar.item(
-        window._page_keys.index("sanitize_history")).text() == tr(
+        window._sidebar_row_of("sanitize_history")).text() == tr(
         "en", "sanitize_history_tab", n=1)

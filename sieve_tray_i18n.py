@@ -32,10 +32,10 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "browse_file": "Select File...",
         "run_scan": "Run Scan",
         "settings_button": "Settings...",
-        "doc_tab": "Documents ({n})",
-        "code_tab": "Code Pairs ({n})",
-        "text_tab": "Text Similarity ({n})",
-        "audit_tab": "Quantifier Audit ({n})",
+        "doc_tab": "Check Documents ({n})",
+        "code_tab": "Compare Code ({n})",
+        "text_tab": "Compare Texts ({n})",
+        "audit_tab": "Detect Universal Statements ({n})",
         "history_tab": "History ({n})",
         "doc_header_file": "File",
         "doc_header_mask": "Mask",
@@ -58,7 +58,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "history_header_folder": "Folder",
         "history_header_groups": "Groups",
         "history_header_docs": "Documents (flagged)",
-        "history_header_code_pairs": "Code Pairs",
+        "history_header_code_pairs": "Compare Code",
         "history_header_text_pairs": "Text Pairs",
         "history_header_audit": "Audit",
         "filter_by_filename": "Filter by filename",
@@ -141,7 +141,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         # v0.9.0: file selection + report format + history clear
         "choose_files_button": "Select Files...",
         "choose_files_dialog_title": "Select files to scan",
-        "choose_files_filter": "Text Files (*.txt *.md);;All Files (*)",
+        "supported_files_filter": "Supported files ({pattern})",
+        "all_files_filter": "All Files (*)",
         "save_report_filter": "HTML Files (*.html);;Markdown Files (*.md)",
         "history_clear": "Clear History",
         "sanitize_history_clear": "Clear History",
@@ -167,8 +168,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "sanitize_failed_files": "\nFailed files:\n{files}",
         "sanitize_no_files": "No .txt/.md files to sanitize.",
         "sanitize_skipped": "Sieve Redact is not available; nothing was sanitized.",
-        "sanitize_history_title": "Sanitize history",
-        "sanitize_history_tab": "Sanitize History ({n})",
+        "sanitize_history_title": "Masking History",
+        "sanitize_history_tab": "Masking History ({n})",
         "sanitize_history_header_config": "Config",
         "sanitize_history_header_output": "Output",
         "sanitize_history_header_files": "Files (ok)",
@@ -188,9 +189,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "sanitize_image_failed": "image sanitize failed (rc {rc})",
         "sanitize_config_error": "Config error (nothing was sanitized): {err}",
         "sanitize_excluded_files": "\nExcluded files (not eligible for this config):\n{files}",
-        "crowd_tab": "Anonymize",
+        "crowd_tab": "Anonymize Tables",
         "crowd_file_select": "Select data file",
-        "crowd_file_filter": "Table Files (*.csv *.json *.xml *.xlsx);;All Files (*)",
+        "crowd_file_filter": "Table Files ({pattern});;All Files (*)",
         "crowd_notes_label": "Engine notices",
         "crowd_refusal_not_regular_file": "Not a regular file",
         "crowd_refusal_file_too_large": "File too large",
@@ -487,6 +488,67 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "normalize_log_tooltip": "The run log.",
         "normalize_done": "Done: {produced} written, {refused} "
                           "refused, {observed} observed.",
+        # -----------------------------------------------------------
+        # 2.5.0 (the 迷わない画面 request): the はじめに page, the five
+        # sidebar headings, the one-sentence tooltips and the new
+        # display names (the VALUES only - the keys never move, §3.5).
+        # -----------------------------------------------------------
+        "start_tab": "Start",
+        "start_tip": "Choose what to do, or drop a file to see which "
+                     "pages can use it.",
+        "start_intro": "Pick what you want to do, or drop a file here.",
+        "start_card_before_ai": "Check before sharing with AI",
+        "start_card_compare": "Compare or inspect files",
+        "start_card_tidy": "Tidy files",
+        "start_card_records": "Keep and verify records",
+        "start_drop_all_label": "Pages that accept everything you dropped",
+        "start_drop_some_label": "Pages that accept only some of it",
+        "start_drop_none": "No page accepts this kind of file.",
+        "start_drop_hint": "You will choose the folder that contains the "
+                           "files on the page itself.",
+        "grp_before_ai_tab": "Before Sharing with AI",
+        "grp_before_ai_tip": "Pages that check and tidy a file before it "
+                             "goes to an AI.",
+        "grp_compare_tab": "Compare & Inspect",
+        "grp_compare_tip": "Pages that compare files or inspect how they "
+                           "are written.",
+        "grp_tidy_tab": "Tidy Files",
+        "grp_tidy_tip": "Pages that tidy file names, bundled metadata and "
+                        "encodings.",
+        "grp_records_tab": "Records & Verification",
+        "grp_records_tip": "Pages that produce file lists, check codes and "
+                           "verifiable draws.",
+        "grp_history_tab": "History",
+        "grp_history_tip": "Pages that review the records of past runs.",
+        "gate_tip": "Tidies a folder's contents into a form that is "
+                    "ready to hand to someone else.",
+        "crowd_tip": "Replaces the information that can identify a person "
+                     "in a table so it stops being readable.",
+        "doc_tip": "Checks the documents in a folder for characters "
+                   "hidden from human eyes.",
+        "cohort_tip": "Compares several people's submissions and finds the "
+                      "parts that are too similar.",
+        "text_tip": "Compares two texts and reports the parts that are "
+                    "similar.",
+        "code_tip": "Compares two code files and reports the parts that "
+                    "are similar.",
+        "audit_tip": "Lists sentences that overstate things (all, always, "
+                     "never) for you to review.",
+        "table_diff_tip": "Compares two CSV tables, matched up by the key "
+                          "columns you name.",
+        "rename_tip": "Drafts new file names under a rule you choose, "
+                      "without touching anything until you apply it.",
+        "clean_tip": "Removes the bundled metadata (author, dates, "
+                     "location) that files carry.",
+        "normalize_tip": "Converts text and JSON / CSV files to one shared "
+                         "encoding and line-ending form.",
+        "manifest_tip": "Lists a folder's files and produces check codes "
+                        "to verify them later.",
+        "draw_tip": "Orders a roster and splits it into groups in a way "
+                    "that can be verified later.",
+        "history_tip": "Reviews the records of your past scans.",
+        "sanitize_history_tip": "Reviews the records of your past masking "
+                                "runs.",
     },
     "ja": {
         "window_title": "Sieve Tray",
@@ -495,10 +557,10 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "browse_file": "ファイルを選択...",
         "run_scan": "スキャン実行",
         "settings_button": "設定...",
-        "doc_tab": "ドキュメント ({n})",
-        "code_tab": "コードペア ({n})",
-        "text_tab": "テキスト類似度 ({n})",
-        "audit_tab": "量化子監査 ({n})",
+        "doc_tab": "文書の確認 ({n})",
+        "code_tab": "コードの比較 ({n})",
+        "text_tab": "文章の比較 ({n})",
+        "audit_tab": "全称表現の検出 ({n})",
         "history_tab": "履歴 ({n})",
         "doc_header_file": "ファイル",
         "doc_header_mask": "マスク",
@@ -521,7 +583,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "history_header_folder": "フォルダ",
         "history_header_groups": "グループ",
         "history_header_docs": "文書(フラグ)",
-        "history_header_code_pairs": "コードペア",
+        "history_header_code_pairs": "コードの比較",
         "history_header_text_pairs": "テキストペア",
         "history_header_audit": "監査",
         "filter_by_filename": "ファイル名で絞り込み",
@@ -602,7 +664,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         # v0.9.0: file selection + report format + history clear
         "choose_files_button": "ファイルを選択...",
         "choose_files_dialog_title": "スキャンするファイルを選択",
-        "choose_files_filter": "テキストファイル (*.txt *.md);;すべてのファイル (*)",
+        "supported_files_filter": "対応ファイル ({pattern})",
+        "all_files_filter": "すべてのファイル (*)",
         "save_report_filter": "HTML ファイル (*.html);;Markdown ファイル (*.md)",
         "history_clear": "履歴を消去",
         "sanitize_history_clear": "履歴を消去",
@@ -628,8 +691,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "sanitize_failed_files": "\n失敗したファイル:\n{files}",
         "sanitize_no_files": "サニタイズ対象の .txt/.md ファイルがありません。",
         "sanitize_skipped": "Sieve Redact が利用できないため、サニタイズは実行されませんでした。",
-        "sanitize_history_title": "サニタイズ履歴",
-        "sanitize_history_tab": "サニタイズ履歴 ({n})",
+        "sanitize_history_title": "マスキング履歴",
+        "sanitize_history_tab": "マスキング履歴 ({n})",
         "sanitize_history_header_config": "設定",
         "sanitize_history_header_output": "出力先",
         "sanitize_history_header_files": "ファイル(成功)",
@@ -649,9 +712,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "sanitize_image_failed": "画像のサニタイズに失敗しました（rc {rc}）",
         "sanitize_config_error": "設定エラー（サニタイズ未実行）: {err}",
         "sanitize_excluded_files": "\n対象外ファイル（この設定の対象外）:\n{files}",
-        "crowd_tab": "匿名化",
+        "crowd_tab": "表の匿名化",
         "crowd_file_select": "データファイルを選択",
-        "crowd_file_filter": "表ファイル (*.csv *.json *.xml *.xlsx);;すべてのファイル (*)",
+        "crowd_file_filter": "表ファイル ({pattern});;すべてのファイル (*)",
         "crowd_notes_label": "エンジンの通知",
         "crowd_refusal_not_regular_file": "通常のファイルではありません",
         "crowd_refusal_file_too_large": "ファイルが大きすぎます",
@@ -938,6 +1001,63 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "normalize_log_tooltip": "実行の記録です。",
         "normalize_done": "完了: {produced} 件を書き出し、{refused} 件"
                           "を拒否、{observed} 件を観測。",
+        # -----------------------------------------------------------
+        # 2.5.0（迷わない画面 の依頼）: 「はじめに」画面・サイドバーの
+        # 見出し 5・1 文のツールチップ・新しい表示名（変えるのは値だけ。
+        # キー名は変えない・§3.5）。
+        # -----------------------------------------------------------
+        "start_tab": "はじめに",
+        "start_tip": "やりたいことを選ぶか、ファイルをドロップすると、"
+                     "使える画面がわかります。",
+        "start_intro": "やりたいことを選ぶか、ファイルをここにドロップ"
+                       "してください。",
+        "start_card_before_ai": "AI に渡す前に確認したい",
+        "start_card_compare": "ファイルを比べたい・調べたい",
+        "start_card_tidy": "ファイルを整えたい",
+        "start_card_records": "記録を残したい・確かめたい",
+        "start_drop_all_label": "ドロップしたすべてを受け付ける画面",
+        "start_drop_some_label": "一部だけを受け付ける画面",
+        "start_drop_none": "この種類のファイルを受け付ける画面はありません。",
+        "start_drop_hint": "ファイルのあるフォルダを指定して使います。",
+        "grp_before_ai_tab": "AI に渡す前に",
+        "grp_before_ai_tip": "AI に渡す前に、ファイルを確認して整える"
+                             "画面のまとまりです。",
+        "grp_compare_tab": "比べる・調べる",
+        "grp_compare_tip": "ファイルを比べたり、書かれ方を調べたりする"
+                           "画面のまとまりです。",
+        "grp_tidy_tab": "ファイルを整える",
+        "grp_tidy_tip": "ファイルの名前や付帯データ、文字コードを整える"
+                        "画面のまとまりです。",
+        "grp_records_tab": "記録と確認",
+        "grp_records_tip": "一覧・照合コード・抽選の記録を作って確かめる"
+                           "画面のまとまりです。",
+        "grp_history_tab": "履歴",
+        "grp_history_tip": "過去の処理の記録を見直す画面のまとまりです。",
+        "gate_tip": "フォルダの中身を、人に渡してよい形に整えて書き出します。",
+        "crowd_tip": "表の中の、個人を特定できる情報を、置き換えて"
+                     "分からなくします。",
+        "doc_tip": "フォルダの文書に、人には見えない文字が隠れていないか"
+                   "調べます。",
+        "cohort_tip": "複数の人の提出物を比べて、似すぎる部分を見つけます。",
+        "text_tip": "二つの文章を比べて、似ている部分を報告します。",
+        "code_tip": "二つのプログラムを比べて、似ている部分を報告します。",
+        "audit_tip": "『すべて』『必ず』のような言い切りの文を、一覧にして"
+                     "確認します。",
+        "table_diff_tip": "二つの CSV の表を、指定したキーの列で"
+                          "突き合わせて比べます。",
+        "rename_tip": "フォルダのファイル名を、決めた規則で付け直す案を"
+                      "作ります（すぐには変えません）。",
+        "clean_tip": "作成者・日時・位置情報などの付帯情報（メタデータ）を、"
+                     "取り除きます。",
+        "normalize_tip": "テキストや JSON / CSV の文字コードと改行を、"
+                         "そろった形に整えます。",
+        "manifest_tip": "フォルダのファイルの一覧と、確かめ用の照合コードを"
+                        "作ります。",
+        "draw_tip": "名簿の順番を決めて、あとから確かめられる形で"
+                    "班分けします。",
+        "history_tip": "これまでの走査の記録を見直します。",
+        "sanitize_history_tip": "マスキング（氏名などの伏せ字）処理の記録を"
+                                "見直します。",
     },
 }
 

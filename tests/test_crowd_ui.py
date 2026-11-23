@@ -101,14 +101,14 @@ def _patch_critical(monkeypatch):
 
 
 def test_crowd_tab_is_seventh_with_core_widgets(window):
-    # v2.1.0 (addendum 2): the Crowd page is the seventh sidebar row
-    # (the count moves 9 -> 12 with the §3.7 pages of 2.2.0 - the same
-    # structure-pin change the addendum 2 §3 ruling permits, reported
-    # with the §3.7 commit)
+    # v2.1.0 (addendum 2): the Crowd page rides the sidebar with its
+    # core widgets (the row is now the 2.5.0 registration order's 4th
+    # page - after start, gate, crowd - the §2-6 key-based follow-up;
+    # the count moved 15 -> 21 rows with start + the five headings)
     # v2.0.0: +1 Gate, v2.1.0: +1 Cohort, v2.2.0: +1 Manifest +1 Rename +1 Draw
-    assert window.sidebar.count() == 15
+    assert window.sidebar.count() == 21
     assert window.sidebar.item(
-        window._page_keys.index("crowd")).text() == tr("en", "crowd_tab")
+        window._sidebar_row_of("crowd")).text() == tr("en", "crowd_tab")
     assert window.crowd_file_btn.isEnabled() is True
     assert window.crowd_inspect_btn.isEnabled() is False
     assert window.crowd_dry_run_btn.isEnabled() is False

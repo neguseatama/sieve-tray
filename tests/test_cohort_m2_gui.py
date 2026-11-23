@@ -362,8 +362,8 @@ def test_gu_t08_readme_about_description_sync(tmp_path):
 # merged test keeps GU-T09's render and M2_RENDER_DIR behavior.
 # ---------------------------------------------------------------------------
 
-SIDEBAR_ORDER = ("doc", "code", "text", "audit", "history",
-                 "sanitize_history", "crowd", "gate")
+SIDEBAR_ORDER = ("start", "gate", "crowd", "doc", "cohort",
+                 "text", "code", "audit")
 
 
 def test_gu_t10_sidebar_order_and_names(tmp_path):
@@ -374,20 +374,22 @@ def test_gu_t10_sidebar_order_and_names(tmp_path):
     win = gui.MainWindow(storage=Storage(tmp_path / "history.db"))
     try:
         keys = list(win._page_keys)
-        # the §1.1 order (the existing order is kept); the new Cohort
-        # page rides the sidebar when it arrives (request §3.9)
+        # the 2.5.0 order (the registration table; §2-6: key-based)
         assert keys[:len(SIDEBAR_ORDER)] == list(SIDEBAR_ORDER)
         assert "cohort" in keys, "the Cohort page joins the sidebar"
         # the display names come from the i18n table (ja/en)
-        assert win.sidebar.item(0).text() == tr("en", "doc_tab", n=0)
+        assert win.sidebar.item(0).text() == tr("en", "start_tab")
         # selecting an item switches the right-hand page
-        target = win.sidebar.item(2)
-        win.sidebar.setCurrentRow(2)
-        assert win.pages.currentWidget() == win.pages.widget(2)
+        target_row = win._sidebar_row_of("crowd")
+        target = win.sidebar.item(target_row)
+        win.sidebar.setCurrentRow(target_row)
+        assert win.pages.currentWidget() == \
+            win.pages.widget(win._page_keys.index("crowd"))
         assert target is not None
         # the counted titles update dynamically (§1.1)
         win._set_page_title("doc", n=3)
-        assert win.sidebar.item(0).text() == tr("en", "doc_tab", n=3)
+        assert win.sidebar.item(win._sidebar_row_of("doc")).text() == \
+            tr("en", "doc_tab", n=3)
     finally:
         win.close()
 
@@ -401,10 +403,11 @@ def test_gu_t11_sidebar_width_and_elision(tmp_path):
         win.show()
         w = win.sidebar.width()
         assert 160 <= w <= 240, w
-        # every item carries the full text as its tooltip (§1.2)
+        # every row carries its full one-sentence tooltip (2.5.0 §3.2:
+        # the tooltip is the tip sentence, no longer the name itself)
         for i in range(win.sidebar.count()):
             item = win.sidebar.item(i)
-            assert item.toolTip() == item.text()
+            assert item.toolTip(), i
         # the long names are elided, not wrapped (the view's elide mode)
         from PySide6.QtCore import Qt as QtCore
         assert win.sidebar.textElideMode() == QtCore.ElideRight
@@ -415,7 +418,7 @@ def test_gu_t11_sidebar_width_and_elision(tmp_path):
             win2.show()
             assert 160 <= win2.sidebar.width() <= 240
             from sieve_tray_i18n import tr
-            assert win2.sidebar.item(0).text() == tr("ja", "doc_tab", n=0)
+            assert win2.sidebar.item(0).text() == tr("ja", "start_tab")
         finally:
             win2.close()
     finally:
@@ -431,11 +434,14 @@ def test_gu_t12_sidebar_keyboard_and_selection(tmp_path):
     win = gui.MainWindow(storage=Storage(tmp_path / "history.db"))
     try:
         win.show()
-        # the arrows move the selection and the page follows
+        # the arrows move the selection over the selectable rows and the
+        # page follows (2.5.0 §3.2: the headings are skipped - a Down
+        # from start lands on gate, not on the heading)
         win.sidebar.setCurrentRow(0)
         QTest.keyClick(win.sidebar, QtCore.Key_Down)
-        assert win.sidebar.currentRow() == 1
-        assert win.pages.currentIndex() == 1
+        assert win.sidebar.currentRow() == 2
+        assert win.pages.currentIndex() == \
+            win._page_keys.index("gate")
         # Ctrl+1..9 (Cmd on macOS) switch by position
         shortcuts = win.findChildren(
             __import__("PySide6.QtGui", fromlist=["QShortcut"])
@@ -466,13 +472,14 @@ def test_gu_t13_last_page_save_and_restore(tmp_path):
     win = gui.MainWindow(storage=store)
     try:
         win.show()
-        win.sidebar.setCurrentRow(3)
+        win._select_page("audit")
         win.close()  # closeEvent saves last_page
         assert store.get_setting("last_page") == "audit"
         win2 = gui.MainWindow(storage=Storage(db))
         try:
             win2.show()
-            assert win2.sidebar.currentRow() == 3
+            assert win2.sidebar.currentRow() == \
+                win2._sidebar_row_of("audit")
         finally:
             win2.close()
         # a saved key that no longer exists falls back to the first row
@@ -611,18 +618,12 @@ def test_gu_t16_twelve_pages_style_and_tail_visibility(tmp_path):
             win.resize(880, 560)
             win.show()
             sb = win.sidebar
-            # the twelve pages of §3.7: the existing order, then the
-            # three new pages with their i18n names (the display
-            # names ride the real _add_page registration)
-            assert sb.count() == 15, (lang, sb.count())
-            # the Seal tail (rows 9-11) and the Canon tail (12-14):
-            # both keep their i18n names and their order
-            for offset, key in enumerate(SEAL_PAGE_TAIL):
-                item = sb.item(sb.count() - 6 + offset)
-                assert item.text() == tr(lang, key + "_tab"), \
-                    (lang, key, item.text())
-            for offset, key in enumerate(CANON_PAGE_TAIL):
-                item = sb.item(sb.count() - 3 + offset)
+            # the 21 rows of 2.5.0 (16 pages + 5 headings; the §2-6
+            # key-based follow-up): the tails keep their i18n names
+            assert sb.count() == 21, (lang, sb.count())
+            # the Seal pages and the Canon pages keep their i18n names
+            for key in SEAL_PAGE_TAIL + CANON_PAGE_TAIL:
+                item = sb.item(win._sidebar_row_of(key))
                 assert item.text() == tr(lang, key + "_tab"), \
                     (lang, key, item.text())
             # the width rule still holds with the new names (§1.2)

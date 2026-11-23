@@ -1,6 +1,6 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v2.4.0
+# Sieve Tray v2.5.0
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 
@@ -14,7 +14,7 @@
 > [Sieve Redact](https://github.com/neguseatama/sieve-redact), the masking
 > engine behind the text/image Sanitize actions, and — new in v0.10.0 —
 > [Sieve Crowd](https://github.com/neguseatama/sieve-crowd), the table
-> anonymization engine behind the Anonymize tab. The Anonymize tab
+> anonymization engine behind the Anonymize Tables page. The Anonymize Tables page
 > also carries a one-click **table observation (`scan`)**:
 > Crowd's single-page HTML report of how the table currently looks —
 > roles, groups and hidden-character findings, never cell values —
@@ -58,8 +58,8 @@ Referee's pairwise paraphrase comparison **and** Sieve Referee's quantifier
 audit lane (new in v0.8.0, powered by Sieve Referee >=1.3.0). Results land in
 a single window, with local history so nothing has to be re-run, and a detail
 view showing exactly which observation axis fired and why — never a bare
-verdict, only what the underlying engines actually observed. The **Anonymize**
-tab additionally puts Sieve Crowd one click away for table files, and the
+verdict, only what the underlying engines actually observed. The **Anonymize Tables**
+page additionally puts Sieve Crowd one click away for table files, and the
 Sanitize actions put Sieve Redact behind the text and image editors.
 
 > Like the rest of the Sieve series, this is an **observation tool, not a
@@ -259,12 +259,12 @@ Redact removes it with a receipt that proves nothing else changed.
 - **Detail dialog** — double-click any row to see the per-axis observation
   states and the underlying evidence/scores/reason the engine recorded, not
   just the mask string.
-- **Quantifier Audit lane (new in v0.8.0)** — every scanned `.txt`/`.md`
+- **Detect Universal Statements (new in v0.8.0)** — every scanned `.txt`/`.md`
   file is also passed through Sieve Referee's quantifier audit lane, which
   flags sentences that make universal claims without backing (`theorem` /
   `enumerated` / `sample`) — the kind of "all X are Y" claim that, with no
   proof or finite enumeration behind it, is a hallucination candidate.
-  Flagged sentences surface in their own **Quantifier Audit** tab, one row
+  Flagged sentences surface in their own **Detect Universal Statements** page, one row
   per sentence, with the signal (RED = unbacked universal, YELLOW =
   sample-only or unbacked measured), the matched patterns, and a separate
   **Certainty Markers** section in the detail dialog showing any epistemic
@@ -284,8 +284,8 @@ Redact removes it with a receipt that proves nothing else changed.
 - **Self-contained report export (HTML or Markdown)** — every result
   can be exported as a standalone HTML report, or as a Markdown report
   for plain-text / version-controlled workflows.
-- **History clear (new in v0.9.0)** — the History and Sanitize History
-  tabs each have a "Clear History" button for when you want to wipe the
+- **History clear (new in v0.9.0)** — the History and Masking History
+  pages each have a "Clear History" button for when you want to wipe the
   local SQLite store.
 - **Improved signal colors (new in v0.9.0)** — RED and YELLOW rows
   have stronger pastel backgrounds and the signal column is rendered
@@ -315,7 +315,7 @@ Redact removes it with a receipt that proves nothing else changed.
   engine reports that it could not observe a file, Tray lists it under
   "unobserved" with the engine's own reason, so a gap in the analysis
   is never presented as a clean result.
-- **Anonymize tables (new in v0.10.0)** — the **Anonymize** tab sends a
+- **Anonymize Tables (new in v0.10.0)** — the **Anonymize Tables** page sends a
   table file (`.csv`/`.json`/`.xml`) to the bundled Sieve Crowd engine:
   inspect columns (distinct counts, unique ratios, suggested roles), dry-run
   the transform to compare before/after alone-row counts, generate a
@@ -324,10 +324,10 @@ Redact removes it with a receipt that proves nothing else changed.
   status). Protection is k-anonymity against an outsider who knows the
   declared quasi-identifiers; if the requested k is not achievable, the
   engine refuses without writing an output file. Every run is saved to the
-  local history database and included in exported reports. The tab also
+  local history database and included in exported reports. The page also
   keeps an 8-column run history view (latest 20 runs, refreshed at
   startup and after each run; new in v1.0.0).
-- **CP932 and Excel input (new in v1.3.0)** — the Anonymize tab reads
+- **CP932 and Excel input (new in v1.3.0)** — the Anonymize Tables page reads
   CP932 (Windows-31J) CSVs and Excel `.xlsx` workbooks through the same
   engine, with the character code auto-detected (a UTF-8 BOM, then
   strict UTF-8, then strict CP932; anything else is refused). The
@@ -398,16 +398,18 @@ pip install -e .
 
 ### GUI
 
-1. Launch the app.
+1. Launch the app. It opens on **Start** — the page names what every
+   page does, and dropping a file or a folder on it lists the pages that
+   can take it (with the input filled for you when you pick one).
 2. Click **Select Folder...** and pick a directory containing one subfolder
    per submission.
 3. Click **Run Scan**.
-4. Browse results in the **Documents**, **Code Pairs**, **Text Similarity**,
-   and **Quantifier Audit** tabs — sort by column, filter by filename, and
+4. Browse results in the **Check Documents**, **Compare Code**, **Compare Texts**,
+   and **Detect Universal Statements** pages — sort by column, filter by filename, and
    double-click any row for the full per-axis breakdown (audit rows show a
    separate **Certainty Markers** section in the detail dialog).
 5. Export a shareable report with **Export HTML Report**. Past runs are
-   always available under the **History** tab.
+   always available under the **History** page.
 
 (The interface language defaults to English; switch to Japanese from the
 Settings dialog. Takes effect after restart.)
@@ -468,7 +470,7 @@ the list.
 
 ## 🖼️ Screenshots
 
-| Main window | Anonymize tab |
+| Main window (the Start page) | Anonymize Tables |
 |---|---|
 | ![Main window](docs/screenshots/main-window-en.png) | ![Anonymize tab](docs/screenshots/anonymize-tab-en.png) |
 
