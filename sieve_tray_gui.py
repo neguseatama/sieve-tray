@@ -3261,7 +3261,12 @@ class MainWindow(QMainWindow):
         attr = self._FOLDER_INPUT_FIELDS.get(key)
         if attr is None:
             return
-        edit = getattr(self, attr, None)
+        # the input edits live on the PAGE widgets (GatePage and its
+        # siblings), not on the window - resolve the field against the
+        # registered page (the NV-T06 second-wave test caught the
+        # window-level lookup silently skipping the fill)
+        page = self._page_widgets.get(key)
+        edit = getattr(page, attr, None)
         if edit is None:
             return
         target = None
