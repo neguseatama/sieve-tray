@@ -25,6 +25,10 @@ The expectations carry the three corrections of the 2026-11-23 ruling:
 
 Every pin addresses a page by KEY (never by row number, the §2-6
 ruling).  The expected sidebar is 21 rows: 5 headings + 16 pages.
+
+NV-T13 (2.5.1) lands red-first on the 2.5.0 tree (7321041): the 21 row
+names must be unique per language - the 2.5.0 grp_history heading rode
+the same string (履歴 / History) the kept history page already carried.
 """
 import re
 import sys
@@ -1182,3 +1186,42 @@ def test_nv_t12_release_pack_2_5_0(tmp_path):
                 for lang, olds in old_names.items():
                     assert segment not in olds, \
                         (f.name, lang, segment)
+
+
+# ---------------------------------------------------------------------------
+# NV-T13 (2.5.1): the 21 sidebar row names are unique per language -
+# the counted suffix stripped, no heading lands on a page name.  Red on
+# the 2.5.0 tree (7321041): the grp_history heading (履歴 / History)
+# collides with the adjacent history page (履歴 (0) / History (0)) in
+# both languages - the user's Mac acceptance counted the 21 rows and
+# saw 履歴 twice.  NV-T01 could not see it: it reads each row's expected
+# name from the same dictionary it asserts against, so a
+# dictionary-internal collision passes the structure pin.
+# ---------------------------------------------------------------------------
+
+def test_nv_t13_sidebar_row_names_unique(tmp_path):
+    _require_qt()
+    from PySide6.QtCore import Qt
+    win = _make_window(tmp_path)
+    try:
+        for lang in ("en", "ja"):
+            w = _make_window(tmp_path, lang=lang)
+            try:
+                seen = {}
+                for pos in range(w.sidebar.count()):
+                    item = w.sidebar.item(pos)
+                    # the rendered counted suffix (the (0) form) must not
+                    # mask a collision - compare the base names
+                    base = re.sub(r"\s*\(\d+\)\s*$", "", item.text())
+                    kind = ("page"
+                            if item.flags() & Qt.ItemIsSelectable
+                            else "head")
+                    seen.setdefault(base, []).append(
+                        (kind, pos, item.text()))
+                dups = {k: v for k, v in seen.items() if len(v) > 1}
+                assert not dups, (lang, dups)
+            finally:
+                if w is not win:
+                    w.close()
+    finally:
+        win.close()
