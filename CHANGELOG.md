@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.5.1] - 2026-11-23
+
+### Fixed
+- **The sidebar's History heading** no longer duplicates the page row
+  under it: the 2.5.0 heading rode the same string the kept history
+  page already carried (ja 履歴 / 履歴 (0), en History / History (0),
+  the adjacent rows 18 and 19 - the acceptance on the Mac counted the
+  21 rows and saw the pair; the structure pin reads each row's expected
+  name from the same dictionary it asserts against, so a
+  dictionary-internal collision passed it).  The heading reads
+  **履歴を見る / View History** now (the verb-phrase style of
+  比べる・調べる / ファイルを整える); the page names, the i18n keys,
+  the tooltip and the processing records are untouched.  The new
+  uniqueness pin (NV-T13) holds all 21 row names distinct per language
+  (the rendered counted suffix stripped) and was measured red on the
+  2.5.0 tree before the rename; the startup landing stays the §1.3/§3.4
+  last_page restore (ruled unchanged - the observed 表の比較 was the
+  saved page, not a defect).
+
 ## [2.5.0] - 2026-11-23
 
 ### Added

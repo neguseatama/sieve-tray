@@ -1,6 +1,6 @@
 **English** | [日本語](README.ja.md)
 
-# Sieve Tray v2.5.0
+# Sieve Tray v2.5.1
 
 **A general-purpose observation tool — a desktop front-end for the Sieve series**
 

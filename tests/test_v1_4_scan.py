@@ -663,7 +663,7 @@ def test_t15_golden_mold_v130_unchanged():
 # ---------------------------------------------------------------------------
 
 def test_t16_version_pins():
-    assert sieve_tray.__version__ == "2.5.0"
+    assert sieve_tray.__version__ == "2.5.1"
     # pyproject keeps the single-source wiring (dynamic version read
     # from sieve_tray.__version__)
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")

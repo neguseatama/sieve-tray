@@ -518,7 +518,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "grp_records_tab": "Records & Verification",
         "grp_records_tip": "Pages that produce file lists, check codes and "
                            "verifiable draws.",
-        "grp_history_tab": "History",
+        "grp_history_tab": "View History",
         "grp_history_tip": "Pages that review the records of past runs.",
         "gate_tip": "Tidies a folder's contents into a form that is "
                     "ready to hand to someone else.",
@@ -1031,7 +1031,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "grp_records_tab": "記録と確認",
         "grp_records_tip": "一覧・照合コード・抽選の記録を作って確かめる"
                            "画面のまとまりです。",
-        "grp_history_tab": "履歴",
+        "grp_history_tab": "履歴を見る",
         "grp_history_tip": "過去の処理の記録を見直す画面のまとまりです。",
         "gate_tip": "フォルダの中身を、人に渡してよい形に整えて書き出します。",
         "crowd_tip": "表の中の、個人を特定できる情報を、置き換えて"
