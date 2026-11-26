@@ -66,7 +66,7 @@ def test_ck_t01_hidden_text_found_exit_codes(tmp_path):
     assert data["tool"] == {"name": "sieve-tray",
                             "version": __import__("sieve_tray").__version__}
     by = {item["path"]: item for item in data["items"]}
-    six = by[str(Path("in") / "six.pdf")]
+    six = by[(Path("in") / "six.pdf").as_posix()]
     assert six["status"] == "found"
     words = {k["word"] for k in six["hidden_text"]["kinds"]}
     assert {"tr3", "tr7", "tiny_font", "off_page", "off_layer",
@@ -75,7 +75,7 @@ def test_ck_t01_hidden_text_found_exit_codes(tmp_path):
                if k["word"] == "tr3")
     assert tr3["count"] == 1
     assert tr3["pages"] == [1]
-    assert by[str(Path("in") / "plain.txt")]["status"] == "clean"
+    assert by[(Path("in") / "plain.txt").as_posix()]["status"] == "clean"
     assert data["summary"]["found"] == 1
 
     clean = tmp_path / "clean"
@@ -161,10 +161,10 @@ def test_ck_t04_exit_two_and_unobservable(tmp_path):
     assert proc.returncode == 1  # the six-kind file rides along
     data = json.loads(proc.stdout.decode("utf-8"))
     by = {item["path"]: item for item in data["items"]}
-    assert by[str(Path("in") / "broken.pdf")]["status"] == "unobservable"
-    assert by[str(Path("in") / "broken.pdf")]["reason"] == "parse_failed"
-    assert by[str(Path("in") / "encrypted.pdf")]["status"] == "unobservable"
-    assert by[str(Path("in") / "encrypted.pdf")]["reason"] == "refused"
+    assert by[(Path("in") / "broken.pdf").as_posix()]["status"] == "unobservable"
+    assert by[(Path("in") / "broken.pdf").as_posix()]["reason"] == "parse_failed"
+    assert by[(Path("in") / "encrypted.pdf").as_posix()]["status"] == "unobservable"
+    assert by[(Path("in") / "encrypted.pdf").as_posix()]["reason"] == "refused"
     assert data["summary"]["unobservable"] == 2
 
     proc2 = _run_cli(["in", "--format", "json", "--strict"], cwd=tmp_path)
@@ -189,7 +189,8 @@ def test_ck_t05_exclude_determinism_writes_nothing(tmp_path):
     assert proc1.returncode == proc2.returncode == 0
     assert proc1.stdout == proc2.stdout
     data = json.loads(proc1.stdout.decode("utf-8"))
-    assert [i["path"] for i in data["items"]] == [str(Path("in") / "a.txt")]
+    assert [i["path"] for i in data["items"]] == [
+        (Path("in") / "a.txt").as_posix()]
     assert data["items"][0]["status"] == "clean"
     after = {p: p.read_bytes() for p in sorted(inp.rglob("*"))}
     assert before == after
@@ -245,7 +246,7 @@ def test_ck_t13_default_exclusions(tmp_path):
     data = json.loads(proc.stdout.decode("utf-8"))
     assert data["excluded_dirs"] == 2
     paths = [i["path"] for i in data["items"]]
-    assert str(Path("in") / "keep.txt") in paths
+    assert (Path("in") / "keep.txt").as_posix() in paths
     assert not any(".obsidian" in p or ".trash" in p for p in paths)
 
     direct = _run_cli([inp / ".obsidian" / "note.md", "--format", "json"],
@@ -261,8 +262,8 @@ def test_ck_t13_default_exclusions(tmp_path):
     wdata = json.loads(wide.stdout.decode("utf-8"))
     assert wdata["excluded_dirs"] == 0
     wpaths = [i["path"] for i in wdata["items"]]
-    assert str(Path("in") / ".obsidian" / "note.md") in wpaths
-    assert str(Path("in") / ".trash" / "old.md") in wpaths
+    assert (Path("in") / ".obsidian" / "note.md").as_posix() in wpaths
+    assert (Path("in") / ".trash" / "old.md").as_posix() in wpaths
 
     from sieve_tray import run_gate
     out = tmp_path / "gate-out"

@@ -151,4 +151,10 @@ jobs:
           # red job; the findings path (exit 1) is the check command's
           # own contract and samples/gate holds its finding samples
           paths: samples/gate/plain.txt
-          tray-version: -e .
+          # the checked-out tree itself: the action renders the input
+          # inside one quoted argv token (pip install "."), so the
+          # editable flag cannot ride the version input - pip received
+          # "-e ." as a single argument and rejected the requirement
+          # (the first CI run died in the action's install step, exit 1,
+          # before the check ran)
+          tray-version: .
