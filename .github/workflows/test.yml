@@ -88,3 +88,41 @@ jobs:
           print("vendor sync verified on", sys.platform)
       - name: Run tests
         run: python -m pytest -v
+
+      - name: Public-text watch
+        run: python tools/check_public_text.py
+
+  hook-integration:
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the tree and pre-commit
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[gui]" pypdf tinycss2 cssselect2 pre-commit
+      - name: Run the hook against this tree
+        run: pre-commit try-repo . sieve-check --files samples/gate/plain.txt
+
+  action-integration:
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the action's runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pypdf tinycss2 cssselect2
+      - name: Run the local action
+        uses: ./
+        with:
+          paths: samples/gate
+          tray-version: -e .

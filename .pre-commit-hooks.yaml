@@ -1,0 +1,9 @@
+# The repository-inspection hook: the same observation the Gate makes,
+# over the files the pre-commit pass hands in.
+- id: sieve-check
+  name: sieve-check
+  description: Observe files for hidden text and invisible characters
+  entry: sieve-tray check
+  language: python
+  pass_filenames: true
+  files: '\.(docx|html?|md|txt|pdf|csv|xlsx|png|jpe?g|gif|bmp|tif|tiff|webp)$'

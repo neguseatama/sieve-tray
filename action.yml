@@ -1,0 +1,53 @@
+name: 'Sieve Tray check'
+description: 'Observe files for hidden text and invisible characters'
+inputs:
+  paths:
+    description: 'Files or folders to check (space separated)'
+    required: false
+    default: '.'
+  exclude:
+    description: 'Exclude patterns (space separated, repeatable)'
+    required: false
+    default: ''
+  only-hidden:
+    description: 'Report hidden text only, ignore the invisible characters'
+    required: false
+    default: 'false'
+  strict:
+    description: 'Exit 1 when any file could not be observed'
+    required: false
+    default: 'false'
+  tray-version:
+    description: 'The sieve-tray requirement to install (a version pin or a path)'
+    required: false
+    default: 'sieve-tray>=2.6.0'
+outputs:
+  findings:
+    description: 'The number of files with findings'
+    value: ${{ steps.check.outputs.findings }}
+runs:
+  using: composite
+  steps:
+    - name: Install sieve-tray
+      shell: bash
+      run: python -m pip install "${{ inputs.tray-version }}"
+    - name: Check
+      id: check
+      shell: bash
+      env:
+        CHECK_PATHS: ${{ inputs.paths }}
+        CHECK_EXCLUDE: ${{ inputs.exclude }}
+        CHECK_ONLY_HIDDEN: ${{ inputs.only-hidden }}
+        CHECK_STRICT: ${{ inputs.strict }}
+      run: |
+        ARGS="$CHECK_PATHS --format github"
+        for pattern in $CHECK_EXCLUDE; do
+          ARGS="$ARGS --exclude $pattern"
+        done
+        if [ "$CHECK_ONLY_HIDDEN" = "true" ]; then
+          ARGS="$ARGS --only-hidden"
+        fi
+        if [ "$CHECK_STRICT" = "true" ]; then
+          ARGS="$ARGS --strict"
+        fi
+        sieve-tray check $ARGS
