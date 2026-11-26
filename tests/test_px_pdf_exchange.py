@@ -13,7 +13,7 @@ and the widened XMP scope rides PX-T07.  The former T02/T04/T05
 functions were renamed mechanically (T02 -> T05, docs -> T15, the
 frozen-app self-check -> T13).
 
-  PX-T01 - the dependency floor moves to the PUBLISHED 0.23.0, and
+  PX-T01 - the dependency floor moves to the PUBLISHED 0.24.0, and
            the six fixed hidden kinds (Tr 3, Tr 7, tiny_font,
            off_page, off_layer, white_text) reach Gate's
            hidden_segments count and the Order observation.
@@ -63,6 +63,7 @@ import io
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -82,8 +83,9 @@ from test_pd_pdf_reopen import wheel_path  # noqa: F401  (the PX-T06 fix)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# the fixed words, in the order the six-kind probe emits them
-RECORD_WORDS = ["Tr 3", "Tr 7", "tiny_font", "off_page",
+# the structured kind words, in the order the six-kind probe emits
+# them under the 0.24.x observation
+RECORD_WORDS = ["tr3", "tr7", "tiny_font", "off_page",
                 "off_layer", "white_text"]
 
 
@@ -118,13 +120,13 @@ def _zeros():
 # PX-T01: the floor and the six kinds
 
 def test_px_t01_dependency_floor_and_hidden_kinds(tmp_path):
-    """PX-T01: the floor names the published 0.23.0 and Gate counts
+    """PX-T01: the floor names the published 0.24.0 and Gate counts
     all six fixed kinds (red on 2.3.1: the floor still says 0.22.1
     and the floor lens reports only Tr 3)."""
     need_pypdf()
 
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"sieve-lens[pdf,html-css-full]>=0.23.0"' in pyproject
+    assert '"sieve-lens[pdf,html-css-full]>=0.24.0"' in pyproject
     assert '"sieve-lens[pdf,html-css-full]>=0.22.1"' not in pyproject
     deps_line = pyproject.split("dependencies = ", 1)[1].splitlines()[0]
     assert "pypdf" not in deps_line
@@ -322,8 +324,8 @@ def test_px_t03_raw_bytes_and_local_kind_record(tmp_path):
     assert record["record_version"] == 1
     assert record["kind"] == "sieve-gate-hidden-kinds"
     assert record["items"] == [{"item": 1, "entries": [
-        {"page": "page 1", "word": "Tr 3"},
-        {"page": "page 1", "word": "Tr 7"},
+        {"page": "page 1", "word": "tr3"},
+        {"page": "page 1", "word": "tr7"},
         {"page": "page 1", "word": "tiny_font"},
         {"page": "page 1", "word": "off_page"},
         {"page": "page 1", "word": "off_layer"},
@@ -340,36 +342,36 @@ def test_px_t03_raw_bytes_and_local_kind_record(tmp_path):
     assert verdict["overall"] == "match", verdict
 
 
-def test_px_t03_record_words_are_the_fixed_list_only():
-    """PX-T03: the words come out of the fixed list only.  A location
-    outside the list records the page position alone (no new word); a
-    location without a page position records nothing; the quoted name
-    part is discarded BEFORE the match (a name containing a fixed
-    word cannot fabricate a second word)."""
+def test_px_t03_record_words_are_the_structured_list_only():
+    """PX-T03: the record words come out of the closed nine-word
+    structured vocabulary only.  A segment outside the list records
+    the page position alone (no new word); a segment without the
+    structured page records nothing; the location label string is
+    never read (a name inside it cannot fabricate a word)."""
     entries = sieve_tray._gate_hidden_kinds_entries
-    # the six 0.23.x shapes -> exactly their fixed word
-    assert entries("page 1 (invisible text, Tr 3)") == \
-        [{"page": "page 1", "word": "Tr 3"}]
-    assert entries("page 1 (invisible text, Tr 7)") == \
-        [{"page": "page 1", "word": "Tr 7"}]
-    assert entries("page 1 (tiny_font)") == \
-        [{"page": "page 1", "word": "tiny_font"}]
-    assert entries("page 1 (off_page)") == \
-        [{"page": "page 1", "word": "off_page"}]
-    assert entries("page 1 (off_layer '%s')" % LAYER_NAME) == \
-        [{"page": "page 1", "word": "off_layer"}]
-    assert entries("page 1 (white_text)") == \
-        [{"page": "page 1", "word": "white_text"}]
-    # the form shape: the form name and the layer name are thrown away
-    assert entries("page 1 (form '/Fm0', off_layer '/L1')") == \
-        [{"page": "page 1", "word": "off_layer"}]
-    # a location outside the list: position only, no new word
-    assert entries("page 1 (future_label)") == [{"page": "page 1"}]
-    # a name containing a fixed word cannot fabricate that word
-    assert entries("page 1 (off_layer 'tiny_font')") == \
-        [{"page": "page 1", "word": "off_layer"}]
-    # no page position: nothing is recorded
-    assert entries("selector:body > p") == []
+    from sieve_tray import GATE_KIND_WORDS
+    # every closed word rides the record verbatim, one entry each
+    for word in GATE_KIND_WORDS:
+        seg = SimpleNamespace(text="x", visible=False, kind="body",
+                              location="page 2 (unused)", how=word,
+                              page=2)
+        assert entries(seg) == [{"page": "page 2", "word": word}]
+    # a structured word outside the list: position only, no new word
+    seg = SimpleNamespace(text="x", visible=False, kind="body",
+                          location="page 2 (future_label)",
+                          how="future_label", page=2)
+    assert entries(seg) == [{"page": "page 2"}]
+    # a quoted name never reaches the record: the location string is
+    # not read, so a name containing a word cannot fabricate it
+    seg = SimpleNamespace(text="x", visible=False, kind="body",
+                          location="page 2 (off_layer 'tiny_font')",
+                          how="off_layer", page=2)
+    assert entries(seg) == [{"page": "page 2", "word": "off_layer"}]
+    # no structured page: nothing is recorded, whatever the label says
+    seg = SimpleNamespace(text="x", visible=False, kind="body",
+                          location="page 2 (invisible text, Tr 3)")
+    assert entries(seg) == []
+    assert entries("page 2 (invisible text, Tr 3)") == []
 
 
 # ---------------------------------------------------------------------------
@@ -579,7 +581,7 @@ def test_px_t10_incremental_old_info_dropped(tmp_path):
 # PX-T06: the wheel METADATA (the PD-T06 idiom, the wheel built once)
 
 def test_px_t06_wheel_metadata_requires_dist(wheel_path):
-    """PX-T06: the built wheel's METADATA carries the published 0.23.0
+    """PX-T06: the built wheel's METADATA carries the published 0.24.0
     floor with the pdf and html-css-full extras, and pypdf is not
     declared on the tray side (it rides the lens pdf extra)."""
     import zipfile
@@ -595,7 +597,7 @@ def test_px_t06_wheel_metadata_requires_dist(wheel_path):
     lens_req = lens_reqs[0][len("Requires-Dist: sieve-lens["):]
     extras, _, floor = lens_req.partition("]")
     assert set(extras.split(",")) == {"pdf", "html-css-full"}
-    assert floor == ">=0.23.0"
+    assert floor == ">=0.24.0"
     assert not any(r.startswith("Requires-Dist: pypdf") for r in reqs)
 
 

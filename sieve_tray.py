@@ -53,7 +53,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # this dynamically (see [tool.setuptools.dynamic]) instead of duplicating
 # the number, since keeping two copies in sync has already caused drift
 # more than once during development.
-__version__ = "2.5.1"
+__version__ = "2.6.0"
 
 
 CODE_EXTS = {".py"}
@@ -1859,13 +1859,17 @@ def _gate_rel_sort_key(rel: str) -> bytes:
     return rel.encode("utf-8")
 
 
-def _gate_walk(input_dir: Path):
+def _gate_walk(input_dir: Path, *, exclude_vault_dirs: bool = False):
     """Relative (POSIX, as the OS returns it) paths of every regular
     file under input_dir, sorted by their UTF-8 bytes.  Symlinks stay
     in the list as items (they are never followed); directories and
-    special files do not."""
+    special files do not.  Only the Gate's folder ingest prunes the
+    two vault folders (.obsidian/ and .trash/) - the other lanes that
+    ride this walk keep seeing every file."""
     items = []
     for root, dirs, names in os.walk(input_dir, followlinks=False):
+        if exclude_vault_dirs:
+            dirs[:] = [d for d in dirs if d not in CHECK_EXCLUDED_DIRS]
         dirs.sort()
         for name in names:
             p = Path(root) / name
@@ -1874,6 +1878,259 @@ def _gate_walk(input_dir: Path):
                          else str(rel).replace(os.sep, "/"))
     items.sort(key=_gate_rel_sort_key)
     return items
+
+
+# ---------------------------------------------------------------------------
+# 2.6.0: the check command - observation only, nothing is written out.
+# The vocabularies are the engine's closed sets: the structured kind
+# words of the hidden PDF segments, the segment kinds of the other
+# lanes, and the strip kinds of the invisible characters.  A file the
+# engine cannot observe is reported with a reason word from the closed
+# UNOBSERVED_REASONS set.  The output never carries segment text,
+# layer or form names, metadata values, or absolute paths.
+
+CHECK_VERSION = 1
+CHECK_EXCLUDED_DIRS = (".obsidian", ".trash")
+
+
+def _check_collect(target: Path, include_hidden_dirs: bool):
+    """(files, excluded_dirs) under one folder target - symlinks are
+    recorded and never read, the two vault folders are pruned by
+    default and only counted."""
+    excluded = 0
+    files = []
+    pending = [target]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = sorted(current.iterdir(),
+                             key=lambda p: p.name.encode("utf-8"))
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_symlink():
+                files.append(entry)
+                continue
+            if entry.is_dir():
+                if (not include_hidden_dirs
+                        and entry.name in CHECK_EXCLUDED_DIRS):
+                    excluded += 1
+                    continue
+                pending.append(entry)
+            else:
+                files.append(entry)
+    return files, excluded
+
+
+def _check_route(path: Path) -> str:
+    """Observable or not_applicable, by the Gate's own extension
+    sets - an unobservable type is skipped without being read."""
+    ext = path.suffix.lower()
+    if (ext in GATE_DOC_EXTS or ext in GATE_TABLE_EXTS
+            or ext in GATE_IMAGE_EXTS):
+        return "observable"
+    return "not_applicable"
+
+
+def _check_observe(engine, path: Path, only_hidden: bool) -> dict:
+    """One file's observation: status, reason, per-kind-word counts
+    and pages, per-strip-kind counts - closed words only."""
+    from sieve_lens import ExtractionRefused, visible_text
+    item = {"status": None, "reason": None, "detail": None,
+            "hidden_text": {"count": 0, "kinds": []},
+            "invisible": {"kinds": []}}
+    try:
+        obs = engine.observe(str(path))
+    except ExtractionRefused as err:
+        code = str(err).strip()
+        item["status"] = "unobservable"
+        item["reason"] = "refused"
+        item["detail"] = code if code in KNOWN_REFUSAL_CODES else None
+        return item
+    except OSError:
+        item["status"] = "unobservable"
+        item["reason"] = "unreadable"
+        return item
+    except Exception:  # noqa: BLE001
+        item["status"] = "unobservable"
+        item["reason"] = "parse_failed"
+        return item
+    if str(obs.mask).startswith("0"):
+        # H1 = 0: the text layer was not established - the same
+        # judgment as the Gate's classifier.  A file that fails closed
+        # refuses the observation (the encrypted PDF's closed word);
+        # everything else is parse_failed.
+        encrypted = False
+        for values in (obs.evidence or {}).values():
+            for text in values if isinstance(values, (list, tuple)) \
+                    else (values,):
+                text = str(text)
+                if text.startswith("Extraction failed:") \
+                        and "FileNotDecryptedError" in text:
+                    encrypted = True
+        item["status"] = "unobservable"
+        item["reason"] = "refused" if encrypted else "parse_failed"
+        return item
+    counts = {}
+    pages = {}
+    for seg in obs.segments:
+        if seg.visible:
+            continue
+        word = getattr(seg, "how", None) or seg.kind
+        counts[word] = counts.get(word, 0) + 1
+        page = getattr(seg, "page", None)
+        if page is not None:
+            pages.setdefault(word, set()).add(int(page))
+    kinds = []
+    for word in sorted(counts, key=lambda w: w.encode("utf-8")):
+        kinds.append({"word": word, "count": counts[word],
+                      "pages": sorted(pages.get(word, set()))})
+    item["hidden_text"] = {"count": sum(counts.values()), "kinds": kinds}
+    if not only_hidden:
+        vt = visible_text(obs, strip=set(GATE_STRIP_KINDS))
+        removed = {word: count for word, count in vt.removed.items()
+                   if word in GATE_STRIP_KINDS}
+        item["invisible"] = {"kinds": [
+            {"word": word, "count": removed[word]}
+            for word in sorted(removed, key=lambda w: w.encode("utf-8"))]}
+    if item["hidden_text"]["count"] or item["invisible"]["kinds"]:
+        item["status"] = "found"
+    else:
+        item["status"] = "clean"
+    return item
+
+
+def check_paths(paths, *, only_hidden: bool = False, excludes=(),
+                include_hidden_dirs: bool = False) -> dict:
+    """The check command's public entry point (the contract the MCP
+    caller builds on): observe the given files and folders and return
+    the same shape as ``--format json`` (``check_version`` 1).
+    Deterministic: the items ride the sorted path order, and nothing
+    is written out."""
+    import fnmatch
+    items = []
+    excluded_total = 0
+    engine = None
+    counters = {"found": 0, "clean": 0, "unobservable": 0,
+                "not_applicable": 0}
+    for given in paths:
+        target = Path(given)
+        base = str(target)
+        if target.is_dir():
+            files, excluded = _check_collect(target, include_hidden_dirs)
+            excluded_total += excluded
+            pairs = [(f, base + "/" + f.relative_to(target).as_posix())
+                     for f in files]
+        else:
+            pairs = [(target, base)]
+        for path, display in pairs:
+            if any(fnmatch.fnmatch(display, pattern)
+                   or fnmatch.fnmatch(path.name, pattern)
+                   for pattern in excludes):
+                continue
+            if path.is_symlink():
+                items.append({"path": display, "status": "unobservable",
+                              "reason": "symlink_skipped", "detail": None,
+                              "hidden_text": {"count": 0, "kinds": []},
+                              "invisible": {"kinds": []}})
+                counters["unobservable"] += 1
+                continue
+            if _check_route(path) == "not_applicable":
+                items.append({"path": display, "status": "not_applicable",
+                              "reason": None, "detail": None,
+                              "hidden_text": {"count": 0, "kinds": []},
+                              "invisible": {"kinds": []}})
+                counters["not_applicable"] += 1
+                continue
+            if engine is None:
+                engine = _gate_build_engine()
+            observation = _check_observe(engine, path, only_hidden)
+            observation["path"] = display
+            items.append(observation)
+            counters[observation["status"]] += 1
+    items.sort(key=lambda i: i["path"].encode("utf-8"))
+    return {"check_version": CHECK_VERSION,
+            "kind": "sieve-check",
+            "tool": {"name": "sieve-tray", "version": __version__},
+            "excluded_dirs": excluded_total,
+            "items": items,
+            "summary": counters}
+
+
+def _check_render_text(result) -> str:
+    lines = []
+    for item in result["items"]:
+        if item["status"] == "found":
+            for kind in item["hidden_text"]["kinds"]:
+                page_list = kind["pages"]
+                if len(page_list) == 1:
+                    where = " (page %d)" % page_list[0]
+                elif page_list:
+                    where = " (pages %s)" % ", ".join(
+                        str(p) for p in page_list)
+                else:
+                    where = ""
+                lines.append("%s: hidden text: %s x%d%s"
+                             % (item["path"], kind["word"],
+                                kind["count"], where))
+            for kind in item["invisible"]["kinds"]:
+                lines.append("%s: invisible characters: %s x%d"
+                             % (item["path"], kind["word"],
+                                kind["count"]))
+        elif item["status"] == "unobservable":
+            lines.append("%s: unobservable (%s)"
+                         % (item["path"], item["reason"]))
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def _check_render_github(result) -> str:
+    lines = []
+    for item in result["items"]:
+        if item["status"] == "found":
+            for kind in item["hidden_text"]["kinds"]:
+                lines.append("::error file=%s::hidden text: %s x%d"
+                             % (item["path"], kind["word"],
+                                kind["count"]))
+            for kind in item["invisible"]["kinds"]:
+                lines.append("::error file=%s::invisible characters:"
+                             " %s x%d" % (item["path"], kind["word"],
+                                          kind["count"]))
+        elif item["status"] == "unobservable":
+            lines.append("::warning file=%s::unobservable (%s)"
+                         % (item["path"], item["reason"]))
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def _check_render_json(result) -> str:
+    return json.dumps(result, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")) + "\n"
+
+
+def _check_main(args, parser) -> int:
+    targets = [Path(p) for p in args.paths]
+    for target in targets:
+        if not target.exists():
+            parser.error("check: %s does not exist" % target)
+    try:
+        result = check_paths(
+            targets, only_hidden=args.only_hidden,
+            excludes=tuple(args.exclude or ()),
+            include_hidden_dirs=args.include_hidden_dirs)
+    except ImportError:
+        print("check: the observation engine is not available",
+              file=sys.stderr)
+        return 2
+    if args.format == "json":
+        sys.stdout.write(_check_render_json(result))
+    elif args.format == "github":
+        sys.stdout.write(_check_render_github(result))
+    else:
+        sys.stdout.write(_check_render_text(result))
+    if result["summary"]["found"]:
+        return 1
+    if args.strict and result["summary"]["unobservable"]:
+        return 1
+    return 0
 
 
 # ------------------------------------------------------------------------
@@ -3509,43 +3766,30 @@ def _gate_classify_hidden(segments) -> Tuple[list, list]:
     return orderable, rule_hidden
 
 
-# the fixed word list of the 2026-11-21 ruling, in the fixed match
-# order; the local kind record carries at most one word per hidden body
-GATE_KIND_WORD_ORDER = ("Tr 3", "Tr 7", "tiny_font", "off_page",
-                        "off_layer", "white_text")
+# the closed nine-word vocabulary of the structured kind field
+# (sieve_lens_ext.pdf.PDF_HIDDEN_HOWS of Lens 0.24.0); the local kind
+# record carries at most one word per hidden body, taken from the
+# structured field - the location label string is never read
+GATE_KIND_WORDS = ("tr3", "tr7", "tiny_font", "off_page", "off_layer",
+                   "white_text", "transparent", "clipped", "same_color")
 
-_GATE_KIND_PAGE_RE = re.compile(r"\Apage (\d+)\b")
 
-
-def _gate_hidden_kinds_entries(location) -> list:
-    """The fixed-list matcher of the local kind record (the 2026-11-21
-    ruling, request §3.1): the page position and at most ONE fixed
-    word.  The quoted name part (a layer name, a form name) is thrown
-    away BEFORE the match, so a name that contains a fixed word cannot
-    fabricate it; a location outside the list records the position
-    alone (no new word is ever invented); a location without a page
-    position records nothing."""
-    if not location:
+def _gate_hidden_kinds_entries(seg) -> list:
+    """The kind-record entries of one hidden segment (the structured
+    kind fields of Lens 0.24.0): the 1-based page becomes the
+    ``page N`` form and at most ONE word of the closed nine-word list
+    rides the structured ``how`` field.  A segment without the
+    structured page records nothing; a structured word outside the
+    closed list records the position alone (no new word is ever
+    invented)."""
+    page = getattr(seg, "page", None)
+    if page is None:
         return []
-    loc = str(location).strip()
-    m = _GATE_KIND_PAGE_RE.match(loc)
-    if m is None:
-        return []          # no page position -> nothing is recorded
-    page = "page %s" % m.group(1)
-    # the name parts (inside single quotes) leave the residue first
-    outside = []
-    in_quote = False
-    for ch in loc[m.end():]:
-        if ch == "'":
-            in_quote = not in_quote
-            continue
-        if not in_quote:
-            outside.append(ch)
-    residue = "".join(outside)
-    for word in GATE_KIND_WORD_ORDER:
-        if word in residue:
-            return [{"page": page, "word": word}]
-    return [{"page": page}]
+    entry = {"page": "page %s" % page}
+    how = getattr(seg, "how", None)
+    if how in GATE_KIND_WORDS:
+        entry["word"] = how
+    return [entry]
 
 
 def _gate_order_on_hidden(orderable) -> dict:
@@ -3745,7 +3989,7 @@ def run_gate(input_dir: Path, output_dir: Path, *,
     fragments: List[dict] = []
     kinds_items: List[dict] = []
     engine = _gate_build_engine()
-    rels = _gate_walk(input_dir)
+    rels = _gate_walk(input_dir, exclude_vault_dirs=True)
     progress("Gate: %d items" % len(rels))
     for seq, rel in enumerate(rels, start=1):
         src = input_dir / rel
@@ -3998,12 +4242,12 @@ def _gate_item_document(engine, src: Path, data: bytes, suffix: str,
             fragments.append({"item": seq, "text": seg.text,
                               "kind": "hidden"})
     if kinds_items is not None:
-        # the local kind record (the 2026-11-21 ruling): one entry per
-        # hidden body, the fixed word + the page position only; the
-        # handoff receipt carries none of it (PX-T03/T05)
+        # the local kind record: one entry per hidden body, the
+        # structured kind word + the page position only; the handoff
+        # receipt carries none of it (PX-T03/T05)
         entries = []
         for seg in orderable:
-            entries.extend(_gate_hidden_kinds_entries(seg.location))
+            entries.extend(_gate_hidden_kinds_entries(seg))
         if entries:
             kinds_items.append({"item": seq, "entries": entries})
     item["hidden_segments"] = _gate_order_on_hidden(orderable)
@@ -6171,6 +6415,8 @@ def _gate_main(argv: List[str]) -> int:
     g.add_argument("--redact-builtin", action="append", default=None,
                    metavar="NAME")
     g.add_argument("--redact-config", type=Path, default=None)
+    g.add_argument("--redact-same-value", action="store_true",
+                   help="use the same symbol for the same value")
     g.add_argument("--no-redact", action="store_true")
     g.add_argument("--crowd-config", type=Path, default=None)
     g.add_argument("--no-paths", action="store_true")
@@ -6178,6 +6424,16 @@ def _gate_main(argv: List[str]) -> int:
     g.add_argument("--self-check", action="store_true")
     g.add_argument("--key-file", type=Path, default=None,
                    metavar="PATH")
+    c = sub.add_parser("check", help="observe files for hidden text and invisible characters")
+    c.add_argument("paths", nargs="+", metavar="PATH")
+    c.add_argument("--format", choices=("text", "json", "github"),
+                   default="text")
+    c.add_argument("--only-hidden", action="store_true",
+                   help="report hidden text only, ignore the invisible characters")
+    c.add_argument("--exclude", action="append", default=None,
+                   metavar="PATTERN")
+    c.add_argument("--include-hidden-dirs", action="store_true")
+    c.add_argument("--strict", action="store_true")
     v = sub.add_parser("verify", help="verify a Gate/Cohort receipt")
     v.add_argument("receipt", type=Path)
     v.add_argument("input_dir", nargs="?", type=Path, default=None)
@@ -6578,6 +6834,8 @@ def _gate_main(argv: List[str]) -> int:
         print("Report:  %s" % (args.output / "local"
                                / "cohort-report.html"))
         return 0
+    if args.cmd == "check":
+        return _check_main(args, parser)
     if args.cmd == "gate":
         if args.self_check:
             # the exit codes (the 2026-11-10 ruling): 0 = the expected
@@ -6597,6 +6855,8 @@ def _gate_main(argv: List[str]) -> int:
             redact_builtins=(tuple(args.redact_builtin)
                              if args.redact_builtin
                              else GATE_DEFAULT_BUILTINS),
+            redact_mode=("same-value" if args.redact_same_value
+                         else GATE_REDACT_MODE),
             redact_config=args.redact_config, no_redact=args.no_redact,
             crowd_config=args.crowd_config,
             include_paths=not args.no_paths,
@@ -6634,7 +6894,7 @@ def main():
                                              "rename", "audit-names",
                                              "pack", "unpack", "draw",
                                              "normalize", "clean",
-                                             "table-diff"):
+                                             "table-diff", "check"):
         sys.exit(_gate_main(sys.argv[1:]))
     parser = argparse.ArgumentParser(prog="sieve-tray")
     parser.add_argument("input_dir", type=Path,

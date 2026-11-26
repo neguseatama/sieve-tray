@@ -3,7 +3,7 @@
 Sieve Tray 2.2.0（Seal）。この文書は `manifest` コマンドと `pack` コマンドが
 使うフォルダ全体チェックサム（ハッシュツリー）と照合コード（check_code）の
 仕様をバイト単位で定める。別の実装でもこの文書どおりに計算すれば
-同じ値になる。既知値は §4 の 2 つ（KV-1・KV-2）で確かめられる。
+同じ値になる。既知値は「既知値」の節の 2 つ（KV-1・KV-2）で確かめられる。
 
 用語: この文書で「処理記録」は `receipt`（JSON ファイル）を指す。
 「キー」は照合コードを計算するための秘密のバイト列（キーファイルの中身）を指す。
@@ -47,7 +47,7 @@ SHA-256 である。
   特殊ファイルは行に入れない（`manifest` コマンドでは別途
   `skipped` に記録される）。
 - 空のディレクトリも 1 行を持つ。その子チェックサムは
-  SHA-256(空のバイト列) = `e3b0c442…b855`（§4 KV-1）。
+  SHA-256(空のバイト列) = `e3b0c442…b855`（既知値の節 KV-1）。
 - ルートのチェックサム = ルートの子の行を（1.2 の順で）連結した
   バイト列の SHA-256。ルートが空なら SHA-256(b"")。
 - ルート自身の名前は行に現れない。行に現れる名前は相対パスの最後の
@@ -100,7 +100,7 @@ key_id = HMAC-SHA256(キー, b"sieve-check-key-id") の先頭 8 バイトの 16 
 check_code = "hmac-sha256:" + HMAC-SHA256(キー, メッセージ) の 16 進（64 文字・小文字）
 ```
 
-- 全体チェックサムは §1 のフォルダ全体チェックサム（64 文字 16 進・`sha256:` 接頭辞なし）。
+- 全体チェックサムは冒頭の節のフォルダ全体チェックサム（64 文字 16 進・`sha256:` 接頭辞なし）。
 - 「check_code 節と digest を除いた物」とは、処理記録（`receipt`）の
   トップレベルからキー `check_code` と `digest` を取り除いた残り全部を
   正準 JSON にした物である（`summary` 節だけより強い結び付き）。
@@ -123,7 +123,7 @@ check_code = "hmac-sha256:" + HMAC-SHA256(キー, メッセージ) の 16 進（
 処理記録の外枠は 2.1.1 の Gate と同じ（`receipt_version` / `kind` / `tool` /
 `engines` / `settings` / `items` / `summary`、最後に `digest`）。
 `manifest` と `pack` は同じ外枠を使い、`--key-file` があるときは
-`digest` の直前に `check_code` 節を 1 つ足す（§2.3）。
+`digest` の直前に `check_code` 節を 1 つ足す（照合コードの節）。
 
 - 正準 JSON: UTF-8・キー順・`,` と `:` の後に空白を入れない・
   `ensure_ascii=False`・末尾に LF を 1 つ。
@@ -189,7 +189,7 @@ printf 'd\x00a\x00%s\nf\x00beta.txt\x00f2c82decdd7181cf98945929a62598db7e6b477e1
 
 ### 5.1 単独モード（`manifest <フォルダ> -o <出力先>`）
 
-外枠は §3 のとおり。`kind` = `sieve-manifest`。節:
+外枠は処理記録の共通の形のとおり。`kind` = `sieve-manifest`。節:
 
 - `items`: 通常ファイルのみ。要素 = `{"path", "bytes", "sha256"}`。
   `path` は出力フォルダから相対の POSIX 形。UTF-8 で書けないパスは
@@ -202,8 +202,8 @@ printf 'd\x00a\x00%s\nf\x00beta.txt\x00f2c82decdd7181cf98945929a62598db7e6b477e1
   要素 = `{"sha256", "bytes", "paths"}`（`paths` はパス昇順）。
 - `summary`: `items` / `skipped` / `duplicate_groups` /
   `duplicate_files`（群に属するファイルの総数）/ `duplicate_bytes`
-  （群に属するファイルの合計バイト数）/ `overall_sha256`（§1）。
-- `--key-file` があるとき: `digest` の直前に `check_code` 節（§2.3）。
+  （群に属するファイルの合計バイト数）/ `overall_sha256`（冒頭の節）。
+- `--key-file` があるとき: `digest` の直前に `check_code` 節（照合コードの節）。
 
 `local/` は作らない。処理記録（`handoff/manifest-receipt.json`）が
 出力先で最後に書かれる物になる。
@@ -237,13 +237,13 @@ changed / removed / added / moved が 1 件でもある差分 = `1`、
 
 ---
 
-## 6. `verify` の拡張（§2 の確認のしかた）
+## 6. `verify` の拡張（照合コードの確認のしかた）
 
 `verify <処理記録> [--key-file <キー>] [--root <フォルダ>]` は、
 既存の語彙（overall = `match` / `differs` / `not_verifiable`・
 項目理由 7 種・終了符号 0/1/2）を保ったまま、次だけを足す:
 
-- `not_verifiable` の理由に 2 語を追加（§2.4）:
+- `not_verifiable` の理由に 2 語を追加（理由語の節）:
   `code_key_missing`（処理記録が `check_code` 節を持ち、キーが渡らない。
   **ファイル一覧の一致確認は、この場合でも行われ、その結果が items に載る**）、
   `code_key_mismatch`（キー識別子が合わない。値の一致不一致は報告しない）。
@@ -254,32 +254,32 @@ changed / removed / added / moved が 1 件でもある差分 = `1`、
   （一覧の確認結果を隠さないため）。
 - `--root` は `manifest` / `pack` の処理記録をフォルダに対して確かめる:
   項目ごとの有無・サイズ・SHA-256（既存の理由語 `input_missing` /
-  `input_changed` / `item_added`）と、§1 の全体チェックサムの再計算
+  `input_changed` / `item_added`）と、冒頭の節の全体チェックサムの再計算
   （合わなければ `.` が `input_changed`）。
 
 `gate` / `cohort` / `manifest` / `pack` は共通の `--key-file` を受ける（C5）。
-キーが渡された実行だけが `summary.overall_sha256`（入力フォルダの §1
+キーが渡された実行だけが `summary.overall_sha256`（入力フォルダの全体チェックサム
 チェックサム）と `check_code` 節を持ち、`receipt_version` は 1 のまま
 （キーのない処理記録は 2.1.1 までと同じ形・同じ digest）。
-主張の範囲は §2 冒頭のとおり限定される（C13）。
+主張の範囲は冒頭のとおり限定される（C13）。
 
 ## 7. `--verify-page` が書くページと `verify_page` 節
 
-`manifest` と `pack` は `--verify-page` を受けます（§3.5）。
+`manifest` と `pack` は `--verify-page` を受けます（検証ページの節）。
 
 - ページは 1 つの `handoff/verify.html`。**処理記録の前に書く**
   （処理記録が最後の書き出しという規則を保つ）。外部の読み込み・
   通信・フォントの参照はなく、ファイル一覧（`path` / `bytes` /
-  `sha256` と、§1 のフォルダ全体チェックサム）を
+  `sha256` と、冒頭の節のフォルダ全体チェックサム）を
   `<script id="seal-data" type="application/json">` として埋め込む。
   埋め込む JSON は、`sort_keys` の整列・`ensure_ascii=False`・
-  空白なし（§3 の正準形）に `s/</\\u003c/; s/>/\\u003e/; s/&/\\u0026/`
+  空白なし（処理記録の正準形）に `s/</\\u003c/; s/>/\\u003e/; s/&/\\u0026/`
   を施したもの（名前が閉じタグを挟めないようにする。置換後も有効な
   JSON で、値は変わらない）。
 - SHA-256 は、ページ内の純 JavaScript 実装（`<script id=
   "seal-sha256-core">`）で計算する。標準の暗号 API が使える環境でも
   こちらを使う（挙動を 1 つに固定）。既知の値 4 種（空文字列・`abc`・
-  64 バイト境界・100 万個の `a`）で検算できる（SL-T12）。
+  64 バイト境界・100 万個の `a`）で検算できる。
 - ページが確かめるのはファイル一覧の一致のみ
   （same / changed / missing / extra を画面に表示。送信はない）。
   **照合コード（HMAC）は、ページでは確かめない**（1 行でその旨を
@@ -291,7 +291,7 @@ changed / removed / added / moved が 1 件でもある差分 = `1`、
 ```
 
   `sha256` は、書いたページのバイト列そのものの SHA-256。節は
-  digest の計算対象に入る（§3 どおり、body 全体から `digest` を除いた
+  digest の計算対象に入る（処理記録の形どおり、body 全体から `digest` を除いた
   文字列の SHA-256。`check_code` と同じく、後から足す節ではないので
   順序は `check_code` → `digest` の前に確定する）。
 - `--verify-page` を付けない実行は、ページを書かず、処理記録にも節を

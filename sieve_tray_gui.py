@@ -1137,8 +1137,12 @@ class GatePage(QScrollArea):
             self._("gate_no_input_hashes"))
         self.gate_no_input_hashes_cb.setToolTip(
             self._("gate_no_input_hashes_tooltip"))
+        self.gate_same_value_cb = QCheckBox(self._("gate_same_value"))
+        self.gate_same_value_cb.setObjectName("gate_same_value")
+        self.gate_same_value_cb.setToolTip(
+            self._("gate_same_value_tooltip"))
         for cb in (self.gate_no_redact_cb, self.gate_no_paths_cb,
-                   self.gate_no_input_hashes_cb):
+                   self.gate_no_input_hashes_cb, self.gate_same_value_cb):
             layout.addWidget(cb)
 
         row = QGridLayout()
@@ -1215,7 +1219,7 @@ class GatePage(QScrollArea):
         if not inp or not out:
             return
         try:
-            receipt = run_gate(
+            gate_kwargs = dict(
                 Path(inp), Path(out),
                 progress=lambda m: self.gate_log.appendPlainText(m),
                 no_redact=self.gate_no_redact_cb.isChecked(),
@@ -1223,6 +1227,9 @@ class GatePage(QScrollArea):
                 include_input_hashes=(not
                                       self.gate_no_input_hashes_cb
                                       .isChecked()))
+            if self.gate_same_value_cb.isChecked():
+                gate_kwargs["redact_mode"] = "same-value"
+            receipt = run_gate(*gate_kwargs)
             self.gate_log.appendPlainText(self._(
                 "gate_done", items=receipt["summary"]["items"],
                 produced=receipt["summary"]["produced"],

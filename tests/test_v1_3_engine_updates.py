@@ -2,7 +2,7 @@
 
 Pins measured before implementation:
   - Crowd upstream main def0053 (v0.9.0), tree a06c92a6105d9a06932c534aca831b5f306f9d10
-  - Redact upstream tag v0.11.0 (ddde4bd),
+  - Redact upstream release 0.12.0 (the published PyPI sdist),
     sieve_redact.py sha256 9203c747…6836 (72,655 bytes) — refreshed for
     the M1 Gate lane's re-vendoring (0.11.0 is the certified M1
     implementation; the 0.10.0 outputs keep their molds)
@@ -101,9 +101,9 @@ FROZEN_082_SHA256 = {
     "chartable_v1.json": "c5ae4757bc9d07a2dcd1507d662460c3412c932d73318e54912569608242e605",
 }
 
-REDACT_UPSTREAM_VERSION = "0.11.0"
+REDACT_UPSTREAM_VERSION = "0.12.0"
 REDACT_0100_SHA256 = (
-    "9203c7476fbac1eb0f25e75c6f31ea48732b4928b43ad2f641c5f5902c94e836")
+    "40473a0f813800fb4baa572bf9989d53b6c8bea4b4bf4b3cb6b28eb5810d4302")
 
 # Golden molds (TR3-T03): the TR2-T04/T05 values, which also hold on the
 # v1.2.0 base (160 passed includes them) and must keep holding after the
@@ -391,7 +391,7 @@ class TR3_T01_VendoredCrowdMatchesUpstream090(unittest.TestCase):
 
 class TR3_T02_VendoredRedactMatchesUpstream0110(unittest.TestCase):
     """TR3-T02: the vendored sieve_redact.py is byte-identical to
-    upstream v0.11.0 (pin refreshed for the M1 Gate lane; the constant
+    upstream 0.12.0 (pin refreshed for 2.6.0; the constant
     keeps its 0100 name for diffing)."""
 
     def test_vendored_module_matches_pin(self):
@@ -1097,10 +1097,10 @@ class TR3_T18_DependencyFloorsStayPublished(unittest.TestCase):
         # v2.2.1 (the reopen request 3.1): the pdf extra joins and the
         # floor moves to the published 0.22.1.
         # v2.4.0 (the PDF exchange request 3.4): the floor moves to the
-        # published 0.23.0 (the six fixed hidden kinds ride it).
+        # published 0.24.0 (the structured kind fields ride it).
         self.assertEqual(
             proj["dependencies"],
-            ["sieve-lens[pdf,html-css-full]>=0.23.0", "sieve-scope>=1.5.0",
+            ["sieve-lens[pdf,html-css-full]>=0.24.0", "sieve-scope>=1.5.0",
              "sieve-referee>=1.6.0"])
         gui = proj["optional-dependencies"]["gui"]
         self.assertIn("Pillow>=10.0", gui)
@@ -1113,7 +1113,7 @@ class TR3_T19_Version140(unittest.TestCase):
     referee 1.6.0)."""
 
     def test_version_is_140(self):
-        self.assertEqual(sieve_tray.__version__, "2.5.1")
+        self.assertEqual(sieve_tray.__version__, "2.6.0")
 
     def test_changelog_has_140(self):
         text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")

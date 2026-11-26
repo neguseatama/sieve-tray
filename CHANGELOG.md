@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.6.0] - 2026-11-26
+
+### Added
+- **sieve-tray check**: observe files and folders for hidden text and
+  invisible characters - the same observation the Gate makes, with
+  nothing written out. Text, JSON and GitHub-annotation outputs ride
+  the same command, and a pre-commit hook plus a GitHub Action call it
+  before every commit / pull request.
+- **Same value, same symbol**: the Gate's export can mask repeated
+  values with the same symbol (off by default; the numbered
+  order-of-appearance labels stay as they are).
+
+### Changed
+- The engines move to sieve-lens 0.24.0 - the hidden PDF text now
+  carries the structured kind words (nine kinds; transparent, clipped
+  and same_color join) - and to the published Redact 0.12.0.
+- The .obsidian/ and .trash/ folders drop out of folder ingests by
+  default; --include-hidden-dirs keeps them.
+
 ## [2.5.1] - 2026-11-23
 
 ### Fixed

@@ -576,8 +576,8 @@ def test_t14_dependency_floors_are_published_versions():
     # v2.2.1 (the reopen request 3.1): the pdf extra joins and the
     # floor moves to the published 0.22.1.
     # v2.4.0 (the PDF exchange request 3.4): the floor moves to the
-    # published 0.23.0 (the six fixed hidden kinds ride it).
-    assert '"sieve-lens[pdf,html-css-full]>=0.23.0"' in text
+    # published 0.24.0 (the structured kind fields ride it).
+    assert '"sieve-lens[pdf,html-css-full]>=0.24.0"' in text
     assert '"sieve-scope>=1.5.0"' in text
     assert '"sieve-referee>=1.6.0"' in text
 
@@ -663,7 +663,7 @@ def test_t15_golden_mold_v130_unchanged():
 # ---------------------------------------------------------------------------
 
 def test_t16_version_pins():
-    assert sieve_tray.__version__ == "2.5.1"
+    assert sieve_tray.__version__ == "2.6.0"
     # pyproject keeps the single-source wiring (dynamic version read
     # from sieve_tray.__version__)
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")

@@ -212,11 +212,11 @@ def wheel_path(tmp_path_factory):
 
 
 def test_pd_t06_dependency_floor_pins():
-    """PD-T06: pyproject pins the published 0.23.0 floor with the pdf
-    extra; pypdf is not declared on the tray side (the 2.4.0 request
-    section 3.4 moved the floor to the six-kind release)."""
+    """PD-T06: pyproject pins the published 0.24.0 floor with the pdf
+    extra; pypdf is not declared on the tray side (the floor moves
+    with the structured kind fields)."""
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"sieve-lens[pdf,html-css-full]>=0.23.0"' in pyproject
+    assert '"sieve-lens[pdf,html-css-full]>=0.24.0"' in pyproject
     assert '"sieve-lens[pdf,html-css-full]>=0.22.1"' not in pyproject
     deps_line = pyproject.split("dependencies = ", 1)[1].splitlines()[0]
     assert "pypdf" not in deps_line
@@ -238,7 +238,7 @@ def test_pd_t06_wheel_metadata_requires_dist(wheel_path):
     lens_req = lens_reqs[0][len("Requires-Dist: sieve-lens["):]
     extras, _, floor = lens_req.partition("]")
     assert set(extras.split(",")) == {"pdf", "html-css-full"}
-    assert floor == ">=0.23.0"
+    assert floor == ">=0.24.0"
     assert not any(r.startswith("Requires-Dist: pypdf") for r in reqs)
 
 

@@ -1,6 +1,6 @@
 [English](README.md) | **日本語**
 
-# Sieve Tray v2.5.1
+# Sieve Tray v2.6.0
 
 **汎用観測ツール — Sieveシリーズのデスクトップフロントエンド**
 
@@ -548,3 +548,36 @@ MIT License. 詳細は[LICENSE](LICENSE)を参照してください。
 ## 👤 作者
 
 * **Kai IWASAKI**
+
+## 文書とフォルダの点検
+
+`sieve-tray check PATH...` は、Gate と同じ観測をファイルとフォルダに
+行い、隠れたテキスト（種類の語とページ番号つき）と見えない文字を
+ファイルごとに報告します。何も書き出さず、終了符号は
+0（見つからない）/ 1（見つかった）/ 2（実行できない）です。
+`--format text|json|github` で出力の形を選べ、`--exclude`・
+`--only-hidden`・`--strict` で実行を調整できます。フォルダを対象に
+したときは、既定で `.obsidian/` と `.trash/` を読み飛ばします
+（`--include-hidden-dirs` で含めます）。
+
+同じ点検は、pre-commit フックでコミットの前に走ります。
+
+```yaml
+repos:
+  - repo: https://github.com/neguseatama/sieve-tray
+    rev: v2.6.0
+    hooks:
+      - id: sieve-check
+```
+
+ワークフローでは次のように呼びます。
+
+```yaml
+- uses: neguseatama/sieve-tray@v2.6.0
+  with:
+    paths: docs
+```
+
+Gate の書き出しは、同じ値を同じ記号で伏せ字にできます
+（「同じ値には同じ記号」。既定はオフ。出現順に番号をつける今までの
+形は変わりません）。

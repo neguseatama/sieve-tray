@@ -1,7 +1,7 @@
 # 表の比較（`docs/table-diff.md`）
 
 Sieve Tray 2.3.1（Canon）。この文書は `table-diff` コマンドの読み込み、
-状態の分類、処理記録の中身を定める。既知の例は §4（KV-C3）で、文書から
+状態の分類、処理記録の中身を定める。既知の例は「既知値」（KV-C3）で、文書から
 読み戻すテスト（`tests/test_canon_docs.py`）が確かめる。
 
 ---
@@ -9,10 +9,10 @@ Sieve Tray 2.3.1（Canon）。この文書は `table-diff` コマンドの読み
 ## 1. 読み込み
 
 - 2 つの CSV（A と B）を、`normalize` と同じ規則で読む
-  （`docs/normalize-format.md` §2: 文字コードは自動判定しない。BOM か
+  （`docs/normalize-format.md` の冒頭の節: 文字コードは自動判定しない。BOM か
   UTF-8 のときだけそのまま読み、それ以外は `--from-encoding-a` /
   `--from-encoding-b` の指定があったときだけ読む）。
-- 読んだ表は、CSV の正規化（同文書 §6）と同じ形に整えてから比べる。
+- 読んだ表は、CSV の正規化（同文書の CSV の節）と同じ形に整えてから比べる。
   処理記録に載る A と B のチェックサムは、**この整えた形**の SHA-256
   である。
 - キー列は、列の**名前**で指定する（1 つ以上・`--key id` または

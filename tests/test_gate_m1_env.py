@@ -37,8 +37,8 @@ TRAY = REPO_ROOT / "sieve_tray.py"
 # (tag 62c433bd), dependency floors.
 # ---------------------------------------------------------------------------
 
-REDACT_0110_SHA = (
-    "9203c7476fbac1eb0f25e75c6f31ea48732b4928b43ad2f641c5f5902c94e836")
+REDACT_0120_SHA = (
+    "40473a0f813800fb4baa572bf9989d53b6c8bea4b4bf4b3cb6b28eb5810d4302")
 
 ORDER_V110_SHA = {
     "sieve_order/__init__.py": (
@@ -347,7 +347,7 @@ def test_t19_closed_vocabularies_unchanged():
 def test_t20_redact_vendor_byte_identical():
     vendored = REPO_ROOT / "sieve_redact.py"
     assert hashlib.sha256(vendored.read_bytes()).hexdigest() == \
-        REDACT_0110_SHA
+        REDACT_0120_SHA
 
 
 def test_t20_order_vendor_byte_identical():
@@ -370,8 +370,8 @@ def test_t20_dependency_floors():
     # v2.2.1 (the reopen request 3.1): the pdf extra joins and the
     # floor moves to the published 0.22.1.
     # v2.4.0 (the PDF exchange request 3.4): the floor moves to the
-    # published 0.23.0 (the six fixed hidden kinds ride it).
-    assert "sieve-lens[pdf,html-css-full]>=0.23.0" in pyproject
+    # published 0.24.0 (the structured kind fields ride it).
+    assert "sieve-lens[pdf,html-css-full]>=0.24.0" in pyproject
 
 
 # ---------------------------------------------------------------------------
@@ -415,10 +415,10 @@ def test_t21_readme_no_limits_section_added():
 # ---------------------------------------------------------------------------
 
 def test_t22_version_consistency():
-    assert sieve_tray.__version__ == "2.5.1"
+    assert sieve_tray.__version__ == "2.6.0"
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'dynamic = ["version"]' in pyproject or \
-        'version = "2.5.1"' in pyproject
+        'version = "2.6.0"' in pyproject
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert changelog.lstrip("# \n").startswith("[2.2.1]") or \
         "## [2.2.1]" in changelog

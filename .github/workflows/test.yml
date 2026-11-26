@@ -16,6 +16,10 @@ jobs:
       matrix:
         python-version: ["3.12"]
         os: [ubuntu-24.04, windows-latest, macos-15]
+        # no lower-floor leg: the tree requires Python >=3.10 (pyproject)
+        # and pip refuses the tree on 3.9 before a single test - a 3.9
+        # leg cannot even install, so the matrix stays the three release
+        # OS legs the static pins certify
 
     steps:
       - uses: actions/checkout@v4
@@ -46,14 +50,31 @@ jobs:
           # 2.1.1 (the three-OS Test matrix): the check went
           # cross-platform - sha256sum / python3 / curl are not
           # portable across the three runners, the python shell is.
-          # The verification itself is unchanged: the vendored
-          # sieve_redact.py and the published v0.11.0 upstream must
-          # both hash to the PINNED_SHA256 in
+          # 2.6.0 (the engine updates): the reference moves to the
+          # published PyPI 0.12.0 sdist - the 0.12.x releases have no
+          # GitHub tag, so the raw-URL fetch has nothing to point at.
+          # The version JSON names the sdist and its digest; the sdist
+          # is fetched, digest-checked, its sieve_redact.py extracted,
+          # and both sides must hash to the PINNED_SHA256 in
           # tests/test_redact_vendor_sync.py.
-          import hashlib, pathlib, re, sys, urllib.request
-          url = ("https://raw.githubusercontent.com/neguseatama/"
-                 "sieve-redact/v0.11.0/sieve_redact.py")
-          upstream = urllib.request.urlopen(url).read()
+          import hashlib, io, json, pathlib, re, sys, tarfile
+          import urllib.request
+          meta = json.load(urllib.request.urlopen(
+              "https://pypi.org/pypi/sieve-redact/0.12.0/json"))
+          sdist = None
+          for f in meta["urls"]:
+              if f["filename"].endswith(".tar.gz"):
+                  sdist = f
+          assert sdist is not None, "no sdist on the 0.12.0 release"
+          blob = urllib.request.urlopen(sdist["url"]).read()
+          got = hashlib.sha256(blob).hexdigest()
+          assert got == sdist["digests"]["sha256"], (
+              "sdist digest mismatch: %s != %s"
+              % (got, sdist["digests"]["sha256"]))
+          with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+              member = [m for m in tf.getmembers()
+                        if m.name.endswith("sieve_redact.py")][0]
+              upstream = tf.extractfile(member).read()
           pin = re.search(r'PINNED_SHA256 = "([0-9a-f]+)"',
                           pathlib.Path("tests/test_redact_vendor_sync.py")
                           .read_text(encoding="utf-8")).group(1)
@@ -62,12 +83,78 @@ jobs:
           # check this text file out with CRLF while the pin certifies
           # the canonical LF blob - normalize before hashing; genuine
           # drift still fails and the LF legs are the live control
-          for name, blob in (("upstream", upstream),
-                             ("vendored",
-                              pathlib.Path("sieve_redact.py").read_bytes()
-                              .replace(b"\r\n", b"\n"))):
-              got = hashlib.sha256(blob).hexdigest()
-              assert got == pin, "%s: %s != %s" % (name, got, pin)
+          for name, blob2 in (("upstream", upstream),
+                              ("vendored",
+                               pathlib.Path("sieve_redact.py").read_bytes()
+                               .replace(b"\r\n", b"\n"))):
+              got2 = hashlib.sha256(blob2).hexdigest()
+              assert got2 == pin, "%s: %s != %s" % (name, got2, pin)
           print("vendor sync verified on", sys.platform)
       - name: Run tests
         run: python -m pytest -v
+
+      - name: Public-text watch
+        run: python tools/check_public_text.py
+
+  commit-messages:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Public-text watch on the pull request's commit messages
+        run: |
+          fail=0
+          for sha in $(git rev-list origin/main..HEAD); do
+            git log -1 --format=%B "$sha" > msg.txt
+            python tools/check_public_text.py --text msg.txt || fail=1
+          done
+          exit $fail
+
+  hook-integration:
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the tree and pre-commit
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[gui]" pypdf tinycss2 cssselect2 pre-commit
+      - name: Run the hook against this tree
+        run: pre-commit try-repo . sieve-check --files samples/gate/plain.txt
+
+  action-integration:
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the action's runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pypdf tinycss2 cssselect2
+      - name: Run the local action
+        uses: ./
+        with:
+          # a clean file, so the action exits 0 - a failing step is a
+          # red job; the findings path (exit 1) is the check command's
+          # own contract and samples/gate holds its finding samples
+          paths: samples/gate/plain.txt
+          # the checked-out tree itself: the action renders the input
+          # inside one quoted argv token (pip install "."), so the
+          # editable flag cannot ride the version input - pip received
+          # "-e ." as a single argument and rejected the requirement
+          # (the first CI run died in the action's install step, exit 1,
+          # before the check ran)
+          tray-version: .
