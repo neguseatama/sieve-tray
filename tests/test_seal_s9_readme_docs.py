@@ -193,7 +193,7 @@ def test_t19_dependency_carries_the_lens_pdf_and_html_css_full_extra():
     dep_line = [ln for ln in pyproject.splitlines()
                 if ln.strip().startswith("dependencies = [")]
     assert dep_line, "no dependencies list in pyproject.toml"
-    assert "sieve-lens[pdf,html-css-full]>=0.23.0" in dep_line[0], dep_line[0]
+    assert "sieve-lens[pdf,html-css-full]>=0.24.0" in dep_line[0], dep_line[0]
     # the decision is stated in the install note of both READMEs
     assert "## 📦 インストール" in _read("README.ja.md")
     assert "## 📦 Installation" in _read("README.md")

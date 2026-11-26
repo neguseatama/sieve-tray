@@ -3,7 +3,8 @@
 The pins below were measured against the upstream repositories before
 implementation:
   - Crowd upstream main def0053 (v0.9.0), tree a06c92a6105d9a06932c534aca831b5f306f9d10
-  - Redact upstream tag v0.11.0 (ddde4bd) — pin refreshed for the M1
+  - Redact upstream release 0.12.0 (the published PyPI sdist) — pin
+    refreshed for 2.6.0
     Gate lane's re-vendoring
 Pins refreshed at the v1.3.0 vendor update; the golden molds (TR2-T04/T05)
 are unchanged and keep their pre-import values.
@@ -55,8 +56,8 @@ BUILTIN_PACK_SHA = "1fae5827a7048ca1e4b92c7d12792a755f5b21e63d6392bc2a1fbdb4e3dc
 TEMPLATE_SHA2 = "0d5c35d82dc54004ad7f34b80be69103a80a0d20dccc4dae22f7e6412ba6c657"
 RUN_TABLE_SHA = "b58249febc35c4feb6f6bfe1632aab92ca802c611759d31138d8ae040061500e"
 
-REDACT_UPSTREAM_VERSION = "0.11.0"
-REDACT_0100_SHA256 = "9203c7476fbac1eb0f25e75c6f31ea48732b4928b43ad2f641c5f5902c94e836"
+REDACT_UPSTREAM_VERSION = "0.12.0"
+REDACT_0100_SHA256 = "7c4bf9160c5333f9a2b42ce82520317b2d1860bd4d9f1b9d52be827427dd1621"
 
 FIXTURE_PINS = {
     "people.csv": "cf32626e9b45317efad3a35a8ff3721bd3b3dfe876422034a124d18774a289e9",
@@ -652,9 +653,9 @@ class TR2_T11_DependencyFloors(unittest.TestCase):
         # v2.2.1 (the reopen request 3.1): the pdf extra joins and the
         # floor moves to the published 0.22.1.
         # v2.4.0 (the PDF exchange request 3.4): the floor moves to
-        # the published 0.23.0 (the six fixed hidden kinds ride it).
+        # the published 0.24.0 (the structured kind fields ride it).
         deps = _load_pyproject()["project"]["dependencies"]
-        self.assertIn("sieve-lens[pdf,html-css-full]>=0.23.0", deps)
+        self.assertIn("sieve-lens[pdf,html-css-full]>=0.24.0", deps)
 
     def test_other_floors_match_measurement(self):
         deps = _load_pyproject()["project"]["dependencies"]

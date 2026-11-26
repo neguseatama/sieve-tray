@@ -1,0 +1,1 @@
+{"crowd_config_sha256":null,"include_input_hashes":true,"include_paths":true,"redact":{"builtins":["email","phone-jp","postal-jp"],"config_sha256":null,"mode":"label"},"strip_invisible":["zero_width_space","word_joiner","bom_mid_text","bidi_control","tag_chars"]}
