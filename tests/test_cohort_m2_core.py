@@ -1203,7 +1203,7 @@ def test_ch_t20_release_workflow_frozen_self_check_static():
     # in the build job, the release-extras job, the CHANGELOG extract
     # and the SHA256SUMS attach)
     assert "workflow_dispatch:" in text
-    assert text.count("github.event_name == 'push'") == 4
+    assert text.count("github.event_name == 'push'") == 5
     # the frozen app runs the self-checks headlessly: the GUI entry
     # dispatches to the CLI before QApplication opens any window
     gui = (REPO_ROOT / "sieve_tray_gui.py").read_text(encoding="utf-8")

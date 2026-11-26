@@ -16,6 +16,9 @@ jobs:
       matrix:
         python-version: ["3.12"]
         os: [ubuntu-24.04, windows-latest, macos-15]
+        include:
+          - os: ubuntu-24.04
+            python-version: "3.9"
 
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +94,25 @@ jobs:
 
       - name: Public-text watch
         run: python tools/check_public_text.py
+
+  commit-messages:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Public-text watch on the pull request's commit messages
+        run: |
+          fail=0
+          for sha in $(git rev-list origin/main..HEAD); do
+            git log -1 --format=%B "$sha" > msg.txt
+            python tools/check_public_text.py --text msg.txt || fail=1
+          done
+          exit $fail
 
   hook-integration:
     runs-on: ubuntu-latest

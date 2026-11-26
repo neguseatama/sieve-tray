@@ -40,9 +40,14 @@ def test_release_version_is_single_sourced():
         assert title is not None, f"{name}: no '# Sieve Tray v...' title"
         assert title.group(1) == version, (
             f"{name}: title is v{title.group(1)}, release is {version}")
-        assert text.count(version) == 1, (
+        # the title is the only PROSE version literal; the two
+        # documented install snippets (the hook rev and the action
+        # uses) carry the same version by design
+        allowed = 1 + text.count("rev: v") + text.count("tray@v")
+        assert text.count(version) == allowed, (
             f"{name}: the release version appears "
-            f"{text.count(version)}x, expected exactly 1 (the title)")
+            f"{text.count(version)}x, expected {allowed} "
+            "(the title + the install snippets)")
         # downloads ride releases/latest and the asset names are not
         # hardcoded - a new release must not require a README edit
         assert "releases/latest" in text, f"{name}: no releases/latest link"

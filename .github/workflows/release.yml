@@ -248,6 +248,12 @@ jobs:
           # without its section fails here (exit 1), structurally - the
           # tag is cut only after the section exists
           python3 tools/extract_changelog.py "${GITHUB_REF_NAME#v}" > release_body.md
+
+      - name: Public-text watch on the release body
+        if: github.event_name == 'push'
+        run: |
+          # one hit stops the release: the body reads as facts only
+          python3 tools/check_public_text.py --text release_body.md
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:

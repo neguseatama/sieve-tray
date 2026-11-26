@@ -1,10 +1,10 @@
 # 受領書と語彙の参照（receipt-reference）
 
-README の「🚪 Gate」「👥 Cohort」の 2 節は、Seal 2.2（§3.8-1）で別添の文に差し替えました。
+README の「🚪 Gate」「👥 Cohort」の 2 節は、Seal 2.2 で整えた別添の文です。
 この文書は、差し替えのときに README から外した技術的な説明を、**原文のまま**移したものです。
 文の内容は 2.1.1 の README に載っていたときのまま変更していません（旧文は当時の語彙で書かれており、「処理記録」を当時は「受領書」と呼んでいます。英語の `receipt` はそのままです）。
 
-`verify` の語彙の現在の一覧と照合コードの確認の規則は、[manifest-format.md](manifest-format.md) の §6 にあります。
+`verify` の語彙の現在の一覧と照合コードの確認の規則は、[m[manifest-format.md](manifest-format.md) の「verify の拡張」の節にあります。
 
 ## 1. Cohort の重なりの数え方（日本語原文）
 

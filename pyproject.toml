@@ -12,30 +12,30 @@ license = { text = "MIT" }
 requires-python = ">=3.10"
 # v0.8.0: bumped sieve-referee from >=1.0.0 to >=1.3.0 - the quantifier
 # audit lane and certainty-marker annotation are 1.3.0 features.
-# v1.2.0: bumped sieve-lens from >=0.10.0 to >=0.20.2 (design doc §3.3) -
+# v1.2.0: bumped sieve-lens from >=0.10.0 to >=0.20.2 -
 # 0.20.2 is the first release carrying all 13 refusal codes Tray's
 # classification (KNOWN_REFUSAL_CODES) maps to detail labels, including
 # unsupported_namespace.
 # v2.0.0 (M1 Gate): bumped sieve-lens from >=0.20.2 to >=0.22.0 - Gate
 # consumes visible_text (and the charset diagnostics shape added in
 # 0.22.0); 0.22.0 is published and its UTF-8 results are byte-identical
-# to 0.21.2, so the scan molds are unaffected.
-# v2.1.0 (M2 Cohort, request §3.13): bumped sieve-scope from >=1.3.0 to
+# to 0.21.2, so the scan expectations are unaffected.
+# v2.1.0 (M2 Cohort): bumped sieve-scope from >=1.3.0 to
 # >=1.5.0 (the cohort lane consumes strip_base_sources and the letter
-# §3.5 span contract) and sieve-referee from >=1.3.0 to >=1.6.0 (the
+# span contract) and sieve-referee from >=1.3.0 to >=1.6.0 (the
 # explanation spans, the quotes/bibliography citation split and the
 # 16-char base minimum).  All three floors are published on PyPI
-# (measured 2026-11-10: the 1.5.0 / 1.6.0 / 0.22.0 wheels install in a
+# (measured: the 1.5.0 / 1.6.0 / 0.22.0 wheels install in a
 # fresh venv and expose the APIs the suite pins).
-# v2.2.0 (Seal, request §3.8-4): sieve-lens gains the html-css-full
-# extra (tinycss2 + cssselect2).  Measured 2026-11-14 in a fresh venv:
+# v2.2.0 (Seal): sieve-lens gains the html-css-full
+# extra (tinycss2 + cssselect2).  Measured in a fresh venv:
 # a bare install cannot observe the hidden HTML text (the HTML item is
 # reported with not_produced_reason engine_unavailable) while the same
 # input is observed and flagged with the extra; pypdf stays out because
 # the Gate PDF lane is short-circuited by design
 # (pdf_visible_extraction_disabled) with or without pypdf.  The extra
 # floors (tinycss2>=1.1, cssselect2>=0.7) are published on PyPI.
-# v2.2.1 (the reopen request §3.1): sieve-lens gains the pdf extra and
+# v2.2.1 (the reopen lane): sieve-lens gains the pdf extra and
 # the floor moves to the published 0.22.1 - 0.22.1 excludes the text a
 # PDF does not paint (render mode 3) from its visible text, which is
 # what lets the Gate PDF lane reopen (the 2.2.0 short-circuit is
@@ -75,7 +75,7 @@ sieve-tray = "sieve_tray:main"
 sieve-tray-gui = "sieve_tray_gui:main"
 
 [tool.setuptools]
-# 2.1.0 (request §3.10, CH-T14): the two sample packs travel in the
+# 2.1.0 (the wheel pack): the two sample packs travel in the
 # wheel so the `gate --self-check` / `cohort --self-check` runs work
 # from an installed wheel without the repo tree.  samples is one plain
 # package (no __init__.py inside gate/ or cohort/ - the pack contents
@@ -83,7 +83,7 @@ sieve-tray-gui = "sieve_tray_gui:main"
 # as package-data.
 packages = ["sieve_crowd", "sieve_order", "samples"]
 py-modules = ["sieve_tray", "sieve_tray_gui", "sieve_tray_storage", "sieve_tray_i18n", "sieve_redact", "sieve_canon"]
-# v1.1.0 (design doc §3.8-F): the vendored sieve_crowd may carry data files
+# v1.1.0: the vendored sieve_crowd may carry data files
 # (.json etc.) in a future vendor update (v1.2.0). Declaring the patterns
 # now keeps such files from silently dropping out of wheels/sdists; with
 # no data files present the patterns match nothing and nothing changes.

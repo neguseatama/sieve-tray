@@ -2,7 +2,7 @@
 
 Sieve Tray 2.3.0（Canon）。この文書は `normalize` コマンドの観測、文字
 コードの取り扱い、出力の規則、そして JSON / CSV の書き方を定める。既知の
-例は §4（KV-C2）で、文書から読み戻すテスト（`tests/test_canon_docs.py`）
+例は「既知値」（KV-C2）で、文書から読み戻すテスト（`tests/test_canon_docs.py`）
 が確かめる。
 
 ---
@@ -41,7 +41,7 @@ Sieve Tray 2.3.0（Canon）。この文書は `normalize` コマンドの観測�
 - ファイルの末尾は改行 1 つ（空のファイルは空のまま）。
 - `--nfc` を付けたときだけ、Unicode の NFC に正規化する（既定はしない）。
 - `--check` を付けると観測だけを行い、コピーを作らない。
-- `.json` は §5 の規則を、`.csv` は §6 の規則を続けて適用する
+- `.json` は JSON の節の規則を、`.csv` は CSV の節の規則を続けて適用する
   （`--text-only` でテキストの規則だけにできる）。
 - `--style jcs` の JSON は、RFC 8785 の正準形そのものが出力になる
   （正準形に末尾の改行は含まれないため、テキストの「末尾の改行 1 つ」の
@@ -67,7 +67,7 @@ Sieve Tray 2.3.0（Canon）。この文書は `normalize` コマンドの観測�
   絶対値が 2^53 を超える整数は `json_number_unsafe` で拒否する。
   べき等で、読み直した値は等しい。
 - RFC 8785 付録 B の数値の例（IEEE 754 の 16 進 → JSON 表記）で照合して
-  いる（CN-T14。実物は rfc-editor.org から取得・§2-5 の報告どおり）。
+  いる（実物は rfc-editor.org から取得）。
 
 ## 6. CSV の書き方
 

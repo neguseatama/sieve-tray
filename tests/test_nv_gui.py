@@ -1115,7 +1115,7 @@ def test_nv_t11_records_reports_and_cli_stay_2_4_0(tmp_path):
 # ---------------------------------------------------------------------------
 # NV-T12 (§3.6): the release pack - the version, the README (title,
 # the Start/drop sentence), docs/page-registry.md, the CHANGELOG
-# [2.5.1] entry (2.5.1: the pin rides the current release; the [2.5.0]
+# [2.6.0] entry (2.5.1: the pin rides the current release; the [2.5.0]
 # entry stays in the file), the re-shot screenshots (the 2.4.0 bytes
 # are gone; the sidebar text change re-shot the pair again) and the
 # forbidden words: no old display name occupies a NAME position (an
@@ -1130,16 +1130,16 @@ README_240_SCREENSHOT_SHA = {
 }
 
 
-def test_nv_t12_release_pack_2_5_1(tmp_path):
+def test_nv_t12_release_pack_2_6_0(tmp_path):
     import hashlib
     import sieve_tray
     # the version
-    assert sieve_tray.__version__ == "2.5.1", sieve_tray.__version__
+    assert sieve_tray.__version__ == "2.6.0", sieve_tray.__version__
     # the READMEs: the title, the Start/drop sentence
     readme_ja = (REPO / "README.ja.md").read_text(encoding="utf-8")
     readme_en = (REPO / "README.md").read_text(encoding="utf-8")
     for text in (readme_ja, readme_en):
-        assert "# Sieve Tray v2.5.1" in text
+        assert "# Sieve Tray v2.6.0" in text
     assert "はじめに" in readme_ja and "ドロップすると" in readme_ja
     assert "**Start**" in readme_en \
         and "dropping a file or a folder on it lists the pages" in readme_en
@@ -1152,7 +1152,7 @@ def test_nv_t12_release_pack_2_5_1(tmp_path):
     assert "sieve_tray_gui.py" in registry_text
     # the CHANGELOG entry
     changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert "## [2.5.1]" in changelog
+    assert "## [2.6.0]" in changelog
     assert "### Added" in changelog and "### Changed" in changelog
     for name in ("Check Documents", "Compare Texts", "Compare Code",
                  "Anonymize Tables", "Detect Universal Statements",

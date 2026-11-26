@@ -2,10 +2,10 @@
 
 Sieve Tray 2.4.0（Canon）。この文書は `clean` コマンドが扱う 4 つの形式
 （PDF・JPEG・PNG・Office）について、**取り除くもの**と**残すもの**、観測の
-分類、そして本文の中にあるものの扱いを定める。既知の例は §4（KV-C1）で、
+分類、そして本文の中にあるものの扱いを定める。既知の例は「既知値」（KV-C1）で、
 文書から読み戻すテスト（`tests/test_canon_docs.py`）が確かめる。
 
-PDF は 2.4.0 から対象に加わった（§1.4。依存の下限は、公開済みの
+PDF は 2.4.0 から対象に加わった（依存の下限は、公開済みの
 `sieve-lens[pdf,html-css-full]>=0.23.0`）。
 
 ---
@@ -80,7 +80,7 @@ time・`/Creator` `/Producer` → software・`/Title` `/Subject`
 **本文の中にあるもの**: 注釈（`/Annots`）→ `comment`・添付ファイル
 （`/EmbeddedFiles`）→ `hidden_part`・フォームの入力値（`/AcroForm` の
 `/V` つきの欄）→ `hidden_part`。いずれも**取り除かない**
-（§3 と同じ扱い。`tracked_change` は PDF 由来では 0）。
+（本文扱いと同じ。`tracked_change` は PDF 由来では 0）。
 
 **読めないとき**: 暗号化は `refused`、壊れた PDF は `parse_failed`、
 pypdf が無い環境では `engine_unavailable`（いずれも既存の閉じた語彙）。

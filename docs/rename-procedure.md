@@ -53,7 +53,7 @@ UTF-8 として読めない名前も、衝突と同じ閉じた種類で報告�
 | IMG_0003.jpg | IMG_0003_002.jpg |
 | IMG_10.jpg | IMG_10_003.jpg |
 
-実測値（2026-11-14・sandbox・Sieve Tray 2.2.0）:
+実測値（Sieve Tray 2.2.0）:
 
 - `summary.mapping_sha256` = `sha256:116da4a8e37df465c8dc5e8fd81b2d55e829ef1f41c70217f84922f72eaba57b`
 - 処理記録の `digest` = `sha256:e01959fa6c0f61e3b5fdea0a85988b3aa8367f4c578d26f1857434db63e23df6`
