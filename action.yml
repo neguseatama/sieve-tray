@@ -21,10 +21,6 @@ inputs:
     description: 'The sieve-tray requirement to install (a version pin or a path)'
     required: false
     default: 'sieve-tray>=2.6.0'
-outputs:
-  findings:
-    description: 'The number of files with findings'
-    value: ${{ steps.check.outputs.findings }}
 runs:
   using: composite
   steps:

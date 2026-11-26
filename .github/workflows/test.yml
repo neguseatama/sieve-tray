@@ -16,9 +16,10 @@ jobs:
       matrix:
         python-version: ["3.12"]
         os: [ubuntu-24.04, windows-latest, macos-15]
-        include:
-          - os: ubuntu-24.04
-            python-version: "3.9"
+        # no lower-floor leg: the tree requires Python >=3.10 (pyproject)
+        # and pip refuses the tree on 3.9 before a single test - a 3.9
+        # leg cannot even install, so the matrix stays the three release
+        # OS legs the static pins certify
 
     steps:
       - uses: actions/checkout@v4
@@ -146,5 +147,8 @@ jobs:
       - name: Run the local action
         uses: ./
         with:
-          paths: samples/gate
+          # a clean file, so the action exits 0 - a failing step is a
+          # red job; the findings path (exit 1) is the check command's
+          # own contract and samples/gate holds its finding samples
+          paths: samples/gate/plain.txt
           tray-version: -e .
