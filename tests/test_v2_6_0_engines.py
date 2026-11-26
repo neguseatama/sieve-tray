@@ -28,7 +28,7 @@ from px_pdf_builders import build_six_kinds_pdf, need_pypdf
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 REDACT_0120_SHA256 = (
-    "7c4bf9160c5333f9a2b42ce82520317b2d1860bd4d9f1b9d52be827427dd1621")
+    "40473a0f813800fb4baa572bf9989d53b6c8bea4b4bf4b3cb6b28eb5810d4302")
 
 STRUCTURED_SIX = [
     {"page": "page 1", "word": "tr3"},

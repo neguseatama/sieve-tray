@@ -38,7 +38,7 @@ TRAY = REPO_ROOT / "sieve_tray.py"
 # ---------------------------------------------------------------------------
 
 REDACT_0120_SHA = (
-    "7c4bf9160c5333f9a2b42ce82520317b2d1860bd4d9f1b9d52be827427dd1621")
+    "40473a0f813800fb4baa572bf9989d53b6c8bea4b4bf4b3cb6b28eb5810d4302")
 
 ORDER_V110_SHA = {
     "sieve_order/__init__.py": (

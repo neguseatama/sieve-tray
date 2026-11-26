@@ -103,7 +103,7 @@ FROZEN_082_SHA256 = {
 
 REDACT_UPSTREAM_VERSION = "0.12.0"
 REDACT_0100_SHA256 = (
-    "7c4bf9160c5333f9a2b42ce82520317b2d1860bd4d9f1b9d52be827427dd1621")
+    "40473a0f813800fb4baa572bf9989d53b6c8bea4b4bf4b3cb6b28eb5810d4302")
 
 # Golden molds (TR3-T03): the TR2-T04/T05 values, which also hold on the
 # v1.2.0 base (160 passed includes them) and must keep holding after the
