@@ -1859,16 +1859,17 @@ def _gate_rel_sort_key(rel: str) -> bytes:
     return rel.encode("utf-8")
 
 
-def _gate_walk(input_dir: Path):
+def _gate_walk(input_dir: Path, *, exclude_vault_dirs: bool = False):
     """Relative (POSIX, as the OS returns it) paths of every regular
     file under input_dir, sorted by their UTF-8 bytes.  Symlinks stay
     in the list as items (they are never followed); directories and
-    special files do not.  The two vault folders (.obsidian/ and
-    .trash/) are pruned: settings and deleted notes do not join the
-    handed-over files."""
+    special files do not.  Only the Gate's folder ingest prunes the
+    two vault folders (.obsidian/ and .trash/) - the other lanes that
+    ride this walk keep seeing every file."""
     items = []
     for root, dirs, names in os.walk(input_dir, followlinks=False):
-        dirs[:] = [d for d in dirs if d not in CHECK_EXCLUDED_DIRS]
+        if exclude_vault_dirs:
+            dirs[:] = [d for d in dirs if d not in CHECK_EXCLUDED_DIRS]
         dirs.sort()
         for name in names:
             p = Path(root) / name
@@ -3988,7 +3989,7 @@ def run_gate(input_dir: Path, output_dir: Path, *,
     fragments: List[dict] = []
     kinds_items: List[dict] = []
     engine = _gate_build_engine()
-    rels = _gate_walk(input_dir)
+    rels = _gate_walk(input_dir, exclude_vault_dirs=True)
     progress("Gate: %d items" % len(rels))
     for seq, rel in enumerate(rels, start=1):
         src = input_dir / rel
