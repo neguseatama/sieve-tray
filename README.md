@@ -212,6 +212,41 @@ The states and the record: [docs/table-diff.md](docs/table-diff.md).
 
 ---
 
+## 📄 Check files and folders
+
+`sieve-tray check PATH...` observes files and folders the same way the
+Gate does and reports, per file, the hidden text (with the kind word
+and the page number) and the invisible characters. Nothing is written
+out, and the exit code reads 0 (nothing found) / 1 (found) / 2 (cannot
+run). `--format text|json|github` picks the output shape; `--exclude`,
+`--only-hidden` and `--strict` tune the run. Folder targets skip the
+`.obsidian/` and `.trash/` folders by default
+(`--include-hidden-dirs` keeps them).
+
+The same check runs before every commit through the pre-commit hook:
+
+```yaml
+repos:
+  - repo: https://github.com/neguseatama/sieve-tray
+    rev: v2.6.0
+    hooks:
+      - id: sieve-check
+```
+
+and inside a workflow:
+
+```yaml
+- uses: neguseatama/sieve-tray@v2.6.0
+  with:
+    paths: docs
+```
+
+The Gate's export can mask repeated values with the same symbol
+("Same value, same symbol", off by default - the numbered
+order-of-appearance labels stay as they are).
+
+---
+
 ## 🧩 The Sieve Series
 
 Sieve is a family of deterministic, zero-dependency engines that share
@@ -596,36 +631,3 @@ MIT License. See [LICENSE](LICENSE) for details.
 ## 👤 Author
 
 * **Kai IWASAKI**
-
-## Check files and folders
-
-`sieve-tray check PATH...` observes files and folders the same way the
-Gate does and reports, per file, the hidden text (with the kind word
-and the page number) and the invisible characters. Nothing is written
-out, and the exit code reads 0 (nothing found) / 1 (found) / 2 (cannot
-run). `--format text|json|github` picks the output shape; `--exclude`,
-`--only-hidden` and `--strict` tune the run. Folder targets skip the
-`.obsidian/` and `.trash/` folders by default
-(`--include-hidden-dirs` keeps them).
-
-The same check runs before every commit through the pre-commit hook:
-
-```yaml
-repos:
-  - repo: https://github.com/neguseatama/sieve-tray
-    rev: v2.6.0
-    hooks:
-      - id: sieve-check
-```
-
-and inside a workflow:
-
-```yaml
-- uses: neguseatama/sieve-tray@v2.6.0
-  with:
-    paths: docs
-```
-
-The Gate's export can mask repeated values with the same symbol
-("Same value, same symbol", off by default - the numbered
-order-of-appearance labels stay as they are).
