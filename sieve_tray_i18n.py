@@ -296,6 +296,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "gate_no_redact_tooltip": "Writes the visible text out as it is, without masking addresses or numbers.",
         "gate_no_paths_tooltip": "The record lists the file locations; with this checked the files are identified by sequence numbers instead.",
         "gate_no_input_hashes_tooltip": "The record can carry the SHA-256 value of each input, so that one can tell whether the content is the same. With this checked the fingerprints are not recorded.",
+        "gate_same_value": "Same value, same symbol",
+        "gate_same_value_tooltip": "Repeated values are masked with the same symbol (one serial counter shared with the per-occurrence labels).",
         # v2.1.0 (request §3.9 / addendum §3.2): the Cohort page speaks
         # the comparison, never the product name.
         "cohort_tab": "Compare Submissions",
@@ -816,6 +818,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "gate_no_redact_tooltip": "伏せ字にせず、見える文章をそのまま書き出します。",
         "gate_no_paths_tooltip": "記録にはファイルの場所が載ります。チェックを入れると、代わりに連番で区別します。",
         "gate_no_input_hashes_tooltip": "記録には入力ファイルごとの SHA-256 の値（内容が同じかを確かめる目的で使います）を載せられます。チェックを入れると、この指紋を記録しません。",
+        "gate_same_value": "同じ値には同じ記号",
+        "gate_same_value_tooltip": "同じ値は同じ記号で伏せ字にします（出現順の番号と同じ通し番号を共有します）。",
         # v2.1.0（本体 §3.9・追補 §3.2）: 提出物の比較の画面文言。
         "cohort_tab": "提出物の比較",
         "cohort_input_label": "提出物フォルダ",

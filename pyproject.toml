@@ -41,13 +41,14 @@ requires-python = ">=3.10"
 # what lets the Gate PDF lane reopen (the 2.2.0 short-circuit is
 # gone).  pypdf rides through the extra (lens declares pypdf>=4.0) and
 # is not declared separately on this side.
-# v2.4.0 (the PDF exchange request §3.4): the floor moves to the
-# published 0.23.0 - 0.23.x reports the six fixed hidden kinds (Tr 3,
-# Tr 7, tiny_font, off_page, off_layer, white_text) that the Gate
-# hidden count and the local kind record read, and its white-text
-# background judgment keeps white-on-painted visible.  pypdf still
-# rides through the pdf extra and is not declared separately.
-dependencies = ["sieve-lens[pdf,html-css-full]>=0.23.0", "sieve-scope>=1.5.0", "sieve-referee>=1.6.0"]
+# v2.6.0 (the engine updates): the floor moves to the published
+# 0.24.0 - 0.24.x carries the structured kind fields (``how`` - the
+# closed nine-word vocabulary - and the 1-based ``page``) on hidden PDF
+# segments, which the local kind record reads instead of the location
+# label strings, and its white-text background judgment keeps
+# white-on-painted visible.  pypdf still rides through the pdf extra
+# and is not declared separately.
+dependencies = ["sieve-lens[pdf,html-css-full]>=0.24.0", "sieve-scope>=1.5.0", "sieve-referee>=1.6.0"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

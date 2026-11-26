@@ -3509,43 +3509,30 @@ def _gate_classify_hidden(segments) -> Tuple[list, list]:
     return orderable, rule_hidden
 
 
-# the fixed word list of the 2026-11-21 ruling, in the fixed match
-# order; the local kind record carries at most one word per hidden body
-GATE_KIND_WORD_ORDER = ("Tr 3", "Tr 7", "tiny_font", "off_page",
-                        "off_layer", "white_text")
+# the closed nine-word vocabulary of the structured kind field
+# (sieve_lens_ext.pdf.PDF_HIDDEN_HOWS of Lens 0.24.0); the local kind
+# record carries at most one word per hidden body, taken from the
+# structured field - the location label string is never read
+GATE_KIND_WORDS = ("tr3", "tr7", "tiny_font", "off_page", "off_layer",
+                   "white_text", "transparent", "clipped", "same_color")
 
-_GATE_KIND_PAGE_RE = re.compile(r"\Apage (\d+)\b")
 
-
-def _gate_hidden_kinds_entries(location) -> list:
-    """The fixed-list matcher of the local kind record (the 2026-11-21
-    ruling, request §3.1): the page position and at most ONE fixed
-    word.  The quoted name part (a layer name, a form name) is thrown
-    away BEFORE the match, so a name that contains a fixed word cannot
-    fabricate it; a location outside the list records the position
-    alone (no new word is ever invented); a location without a page
-    position records nothing."""
-    if not location:
+def _gate_hidden_kinds_entries(seg) -> list:
+    """The kind-record entries of one hidden segment (the structured
+    kind fields of Lens 0.24.0): the 1-based page becomes the
+    ``page N`` form and at most ONE word of the closed nine-word list
+    rides the structured ``how`` field.  A segment without the
+    structured page records nothing; a structured word outside the
+    closed list records the position alone (no new word is ever
+    invented)."""
+    page = getattr(seg, "page", None)
+    if page is None:
         return []
-    loc = str(location).strip()
-    m = _GATE_KIND_PAGE_RE.match(loc)
-    if m is None:
-        return []          # no page position -> nothing is recorded
-    page = "page %s" % m.group(1)
-    # the name parts (inside single quotes) leave the residue first
-    outside = []
-    in_quote = False
-    for ch in loc[m.end():]:
-        if ch == "'":
-            in_quote = not in_quote
-            continue
-        if not in_quote:
-            outside.append(ch)
-    residue = "".join(outside)
-    for word in GATE_KIND_WORD_ORDER:
-        if word in residue:
-            return [{"page": page, "word": word}]
-    return [{"page": page}]
+    entry = {"page": "page %s" % page}
+    how = getattr(seg, "how", None)
+    if how in GATE_KIND_WORDS:
+        entry["word"] = how
+    return [entry]
 
 
 def _gate_order_on_hidden(orderable) -> dict:
@@ -3998,12 +3985,12 @@ def _gate_item_document(engine, src: Path, data: bytes, suffix: str,
             fragments.append({"item": seq, "text": seg.text,
                               "kind": "hidden"})
     if kinds_items is not None:
-        # the local kind record (the 2026-11-21 ruling): one entry per
-        # hidden body, the fixed word + the page position only; the
-        # handoff receipt carries none of it (PX-T03/T05)
+        # the local kind record: one entry per hidden body, the
+        # structured kind word + the page position only; the handoff
+        # receipt carries none of it (PX-T03/T05)
         entries = []
         for seg in orderable:
-            entries.extend(_gate_hidden_kinds_entries(seg.location))
+            entries.extend(_gate_hidden_kinds_entries(seg))
         if entries:
             kinds_items.append({"item": seq, "entries": entries})
     item["hidden_segments"] = _gate_order_on_hidden(orderable)
@@ -6171,6 +6158,8 @@ def _gate_main(argv: List[str]) -> int:
     g.add_argument("--redact-builtin", action="append", default=None,
                    metavar="NAME")
     g.add_argument("--redact-config", type=Path, default=None)
+    g.add_argument("--redact-same-value", action="store_true",
+                   help="use the same symbol for the same value")
     g.add_argument("--no-redact", action="store_true")
     g.add_argument("--crowd-config", type=Path, default=None)
     g.add_argument("--no-paths", action="store_true")
@@ -6597,6 +6586,8 @@ def _gate_main(argv: List[str]) -> int:
             redact_builtins=(tuple(args.redact_builtin)
                              if args.redact_builtin
                              else GATE_DEFAULT_BUILTINS),
+            redact_mode=("same-value" if args.redact_same_value
+                         else GATE_REDACT_MODE),
             redact_config=args.redact_config, no_redact=args.no_redact,
             crowd_config=args.crowd_config,
             include_paths=not args.no_paths,
