@@ -270,3 +270,14 @@ def test_ck_t13_default_exclusions(tmp_path):
     gpaths = [str(i.get("path", "")) for i in receipt["items"]]
     assert not any(".obsidian" in p or ".trash" in p for p in gpaths)
     assert any("keep.txt" in p for p in gpaths)
+
+    # the exclusion is Gate-only: the Cohort lane rides the same walk
+    # and keeps seeing every file (the 2.5.1 behavior is unchanged)
+    from sieve_tray import run_cohort
+    out2 = tmp_path / "cohort-out"
+    cohort_receipt = run_cohort(inp, out2)
+    cpaths = [str(i.get("path", "")) for i in cohort_receipt["items"]]
+    assert any(".obsidian" in p and p.endswith("note.md")
+               for p in cpaths), \
+        "Cohort lost a vault folder file (the exclusion must be Gate-only)"
+    assert any(".trash" in p and p.endswith("old.md") for p in cpaths)
